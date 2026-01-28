@@ -1,0 +1,22 @@
+{{define "layout"}}
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRFToken}}">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">altpocket</div>
+    <div class="user">{{.User.Name}}</div>
+  </header>
+  <main class="container">
+    {{template "content" .}}
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
+{{end}}

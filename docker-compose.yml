@@ -1,0 +1,53 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: altpocket
+      POSTGRES_PASSWORD: altpocket
+      POSTGRES_DB: altpocket
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api.Dockerfile
+    environment:
+      DATABASE_URL: postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable
+      HTTP_ADDR: ":8080"
+      PUBLIC_BASE_URL: http://localhost:8080
+      SESSION_SECRET: change-me
+      JWT_SECRET: change-me
+      GOOGLE_WEB_CLIENT_ID: your-web-client-id
+      GOOGLE_CLIENT_SECRET: your-web-client-secret
+      GOOGLE_EXT_CLIENT_ID: your-extension-client-id
+      CONTENT_FULL_LIMIT_BYTES: "1000000"
+      CONTENT_SEARCH_LIMIT_BYTES: "16384"
+    depends_on:
+      - db
+    ports:
+      - "8080:8080"
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/worker.Dockerfile
+    environment:
+      DATABASE_URL: postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable
+      SESSION_SECRET: change-me
+      JWT_SECRET: change-me
+      GOOGLE_WEB_CLIENT_ID: your-web-client-id
+      GOOGLE_CLIENT_SECRET: your-web-client-secret
+      GOOGLE_EXT_CLIENT_ID: your-extension-client-id
+      PUBLIC_BASE_URL: http://localhost:8080
+      CONTENT_FULL_LIMIT_BYTES: "1000000"
+      CONTENT_SEARCH_LIMIT_BYTES: "16384"
+    depends_on:
+      - db
+
+volumes:
+  db_data:

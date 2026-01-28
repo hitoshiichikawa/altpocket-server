@@ -1,0 +1,66 @@
+{{define "content"}}
+<section class="split">
+  <aside class="sidebar">
+    <form method="get" action="/ui/items" class="search-form">
+      <input type="text" name="q" placeholder="Search" value="{{.Query}}">
+      <select name="sort">
+        <option value="newest" {{if eq .Sort "newest"}}selected{{end}}>Newest</option>
+        <option value="relevance" {{if eq .Sort "relevance"}}selected{{end}}>Relevance</option>
+      </select>
+      <select name="per_page">
+        {{range .PerPageOptions}}
+          <option value="{{.}}" {{if eq $.PerPage .}}selected{{end}}>{{.}}/page</option>
+        {{end}}
+      </select>
+      <button type="submit">Apply</button>
+    </form>
+
+    <div class="tag-list">
+      <div class="tag-title">Tags</div>
+      <ul>
+        <li><a href="/ui/items">All</a></li>
+        {{range .Tags}}
+          <li><a href="/ui/items?tag={{.NormalizedName}}">{{.Name}} ({{.Count}})</a></li>
+        {{end}}
+      </ul>
+    </div>
+  </aside>
+
+  <section class="items">
+    {{if not .Items}}
+      <div class="empty">No items yet.</div>
+    {{end}}
+    {{range .Items}}
+      <article class="tile {{if eq .FetchStatus "failed"}}failed{{end}}">
+        <a class="tile-link" href="/ui/items/{{.ID}}">
+          <h3>{{.Title}}</h3>
+          <p>{{.Excerpt}}</p>
+        </a>
+        <div class="meta">
+          <span class="status">{{.FetchStatus}}</span>
+          <span class="date">{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
+        </div>
+        <div class="tags">
+          {{range .Tags}}
+            <span class="chip">{{.Name}}</span>
+          {{end}}
+        </div>
+        <div class="actions">
+          <button class="refetch" data-item-id="{{.ID}}">Refetch</button>
+          <button class="delete" data-item-id="{{.ID}}">Delete</button>
+        </div>
+      </article>
+    {{end}}
+
+    <div class="pagination">
+      {{if gt .Page 1}}
+        <a href="{{.PrevURL}}">Prev</a>
+      {{end}}
+      <span>Page {{.Page}} / {{.TotalPages}}</span>
+      {{if lt .Page .TotalPages}}
+        <a href="{{.NextURL}}">Next</a>
+      {{end}}
+    </div>
+  </section>
+</section>
+{{end}}

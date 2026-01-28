@@ -1,0 +1,32 @@
+{{define "content"}}
+<section class="detail">
+  <div class="detail-header">
+    <h2>{{.Item.Title}}</h2>
+    <div class="detail-meta">
+      <a href="{{.Item.URL}}" target="_blank">Open original</a>
+      <span class="status">{{.Item.FetchStatus}}</span>
+      <span>{{.Item.CreatedAt.Format "2006-01-02 15:04"}}</span>
+    </div>
+    {{if .Item.FetchError}}
+      <div class="error">{{.Item.FetchError}}</div>
+    {{end}}
+    <div class="tags">
+      {{range .Item.Tags}}
+        <span class="chip">{{.Name}}</span>
+      {{end}}
+    </div>
+    <div class="actions">
+      <button class="refetch" data-item-id="{{.Item.ID}}">Refetch</button>
+      <button class="delete" data-item-id="{{.Item.ID}}">Delete</button>
+      <a class="back" href="/ui/items">Back</a>
+    </div>
+  </div>
+  <article class="content">
+    {{if .Item.ContentFull}}
+      <pre>{{.Item.ContentFull}}</pre>
+    {{else}}
+      <div class="empty">Content not fetched yet.</div>
+    {{end}}
+  </article>
+</section>
+{{end}}
