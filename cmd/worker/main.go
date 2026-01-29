@@ -45,11 +45,23 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
+			cleanupSessions(ctx, st, log)
 			runOnce(ctx, st, f, log)
 		case <-done:
 			log.Info("worker_shutdown")
 			return
 		}
+	}
+}
+
+func cleanupSessions(ctx context.Context, st *store.Store, log *slog.Logger) {
+	removed, err := st.CleanupExpiredSessions(ctx)
+	if err != nil {
+		log.Error("session_cleanup_failed", "error", err)
+		return
+	}
+	if removed > 0 {
+		log.Info("session_cleanup", "removed", removed)
 	}
 }
 

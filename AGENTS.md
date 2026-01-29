@@ -29,5 +29,5 @@
 
 ## Security & Configuration Tips
 - Secrets (`SESSION_SECRET`, `JWT_SECRET`, OAuth client secrets) must be env vars.
-- Web sessions are stored in DB (`sessions` table); add cleanup for expired rows in production.
+- Web sessions are stored in DB (`sessions` table); worker cleans up expired rows every minute.
 - Do not log tokens, cookies, or raw OAuth responses.

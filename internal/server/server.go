@@ -443,7 +443,13 @@ func (s *Server) requireWeb(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/v1/auth/google/login", http.StatusFound)
 			return
 		}
-		ctx := auth.ContextWithUser(r.Context(), user)
+		ctx := auth.ContextWithUser(r.Context(), auth.User{
+			ID:        user.ID,
+			GoogleSub: user.GoogleSub,
+			Email:     user.Email,
+			Name:      user.Name,
+			AvatarURL: user.AvatarURL,
+		})
 		ctx = context.WithValue(ctx, "csrf", sess.CSRFToken)
 		next(w, r.WithContext(ctx))
 	}

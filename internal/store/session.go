@@ -42,3 +42,11 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	_, err := s.DB.Exec(ctx, `DELETE FROM sessions WHERE id=$1`, id)
 	return err
 }
+
+func (s *Store) CleanupExpiredSessions(ctx context.Context) (int64, error) {
+	ct, err := s.DB.Exec(ctx, `DELETE FROM sessions WHERE expires_at <= NOW()`)
+	if err != nil {
+		return 0, err
+	}
+	return ct.RowsAffected(), nil
+}

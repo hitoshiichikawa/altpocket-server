@@ -34,7 +34,7 @@ docker compose up --build api worker
 
 Web UI: http://localhost:8080/ui/items
 
-> セッションはDB保存です（`sessions`テーブル）。運用環境では期限切れセッションの定期削除を推奨します。
+> セッションはDB保存です（`sessions`テーブル）。worker が毎分、期限切れセッションを削除します。
 
 ## 拡張機能のロード
 1. `extension/popup.js` の `CLIENT_ID` を自分のExtension用OAuthクライアントIDに置換
