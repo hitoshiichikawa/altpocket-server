@@ -27,7 +27,7 @@ func RequestID(next http.Handler) http.Handler {
 		if id == "" {
 			id = uuid.NewString()
 		}
-		ctx := context.WithValue(r.Context(), logger.RequestIDKey, id)
+		ctx := context.WithValue(r.Context(), requestIDKey, id)
 		w.Header().Set("X-Request-Id", id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -46,7 +46,7 @@ func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 }
 
 func requestIDFromContext(ctx context.Context) string {
-	v := ctx.Value(logger.RequestIDKey)
+	v := ctx.Value(requestIDKey)
 	if v == nil {
 		return ""
 	}

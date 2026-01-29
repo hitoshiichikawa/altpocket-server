@@ -450,7 +450,7 @@ func (s *Server) requireWeb(next http.HandlerFunc) http.HandlerFunc {
 			Name:      user.Name,
 			AvatarURL: user.AvatarURL,
 		})
-		ctx = context.WithValue(ctx, "csrf", sess.CSRFToken)
+		ctx = context.WithValue(ctx, csrfKey, sess.CSRFToken)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -494,7 +494,7 @@ func (s *Server) webSession(r *http.Request) (store.Session, store.User, bool) {
 }
 
 func (s *Server) csrfFromContext(ctx context.Context) string {
-	v := ctx.Value("csrf")
+	v := ctx.Value(csrfKey)
 	if v == nil {
 		return ""
 	}
@@ -505,7 +505,7 @@ func (s *Server) csrfFromContext(ctx context.Context) string {
 }
 
 func (s *Server) requestID(ctx context.Context) string {
-	v := ctx.Value(logger.RequestIDKey)
+	v := ctx.Value(requestIDKey)
 	if v == nil {
 		return ""
 	}
