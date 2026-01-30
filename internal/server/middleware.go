@@ -7,8 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"log/slog"
-
-	"altpocket/internal/logger"
 )
 
 type responseWriter struct {

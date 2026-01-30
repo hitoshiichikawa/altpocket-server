@@ -12,7 +12,6 @@ import (
 
 	"altpocket/internal/auth"
 	"altpocket/internal/config"
-	"altpocket/internal/logger"
 	"altpocket/internal/ratelimit"
 	"altpocket/internal/store"
 	"altpocket/internal/tag"
