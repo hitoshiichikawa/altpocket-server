@@ -63,7 +63,8 @@ API_BASE=http://localhost:8080 ./scripts/test-api.sh
 詳細は `docs/smoke-test.md` を参照してください。
 
 ## 本番デプロイ（Docker）
-インターネット公開を含む本番向け手順は `docs/production-docker-deploy.md` を参照してください。
+- Linux向け: `docs/production-docker-deploy.md`
+- Windows向け: `docs/production-docker-deploy-windows.md`
 
 ## セキュリティ/運用メモ
 - JWT署名キー/セッションシークレットは必ず環境変数で管理
