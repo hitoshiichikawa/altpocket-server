@@ -20,49 +20,49 @@ func New(db *pgxpool.Pool) *Store {
 }
 
 type User struct {
-	ID        string
-	GoogleSub string
-	Email     string
-	Name      string
-	AvatarURL string
+	ID        string `json:"id"`
+	GoogleSub string `json:"google_sub"`
+	Email     string `json:"email"`
+	Name      string `json:"name"`
+	AvatarURL string `json:"avatar_url"`
 }
 
 type Tag struct {
-	ID             string
-	Name           string
-	NormalizedName string
-	Count          int
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	NormalizedName string `json:"normalized_name"`
+	Count          int    `json:"count,omitempty"`
 }
 
 type Item struct {
-	ID               string
-	UserID           string
-	URL              string
-	CanonicalURL     string
-	CanonicalHash    string
-	Title            string
-	Excerpt          string
-	FetchStatus      string
-	FetchError       string
-	CreatedAt        time.Time
-	RefetchRequested bool
+	ID               string    `json:"id"`
+	UserID           string    `json:"user_id"`
+	URL              string    `json:"url"`
+	CanonicalURL     string    `json:"canonical_url"`
+	CanonicalHash    string    `json:"canonical_hash"`
+	Title            string    `json:"title"`
+	Excerpt          string    `json:"excerpt"`
+	FetchStatus      string    `json:"fetch_status"`
+	FetchError       string    `json:"fetch_error"`
+	CreatedAt        time.Time `json:"created_at"`
+	RefetchRequested bool      `json:"refetch_requested"`
 }
 
 type ItemDetail struct {
 	Item
-	ContentFull string
-	Tags        []Tag
+	ContentFull string `json:"content_full"`
+	Tags        []Tag  `json:"tags"`
 }
 
 type ItemListRow struct {
 	Item
-	Tags []Tag
+	Tags []Tag `json:"tags"`
 }
 
 type Pagination struct {
-	Page    int
-	PerPage int
-	Total   int
+	Page    int `json:"page"`
+	PerPage int `json:"per_page"`
+	Total   int `json:"total"`
 }
 
 func (s *Store) UpsertUser(ctx context.Context, sub, email, name, avatar string) (User, error) {

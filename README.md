@@ -55,6 +55,13 @@ Web UI: http://localhost:8080/ui/items
 go test ./...
 ```
 
+## APIスモークテスト
+```
+API_BASE=http://localhost:8080 ./scripts/test-api.sh
+```
+
+詳細は `docs/smoke-test.md` を参照してください。
+
 ## セキュリティ/運用メモ
 - JWT署名キー/セッションシークレットは必ず環境変数で管理
 - OAuthクライアントID/Secretは秘匿扱い
