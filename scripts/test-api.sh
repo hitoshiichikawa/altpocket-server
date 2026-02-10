@@ -205,17 +205,26 @@ main() {
   info "GET /v1/items with session should include created item"
   code=$(request GET "$API_BASE/v1/items?sort=newest" "" "${session_headers[0]}")
   assert_status "$code" "200" "GET /v1/items with session"
+  assert_body_contains '"items":' "GET /v1/items with session"
+  assert_body_contains '"pagination":' "GET /v1/items with session"
+  assert_body_contains '"per_page":' "GET /v1/items with session"
+  assert_body_contains '"user_id":"' "GET /v1/items with session"
   assert_body_contains "$item_id" "GET /v1/items with session"
 
   info "GET /v1/items/{id} with session should return item"
   code=$(request GET "$API_BASE/v1/items/${item_id}" "" "${session_headers[0]}")
   assert_status "$code" "200" "GET /v1/items/{id} with session"
+  assert_body_contains '"id":"' "GET /v1/items/{id} with session"
+  assert_body_contains '"canonical_url":"' "GET /v1/items/{id} with session"
+  assert_body_contains '"content_full":' "GET /v1/items/{id} with session"
+  assert_body_contains '"tags":' "GET /v1/items/{id} with session"
   assert_body_contains "$item_id" "GET /v1/items/{id} with session"
 
   info "GET /v1/tags?q=go with session should return normalized tag"
   code=$(request GET "$API_BASE/v1/tags?q=go" "" "${session_headers[0]}")
   assert_status "$code" "200" "GET /v1/tags with session"
   assert_body_contains '"name":"go"' "GET /v1/tags with session"
+  assert_body_contains '"normalized_name":"go"' "GET /v1/tags with session"
 
   info "POST /v1/items/{id}/refetch with session+csrf should return 202"
   code=$(request POST "$API_BASE/v1/items/${item_id}/refetch" "" "${session_headers[0]}" "${session_headers[1]}")
