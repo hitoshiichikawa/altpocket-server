@@ -28,10 +28,10 @@ type User struct {
 }
 
 type Tag struct {
-	ID             string
-	Name           string
-	NormalizedName string
-	Count          int
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	NormalizedName string `json:"normalized_name"`
+	Count          int    `json:"count,omitempty"`
 }
 
 type Item struct {
