@@ -1,0 +1,4 @@
+{$PUBLIC_HOSTNAME} {
+  encode gzip zstd
+  reverse_proxy api:8080
+}
