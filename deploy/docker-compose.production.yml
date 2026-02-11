@@ -41,7 +41,8 @@ services:
     depends_on:
       - api
     environment:
-      PUBLIC_HOSTNAME: ${PUBLIC_HOSTNAME}
+      WWW_HOSTNAME: ${WWW_HOSTNAME}
+      API_HOSTNAME: ${API_HOSTNAME}
     ports:
       - "80:80"
       - "443:443"
