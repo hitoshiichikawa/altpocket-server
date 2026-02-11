@@ -2,12 +2,17 @@
 
 この手順は、Windows 上で Docker を使って `db` + `api` + `worker` を起動し、`Caddy` で `https://` 公開するための手順です。
 
+本手順は次の構成（方式1）を前提にしています。
+- Web/UI ドメイン: `www.ap.market-river.net`
+- API ドメイン: `api.ap.market-river.net`
+- 実体は同じ `api` コンテナ（コード変更なし）
+
 > 注: 本番運用は Linux サーバーの方が一般的です。ここでは Windows で運用するケース向けに手順を整理しています。
 
 ## 0. 前提
 - OS: Windows 11 Pro 以降（または Windows Server + Docker Desktop/Engine）
 - Docker Desktop をインストール済み（WSL2 backend 有効）
-- ドメインを所有し、A レコードを公開IPへ設定済み
+- ドメインを所有し、`www` と `api` の A レコードを公開IPへ設定済み
 - ルーター/クラウドFW/Windows Defender Firewall で `80/tcp`, `443/tcp` を開放
 
 ## 1. 事前準備（Windows）
@@ -52,7 +57,7 @@ New-NetFirewallRule -DisplayName "altpocket-https" -Direction Inbound -Protocol 
 3. `Application type` で `Web application` を選択
 4. `Name` を入力（例: `altpocket-web-prod`）
 5. `Authorized redirect URIs` で `+ ADD URI` をクリックし、以下を追加
-   - `https://<本番ドメイン>/v1/auth/google/callback`
+   - `https://<WWWドメイン>/v1/auth/google/callback`
 6. `Create` をクリック
 7. 表示される `Client ID` と `Client secret` を控える
 
@@ -84,7 +89,7 @@ Copy-Item .\deploy\.env.production.example .\deploy\.env.production
 ```
 
 `deploy\.env.production` を開き、以下を必ず実値に変更:
-- `PUBLIC_HOSTNAME` / `PUBLIC_BASE_URL`
+- `WWW_HOSTNAME` / `API_HOSTNAME` / `PUBLIC_BASE_URL`
 - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`
 - `DATABASE_URL`
 - `SESSION_SECRET` / `JWT_SECRET`
@@ -120,23 +125,24 @@ docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\
 ## 5. 動作確認
 ### 5.1 APIヘルス
 ```powershell
-curl https://<本番ドメイン>/healthz
+curl https://<APIドメイン>/healthz
+curl https://<WWWドメイン>/healthz
 ```
 - `ok` が返ることを確認
 
 ### 5.2 API smoke test
 ```powershell
-$env:API_BASE = "https://<本番ドメイン>"
+$env:API_BASE = "https://<APIドメイン>"
 .\scripts\test-api.sh
 ```
 
 ### 5.3 Extension E2E
-1. `https://<本番ドメイン>/v1/auth/google/login` を開き、Web 側で1回ログイン
+1. `https://<WWWドメイン>/v1/auth/google/login` を開き、Web 側で1回ログイン
 2. `chrome://extensions` で拡張をリロード
-3. 拡張 popup の `API Base URL` に `https://<本番ドメイン>` を入力
+3. 拡張 popup の `API Base URL` に `https://<APIドメイン>` を入力
 4. `Login with Google` を実行
 5. 任意のページで `Save Current Tab`
-6. `https://<本番ドメイン>/ui/items` に保存されたことを確認
+6. `https://<WWWドメイン>/ui/items` に保存されたことを確認
 
 ## 6. 更新デプロイ（PowerShell）
 ```powershell
