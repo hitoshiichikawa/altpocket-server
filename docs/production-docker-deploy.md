@@ -2,9 +2,14 @@
 
 この手順は、単一サーバーで `db` + `api` + `worker` を Docker Compose で動かし、`Caddy` 経由で HTTPS 公開するための運用手順です。
 
+本手順は次の構成（方式1）を前提にしています。
+- Web/UI ドメイン: `www.example.invalid`
+- API ドメイン: `api.example.invalid`
+- 実体は同じ `api` コンテナ（コード変更なし）
+
 ## 0. 前提
 - Ubuntu 等の Linux サーバー 1 台
-- ドメインを所有し、DNS A レコードでサーバーIPに向けられる
+- ドメインを所有し、`www` と `api` の DNS A レコードをサーバーIPに向けられる
 - サーバーで `docker` / `docker compose` が使える
 - サーバーの inbound は最低限 `22/tcp`, `80/tcp`, `443/tcp` のみ許可
 
@@ -13,7 +18,7 @@
 
 1. OAuth 同意画面を設定（本番ドメインを反映）
 2. Web クライアント ID
-   - Redirect URI: `https://<本番ドメイン>/v1/auth/google/callback`
+   - Redirect URI: `https://<WWWドメイン>/v1/auth/google/callback`
 3. Chrome Extension クライアント ID
    - 本番で使う拡張機能IDに紐づける
 
@@ -25,8 +30,9 @@ cp deploy/.env.production.example deploy/.env.production
 ```
 
 必須で置換する値:
-- `PUBLIC_HOSTNAME`
-- `PUBLIC_BASE_URL` (`https://...`)
+- `WWW_HOSTNAME`
+- `API_HOSTNAME`
+- `PUBLIC_BASE_URL` (`https://<WWWドメイン>`)
 - `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB`
 - `DATABASE_URL`
 - `SESSION_SECRET` / `JWT_SECRET`
@@ -50,7 +56,8 @@ openssl rand -hex 32
 この構成で以下を実現します。
 - DB ポートの外部公開を無効化 (`db` の `ports: []`)
 - `api` は外部公開せず、`edge`(Caddy) からのみ到達
-- `edge` が `80/443` を待ち受け、HTTPS 終端して `api:8080` へリバースプロキシ
+- `edge` が `80/443` を待ち受け、`www` と `api` の両ホストを `api:8080` へリバースプロキシ
+- `www` からも `/v1/*` は到達可能（方式1では許容）
 
 ## 4. 初回デプロイ
 ```bash
@@ -79,7 +86,8 @@ docker compose \
 ## 5. 動作確認
 ### 5.1 ヘルスチェック
 ```bash
-curl -i https://<本番ドメイン>/healthz
+curl -i https://<APIドメイン>/healthz
+curl -i https://<WWWドメイン>/healthz
 ```
 `200` と `ok` を確認。
 
@@ -87,14 +95,14 @@ curl -i https://<本番ドメイン>/healthz
 サーバー上でリポジトリのルートから実行:
 
 ```bash
-API_BASE=https://<本番ドメイン> ./scripts/test-api.sh
+API_BASE=https://<APIドメイン> ./scripts/test-api.sh
 ```
 
 ### 5.3 Extension E2E
-1. Web で `https://<本番ドメイン>/v1/auth/google/login` にアクセスして一度ログイン（ユーザー登録）
+1. Web で `https://<WWWドメイン>/v1/auth/google/login` にアクセスして一度ログイン（ユーザー登録）
 2. `extension/popup.js` の `CLIENT_ID` を本番用 extension client id にする
-3. 拡張機能の API Base URL を `https://<本番ドメイン>` にしてログイン
-4. 任意ページで Save し、`/ui/items` に反映されることを確認
+3. 拡張機能の API Base URL を `https://<APIドメイン>` にしてログイン
+4. 任意ページで Save し、`https://<WWWドメイン>/ui/items` に反映されることを確認
 
 ## 6. 更新デプロイ
 ```bash
