@@ -55,6 +55,11 @@ Web UI: http://localhost:8080/ui/items
 go test ./...
 ```
 
+## Extensionテスト
+```
+node --test extension/popup.test.mjs
+```
+
 ## APIスモークテスト
 ```
 API_BASE=http://localhost:8080 ./scripts/test-api.sh
