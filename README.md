@@ -11,6 +11,9 @@ Pocket互換の「あとで読む」サービス。Chrome ExtensionでURL+タグ
 
 ## 必須環境変数
 ```
+POSTGRES_USER=altpocket
+POSTGRES_PASSWORD=altpocket
+POSTGRES_DB=altpocket
 DATABASE_URL=postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable
 PUBLIC_BASE_URL=http://localhost:8080
 SESSION_SECRET=change-me
