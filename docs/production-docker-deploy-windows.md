@@ -103,40 +103,47 @@ $bytes = New-Object byte[] 32
 [Convert]::ToHexString($bytes).ToLower()
 ```
 
-## 4. 初回デプロイ（PowerShell）
+## 4. 本番 compose ファイルをルートへコピー（PowerShell）
+リポジトリルートで実行:
+
+```powershell
+Copy-Item .\deploy\docker-compose.production.yml .\docker-compose.production.yml
+```
+
+## 5. 初回デプロイ（PowerShell）
 > 作業ディレクトリはリポジトリルート
 
-### 4.1 DB 起動
+### 5.1 DB 起動
 ```powershell
-docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml up -d db
+docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\docker-compose.production.yml up -d db
 ```
 
-### 4.2 マイグレーション
+### 5.2 マイグレーション
 ```powershell
 Get-Content .\migrations\001_init.sql -Raw |
-  docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml exec -T db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+  docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\docker-compose.production.yml exec -T db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
 
-### 4.3 API/Worker/Edge 起動
+### 5.3 API/Worker/Edge 起動
 ```powershell
-docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml up -d --build api worker edge
+docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\docker-compose.production.yml up -d --build api worker edge
 ```
 
-## 5. 動作確認
-### 5.1 APIヘルス
+## 6. 動作確認
+### 6.1 APIヘルス
 ```powershell
 curl https://<APIドメイン>/healthz
 curl https://<WWWドメイン>/healthz
 ```
 - `ok` が返ることを確認
 
-### 5.2 API smoke test
+### 6.2 API smoke test
 ```powershell
 $env:API_BASE = "https://<APIドメイン>"
 .\scripts\test-api.sh
 ```
 
-### 5.3 Extension E2E
+### 6.3 Extension E2E
 1. `https://<WWWドメイン>/v1/auth/google/login` を開き、Web 側で1回ログイン
 2. `chrome://extensions` で拡張をリロード
 3. 拡張 popup の `API Base URL` に `https://<APIドメイン>` を入力
@@ -144,19 +151,19 @@ $env:API_BASE = "https://<APIドメイン>"
 5. 任意のページで `Save Current Tab`
 6. `https://<WWWドメイン>/ui/items` に保存されたことを確認
 
-## 6. 更新デプロイ（PowerShell）
+## 7. 更新デプロイ（PowerShell）
 ```powershell
 git pull
-docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml up -d --build api worker edge
+docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\docker-compose.production.yml up -d --build api worker edge
 ```
 
-## 7. バックアップ（PowerShell）
+## 8. バックアップ（PowerShell）
 ```powershell
-docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' |
+docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\docker-compose.production.yml exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' |
   Set-Content -Encoding UTF8 ".\backup_$(Get-Date -Format yyyy-MM-dd).sql"
 ```
 
-## 8. 重要な運用注意
+## 9. 重要な運用注意
 - `deploy/.env.production` は絶対に Git へコミットしない
 - `POSTGRES_PASSWORD` はローカル値の使い回し禁止
 - DB ポート (`5432`) は本番で外部公開しない
