@@ -17,12 +17,21 @@
 
 > OAuth を使わない場合でも起動は可能ですが、ログイン/保存系APIは利用できません。
 
-## 2. DB起動
+## 2. 本番 compose ファイルをルートへコピー（手順統一）
+運用手順と同じファイル配置にそろえる場合は、以下を実行します。
+
+```bash
+cp deploy/docker-compose.production.yml ./docker-compose.production.yml
+```
+
+> ローカル起動手順では `docker-compose.production.yml` は使いません（通常は `docker-compose.yml` のみ使用）。
+
+## 3. DB起動
 ```bash
 docker compose up -d db
 ```
 
-## 3. マイグレーション適用
+## 4. マイグレーション適用
 **方法A: ホストに `psql` がある場合**
 ```bash
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/001_init.sql
@@ -33,7 +42,7 @@ psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -
 docker compose exec -T db psql -U altpocket -d altpocket < migrations/001_init.sql
 ```
 
-## 4. API / Worker 起動
+## 5. API / Worker 起動
 ```bash
 docker compose up --build api worker
 ```
@@ -42,11 +51,11 @@ docker compose up --build api worker
 - UI: http://localhost:8080/ui/items
 - ヘルスチェック: http://localhost:8080/healthz
 
-## 5. 動作確認
+## 6. 動作確認
 - UIにアクセスし、Googleログインが完了できること
 - `/v1/items` 系APIが使えること
 
-## 6. 停止/クリーンアップ
+## 7. 停止/クリーンアップ
 ```bash
 # 停止
 docker compose down
@@ -55,7 +64,7 @@ docker compose down
 docker compose down -v
 ```
 
-## 7. （任意）Chrome拡張で動作確認
+## 8. （任意）Chrome拡張で動作確認
 1. `extension/popup.js` の `CLIENT_ID` をChrome拡張用のOAuthクライアントIDに置換
 2. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
 3. PopupでAPI Base URLに `http://localhost:8080` を入力
