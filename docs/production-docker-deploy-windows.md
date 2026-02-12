@@ -11,19 +11,34 @@
 
 ## 0. 前提
 - OS: Windows 11 Pro 以降（または Windows Server + Docker Desktop/Engine）
+- PowerShell 7 以上（`pwsh`）を利用できること
 - Docker Desktop をインストール済み（WSL2 backend 有効）
 - ドメインを所有し、`www` と `api` の A レコードを公開IPへ設定済み
 - ルーター/クラウドFW/Windows Defender Firewall で `80/tcp`, `443/tcp` を開放
 
 ## 1. 事前準備（Windows）
-### 1.1 Docker Desktop 設定
+### 1.1 PowerShell 7+ の確認
+Windows 11 の標準シェルは `Windows PowerShell 5.1` の場合があるため、以降の手順は `PowerShell 7+` で実行してください。
+
+```powershell
+$PSVersionTable.PSVersion
+```
+
+- `Major` が `7` 以上ならOK
+- `5` 系の場合は以下で PowerShell 7 をインストールし、`pwsh` で開き直してから作業
+
+```powershell
+winget install --id Microsoft.PowerShell --source winget
+```
+
+### 1.2 Docker Desktop 設定
 1. Docker Desktop を起動
 2. `Settings` > `General`
    - `Use the WSL 2 based engine` を ON
 3. `Settings` > `Resources` > `WSL Integration`
    - 作業する WSL ディストリを ON
 
-### 1.2 Windows Firewall 開放（管理者 PowerShell）
+### 1.3 Windows Firewall 開放（管理者 PowerShell）
 ```powershell
 New-NetFirewallRule -DisplayName "altpocket-http" -Direction Inbound -Protocol TCP -LocalPort 80 -Action Allow
 New-NetFirewallRule -DisplayName "altpocket-https" -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow
@@ -81,7 +96,9 @@ New-NetFirewallRule -DisplayName "altpocket-https" -Direction Inbound -Protocol 
    - `GOOGLE_CLIENT_SECRET`（2.3）
    - `GOOGLE_EXT_CLIENT_ID`（2.4）
 
-## 3. 本番 env ファイル作成（Windows PowerShell）
+## 3. 本番 env ファイル作成（PowerShell 7+）
+> この章以降のコマンドは `pwsh` で実行してください。
+
 リポジトリルートで実行:
 
 ```powershell
@@ -95,7 +112,7 @@ Copy-Item .\deploy\.env.production.example .\deploy\.env.production
 - `SESSION_SECRET` / `JWT_SECRET`
 - `GOOGLE_WEB_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_EXT_CLIENT_ID`
 
-シークレット生成（PowerShell）:
+シークレット生成（PowerShell 7+）:
 
 ```powershell
 $bytes = New-Object byte[] 32
