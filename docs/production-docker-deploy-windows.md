@@ -150,7 +150,13 @@ curl https://<WWWドメイン>/healthz
 ### 5.2 API smoke test
 ```powershell
 $env:API_BASE = "https://<APIドメイン>"
-.\scripts\test-api.sh
+.\scripts\test-api.ps1
+```
+
+実行ポリシーでブロックされる場合:
+```powershell
+$env:API_BASE = "https://<APIドメイン>"
+pwsh -ExecutionPolicy Bypass -File .\scripts\test-api.ps1
 ```
 
 ### 5.3 Extension E2E
