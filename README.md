@@ -68,6 +68,12 @@ node --test extension/popup.test.mjs
 API_BASE=http://localhost:8080 ./scripts/test-api.sh
 ```
 
+PowerShell 7+ (Windows):
+```
+$env:API_BASE = "http://localhost:8080"
+.\scripts\test-api.ps1
+```
+
 詳細は `docs/smoke-test.md` を参照してください。
 
 ## 本番デプロイ（Docker）
