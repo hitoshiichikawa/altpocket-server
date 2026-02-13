@@ -4,8 +4,8 @@ $ErrorActionPreference = "Stop"
 
 $ApiBase = if ([string]::IsNullOrWhiteSpace($env:API_BASE)) { "http://localhost:8080" } else { $env:API_BASE }
 $DbService = if ([string]::IsNullOrWhiteSpace($env:DB_SERVICE)) { "db" } else { $env:DB_SERVICE }
-$DbUser = if ([string]::IsNullOrWhiteSpace($env:DB_USER)) { "altpocket" } else { $env:DB_USER }
-$DbName = if ([string]::IsNullOrWhiteSpace($env:DB_NAME)) { "altpocket" } else { $env:DB_NAME }
+$DbUser = if ([string]::IsNullOrWhiteSpace($env:DB_USER)) { "" } else { $env:DB_USER }
+$DbName = if ([string]::IsNullOrWhiteSpace($env:DB_NAME)) { "" } else { $env:DB_NAME }
 $JwtSecret = if ([string]::IsNullOrWhiteSpace($env:JWT_SECRET)) { "" } else { $env:JWT_SECRET }
 $SmokePrefix = if ([string]::IsNullOrWhiteSpace($env:SMOKE_PREFIX)) { "smoke" } else { $env:SMOKE_PREFIX }
 
@@ -49,13 +49,37 @@ function Invoke-Compose([string[]]$Args) {
 }
 
 function Derive-JwtSecret {
+  $value = Get-ComposeServiceEnvValue -Service "api" -Key "JWT_SECRET"
+  if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+  return "change-me"
+}
+
+function Get-ComposeServiceEnvValue {
+  param(
+    [string]$Service,
+    [string]$Key
+  )
+
   $config = Invoke-Compose @("config")
+  $inService = $false
+
   foreach ($line in $config) {
-    if ($line -match '^\s+JWT_SECRET:\s*(.+)\s*$') {
+    if ($line -match ("^\s{{2}}{0}:\s*$" -f [Regex]::Escape($Service))) {
+      $inService = $true
+      continue
+    }
+
+    if ($inService -and $line -match '^\s{2}[a-zA-Z0-9_-]+:\s*$') {
+      $inService = $false
+      continue
+    }
+
+    if ($inService -and $line -match ("^\s+{0}:\s*(.+)\s*$" -f [Regex]::Escape($Key))) {
       return $Matches[1].Trim('"')
     }
   }
-  return "change-me"
+
+  return ""
 }
 
 function Invoke-PsqlScalar([string]$Sql) {
@@ -110,6 +134,24 @@ if ([string]::IsNullOrWhiteSpace($JwtSecret)) {
   Info "JWT secret was not provided; derived from compose config"
 }
 
+if ([string]::IsNullOrWhiteSpace($DbUser)) {
+  $DbUser = Get-ComposeServiceEnvValue -Service "db" -Key "POSTGRES_USER"
+  if ([string]::IsNullOrWhiteSpace($DbUser)) {
+    $DbUser = "altpocket"
+  } else {
+    Info "DB user was not provided; derived from compose config"
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($DbName)) {
+  $DbName = Get-ComposeServiceEnvValue -Service "db" -Key "POSTGRES_DB"
+  if ([string]::IsNullOrWhiteSpace($DbName)) {
+    $DbName = "altpocket"
+  } else {
+    Info "DB name was not provided; derived from compose config"
+  }
+}
+
 $nonce = "{0}-{1}" -f [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(), ([Guid]::NewGuid().ToString("N"))
 $googleSub = "{0}-sub-{1}" -f $SmokePrefix, $nonce
 $email = "{0}+{1}@example.com" -f $SmokePrefix, $nonce
@@ -148,4 +190,6 @@ $jwt = New-JwtHs256 -Secret $JwtSecret -UserId $userId
   SMOKE_SESSION_ID     = $sessionId
   SMOKE_SESSION_COOKIE = "altpocket_session=$sessionId"
   SMOKE_JWT_TOKEN      = $jwt
+  SMOKE_DB_USER        = $DbUser
+  SMOKE_DB_NAME        = $DbName
 } | ConvertTo-Json -Compress

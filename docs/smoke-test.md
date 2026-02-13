@@ -24,6 +24,13 @@ $env:API_BASE = "http://localhost:8080"
 .\scripts\test-api.ps1
 ```
 
+When you run with non-default compose files or env-file, set `COMPOSE_CMD` as well:
+```bash
+API_BASE=https://<APIドメイン> \
+COMPOSE_CMD='docker compose --env-file deploy/.env.production -f docker-compose.yml -f deploy/docker-compose.production.yml' \
+./scripts/test-api.sh
+```
+
 ## Credential Strategy (implemented)
 `./scripts/get-test-credentials.sh` acquires test credentials without external OAuth dependency:
 - Inserts a temporary test user into PostgreSQL

@@ -95,7 +95,9 @@ curl -i https://<WWWドメイン>/healthz
 サーバー上でリポジトリのルートから実行:
 
 ```bash
-API_BASE=https://<APIドメイン> ./scripts/test-api.sh
+API_BASE=https://<APIドメイン> \
+COMPOSE_CMD='docker compose --env-file deploy/.env.production -f docker-compose.yml -f deploy/docker-compose.production.yml' \
+./scripts/test-api.sh
 ```
 
 ### 5.3 Extension E2E
