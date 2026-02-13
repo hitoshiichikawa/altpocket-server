@@ -7,8 +7,10 @@ $CredentialScript = if ([string]::IsNullOrWhiteSpace($env:CREDENTIAL_SCRIPT)) { 
 $RunRateLimitTest = if ([string]::IsNullOrWhiteSpace($env:RUN_RATE_LIMIT_TEST)) { 1 } else { [int]$env:RUN_RATE_LIMIT_TEST }
 $KeepTestData = if ([string]::IsNullOrWhiteSpace($env:KEEP_TEST_DATA)) { 0 } else { [int]$env:KEEP_TEST_DATA }
 $DbService = if ([string]::IsNullOrWhiteSpace($env:DB_SERVICE)) { "db" } else { $env:DB_SERVICE }
-$DbUser = if ([string]::IsNullOrWhiteSpace($env:DB_USER)) { "altpocket" } else { $env:DB_USER }
-$DbName = if ([string]::IsNullOrWhiteSpace($env:DB_NAME)) { "altpocket" } else { $env:DB_NAME }
+$DbUser = if ([string]::IsNullOrWhiteSpace($env:DB_USER)) { "" } else { $env:DB_USER }
+$DbName = if ([string]::IsNullOrWhiteSpace($env:DB_NAME)) { "" } else { $env:DB_NAME }
+$script:DbUserResolved = if ([string]::IsNullOrWhiteSpace($DbUser)) { "altpocket" } else { $DbUser }
+$script:DbNameResolved = if ([string]::IsNullOrWhiteSpace($DbName)) { "altpocket" } else { $DbName }
 
 $script:ComposeTokens = if ([string]::IsNullOrWhiteSpace($env:COMPOSE_CMD)) {
   @("docker", "compose")
@@ -94,8 +96,8 @@ function Cleanup {
   Invoke-Compose -IgnoreError -Args @(
     "exec", "-T", $DbService,
     "psql",
-    "-U", $DbUser,
-    "-d", $DbName,
+    "-U", $script:DbUserResolved,
+    "-d", $script:DbNameResolved,
     "-c", $cleanupSql
   ) | Out-Null
 }
@@ -145,19 +147,19 @@ function Invoke-ApiRequest {
 
 function Assert-Status([string]$Actual, [string]$Expected, [string]$Label) {
   if ($Actual -ne $Expected) {
-    Fail "$Label: expected $Expected, got $Actual"
+    Fail ("{0}: expected {1}, got {2}" -f $Label, $Expected, $Actual)
   }
 }
 
 function Assert-BodyContains([string]$Needle, [string]$Label) {
   if (-not $script:LastBody.Contains($Needle)) {
-    Fail "$Label: expected body to contain '$Needle'"
+    Fail ("{0}: expected body to contain '{1}'" -f $Label, $Needle)
   }
 }
 
 function Assert-HeaderContains([string]$Needle, [string]$Label) {
   if (-not $script:LastHeadersText.ToLowerInvariant().Contains($Needle.ToLowerInvariant())) {
-    Fail "$Label: expected headers to contain '$Needle'"
+    Fail ("{0}: expected headers to contain '{1}'" -f $Label, $Needle)
   }
 }
 
@@ -207,11 +209,20 @@ function Provision-Credentials {
   $script:SmokeCsrfToken = [string]$credentials.SMOKE_CSRF_TOKEN
   $script:SmokeSessionCookie = [string]$credentials.SMOKE_SESSION_COOKIE
   $script:SmokeJwtToken = [string]$credentials.SMOKE_JWT_TOKEN
+  $credentialDbUser = [string]$credentials.SMOKE_DB_USER
+  $credentialDbName = [string]$credentials.SMOKE_DB_NAME
 
   if ([string]::IsNullOrWhiteSpace($script:SmokeUserId)) { Fail "SMOKE_USER_ID is empty" }
   if ([string]::IsNullOrWhiteSpace($script:SmokeCsrfToken)) { Fail "SMOKE_CSRF_TOKEN is empty" }
   if ([string]::IsNullOrWhiteSpace($script:SmokeSessionCookie)) { Fail "SMOKE_SESSION_COOKIE is empty" }
   if ([string]::IsNullOrWhiteSpace($script:SmokeJwtToken)) { Fail "SMOKE_JWT_TOKEN is empty" }
+
+  if (-not [string]::IsNullOrWhiteSpace($credentialDbUser)) {
+    $script:DbUserResolved = $credentialDbUser
+  }
+  if (-not [string]::IsNullOrWhiteSpace($credentialDbName)) {
+    $script:DbNameResolved = $credentialDbName
+  }
 }
 
 function New-TestUrl([string]$Prefix) {

@@ -6,6 +6,8 @@ COMPOSE_CMD="${COMPOSE_CMD:-docker compose}"
 CREDENTIAL_SCRIPT="${CREDENTIAL_SCRIPT:-./scripts/get-test-credentials.sh}"
 RUN_RATE_LIMIT_TEST="${RUN_RATE_LIMIT_TEST:-1}"
 KEEP_TEST_DATA="${KEEP_TEST_DATA:-0}"
+DB_USER="${DB_USER:-}"
+DB_NAME="${DB_NAME:-}"
 
 TMP_DIR="$(mktemp -d)"
 TMP_BODY="${TMP_DIR}/body"
@@ -19,7 +21,10 @@ cleanup() {
   fi
 
   if [[ -n "${SMOKE_USER_ID:-}" ]]; then
-    $COMPOSE_CMD exec -T db psql -U altpocket -d altpocket -c "DELETE FROM users WHERE id='${SMOKE_USER_ID}'; DELETE FROM tags t WHERE NOT EXISTS (SELECT 1 FROM item_tags it WHERE it.tag_id=t.id);" >/dev/null 2>&1 || true
+    local cleanup_db_user cleanup_db_name
+    cleanup_db_user="${SMOKE_DB_USER:-${DB_USER:-altpocket}}"
+    cleanup_db_name="${SMOKE_DB_NAME:-${DB_NAME:-altpocket}}"
+    $COMPOSE_CMD exec -T db psql -U "$cleanup_db_user" -d "$cleanup_db_name" -c "DELETE FROM users WHERE id='${SMOKE_USER_ID}'; DELETE FROM tags t WHERE NOT EXISTS (SELECT 1 FROM item_tags it WHERE it.tag_id=t.id);" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -117,6 +122,13 @@ provision_credentials() {
   [[ -n "${SMOKE_CSRF_TOKEN:-}" ]] || fail "SMOKE_CSRF_TOKEN is empty"
   [[ -n "${SMOKE_SESSION_COOKIE:-}" ]] || fail "SMOKE_SESSION_COOKIE is empty"
   [[ -n "${SMOKE_JWT_TOKEN:-}" ]] || fail "SMOKE_JWT_TOKEN is empty"
+
+  if [[ -n "${SMOKE_DB_USER:-}" ]]; then
+    DB_USER="$SMOKE_DB_USER"
+  fi
+  if [[ -n "${SMOKE_DB_NAME:-}" ]]; then
+    DB_NAME="$SMOKE_DB_NAME"
+  fi
 }
 
 new_test_url() {

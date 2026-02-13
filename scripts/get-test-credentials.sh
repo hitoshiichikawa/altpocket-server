@@ -4,8 +4,8 @@ set -euo pipefail
 API_BASE="${API_BASE:-http://localhost:8080}"
 COMPOSE_CMD="${COMPOSE_CMD:-docker compose}"
 DB_SERVICE="${DB_SERVICE:-db}"
-DB_USER="${DB_USER:-altpocket}"
-DB_NAME="${DB_NAME:-altpocket}"
+DB_USER="${DB_USER:-}"
+DB_NAME="${DB_NAME:-}"
 JWT_SECRET="${JWT_SECRET:-}"
 SMOKE_PREFIX="${SMOKE_PREFIX:-smoke}"
 
@@ -22,6 +22,27 @@ info() {
 
 b64url() {
   openssl base64 -A | tr '+/' '-_' | tr -d '='
+}
+
+strip_quotes() {
+  local value="$1"
+  value="${value%\"}"
+  value="${value#\"}"
+  printf '%s\n' "$value"
+}
+
+derive_compose_service_env() {
+  local service="$1"
+  local key="$2"
+  local value
+
+  value="$($COMPOSE_CMD config | awk -v service="$service" -v key="$key" '
+    $0 ~ "^  "service":$" { in_service=1; next }
+    in_service && $0 ~ "^  [a-zA-Z0-9_-]+:$" { in_service=0 }
+    in_service && $0 ~ "^      "key":" { print $2; exit }
+  ' || true)"
+
+  strip_quotes "$value"
 }
 
 jwt_hs256() {
@@ -41,11 +62,7 @@ jwt_hs256() {
 
 derive_jwt_secret() {
   local value
-  value="$($COMPOSE_CMD config | awk '
-    /^  api:$/ { in_api=1; next }
-    in_api && /^  [a-zA-Z0-9_-]+:$/ { in_api=0 }
-    in_api && /^      JWT_SECRET:/ { print $2; exit }
-  ' || true)"
+  value="$(derive_compose_service_env api JWT_SECRET)"
 
   if [[ -n "$value" ]]; then
     printf '%s\n' "$value"
@@ -64,6 +81,24 @@ psql_scalar() {
 main() {
   require_cmd curl
   require_cmd openssl
+
+  if [[ -z "$DB_USER" ]]; then
+    DB_USER="$(derive_compose_service_env db POSTGRES_USER)"
+    if [[ -n "$DB_USER" ]]; then
+      info "DB user was not provided; derived from compose config"
+    else
+      DB_USER="altpocket"
+    fi
+  fi
+
+  if [[ -z "$DB_NAME" ]]; then
+    DB_NAME="$(derive_compose_service_env db POSTGRES_DB)"
+    if [[ -n "$DB_NAME" ]]; then
+      info "DB name was not provided; derived from compose config"
+    else
+      DB_NAME="altpocket"
+    fi
+  fi
 
   if [[ -z "$JWT_SECRET" ]]; then
     JWT_SECRET="$(derive_jwt_secret)"
@@ -104,6 +139,8 @@ main() {
   printf 'SMOKE_SESSION_ID=%q\n' "$session_id"
   printf 'SMOKE_SESSION_COOKIE=%q\n' "altpocket_session=${session_id}"
   printf 'SMOKE_JWT_TOKEN=%q\n' "$jwt"
+  printf 'SMOKE_DB_USER=%q\n' "$DB_USER"
+  printf 'SMOKE_DB_NAME=%q\n' "$DB_NAME"
 }
 
 main

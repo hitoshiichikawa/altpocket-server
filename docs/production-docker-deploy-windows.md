@@ -150,12 +150,14 @@ curl https://<WWWドメイン>/healthz
 ### 5.2 API smoke test
 ```powershell
 $env:API_BASE = "https://<APIドメイン>"
+$env:COMPOSE_CMD = "docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml"
 .\scripts\test-api.ps1
 ```
 
 実行ポリシーでブロックされる場合:
 ```powershell
 $env:API_BASE = "https://<APIドメイン>"
+$env:COMPOSE_CMD = "docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml"
 pwsh -ExecutionPolicy Bypass -File .\scripts\test-api.ps1
 ```
 
