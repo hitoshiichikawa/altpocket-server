@@ -18,12 +18,27 @@ docker compose up --build -d api worker
 API_BASE=http://localhost:8080 ./scripts/test-api.sh
 ```
 
+Windows (PowerShell 7+):
+```powershell
+$env:API_BASE = "http://localhost:8080"
+.\scripts\test-api.ps1
+```
+
+When you run with non-default compose files or env-file, set `COMPOSE_CMD` as well:
+```bash
+API_BASE=https://<APIドメイン> \
+COMPOSE_CMD='docker compose --env-file deploy/.env.production -f docker-compose.yml -f deploy/docker-compose.production.yml' \
+./scripts/test-api.sh
+```
+
 ## Credential Strategy (implemented)
 `./scripts/get-test-credentials.sh` acquires test credentials without external OAuth dependency:
 - Inserts a temporary test user into PostgreSQL
 - Creates a temporary web session (`altpocket_session`) + CSRF token
 - Issues an HS256 JWT for the same user (uses `JWT_SECRET`; derives from `docker compose config` when not explicitly set)
 - Exports shell variables used by `./scripts/test-api.sh`
+
+PowerShell variant uses `./scripts/get-test-credentials.ps1` and `./scripts/test-api.ps1`.
 
 The smoke test uses both auth paths:
 - Session cookie + CSRF header

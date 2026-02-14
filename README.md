@@ -11,6 +11,9 @@ Pocket互換の「あとで読む」サービス。Chrome ExtensionでURL+タグ
 
 ## 必須環境変数
 ```
+POSTGRES_USER=altpocket
+POSTGRES_PASSWORD=altpocket
+POSTGRES_DB=altpocket
 DATABASE_URL=postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable
 PUBLIC_BASE_URL=http://localhost:8080
 SESSION_SECRET=change-me
@@ -55,12 +58,27 @@ Web UI: http://localhost:8080/ui/items
 go test ./...
 ```
 
+## Extensionテスト
+```
+node --test extension/popup.test.mjs
+```
+
 ## APIスモークテスト
 ```
 API_BASE=http://localhost:8080 ./scripts/test-api.sh
 ```
 
+PowerShell 7+ (Windows):
+```
+$env:API_BASE = "http://localhost:8080"
+.\scripts\test-api.ps1
+```
+
 詳細は `docs/smoke-test.md` を参照してください。
+
+## 本番デプロイ（Docker）
+- Linux向け: `docs/production-docker-deploy.md`
+- Windows向け: `docs/production-docker-deploy-windows.md`
 
 ## セキュリティ/運用メモ
 - JWT署名キー/セッションシークレットは必ず環境変数で管理
