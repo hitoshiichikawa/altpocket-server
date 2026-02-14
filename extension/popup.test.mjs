@@ -64,11 +64,15 @@ class FakeElement {
 }
 
 function jsonResponse(status, body) {
+  const asText = typeof body === 'string' ? body : JSON.stringify(body);
   return {
     ok: status >= 200 && status < 300,
     status,
     async json() {
       return body;
+    },
+    async text() {
+      return asText;
     },
   };
 }
@@ -95,6 +99,7 @@ function createFetchMock(handlers) {
 function createChromeMock({
   storageData = {},
   launchWebAuthFlowResult = 'https://redirect.local/#id_token=test-id-token',
+  launchWebAuthFlowError = null,
   tabURL = 'https://example.com/current',
 } = {}) {
   const data = { ...storageData };
@@ -108,6 +113,9 @@ function createChromeMock({
       },
       async launchWebAuthFlow(args) {
         identityCalls.push(args);
+        if (launchWebAuthFlowError) {
+          throw launchWebAuthFlowError;
+        }
         return launchWebAuthFlowResult;
       },
     },
@@ -207,6 +215,7 @@ test('login requires API base URL', async () => {
 
   assert.equal(env.elements.status.textContent, 'Set API Base URL');
   assert.equal(env.fetchCalls.length, 0);
+  assert.equal(env.elements.status.className, 'status status-error');
 });
 
 test('login exchanges id token and stores API token', async () => {
@@ -225,6 +234,7 @@ test('login exchanges id token and stores API token', async () => {
   assert.equal(payload.id_token, 'test-id-token');
 
   assert.equal(env.elements.status.textContent, 'Logged in');
+  assert.equal(env.elements.status.className, 'status status-success');
   assert.equal(env.storageSetCalls.length, 1);
   assert.equal(env.storageSetCalls[0].apiBase, 'https://api.example.test');
   assert.equal(env.storageSetCalls[0].token, 'jwt-token');
@@ -238,6 +248,7 @@ test('save requires login token', async () => {
   await env.elements.save.click();
 
   assert.equal(env.elements.status.textContent, 'Login required');
+  assert.equal(env.elements.status.className, 'status status-error');
   assert.equal(env.fetchCalls.length, 0);
 });
 
@@ -266,6 +277,49 @@ test('save current tab sends bearer token and tags', async () => {
   assert.deepEqual(payload.tags, ['go']);
 
   assert.equal(env.elements.status.textContent, 'Saved');
+  assert.equal(env.elements.status.className, 'status status-success');
+});
+
+test('login surfaces exchange network errors', async () => {
+  const env = await loadPopupScript({
+    fetchHandlers: [() => {
+      throw new Error('connect ECONNREFUSED');
+    }],
+  });
+
+  env.elements.apiBase.value = 'https://api.example.test';
+  await env.elements.login.click();
+
+  assert.equal(env.fetchCalls.length, 1);
+  assert.equal(env.elements.status.className, 'status status-error');
+  assert.match(env.elements.status.textContent, /^Exchange request failed:/);
+});
+
+test('login surfaces user_not_registered from exchange', async () => {
+  const env = await loadPopupScript({
+    fetchHandlers: [jsonResponse(403, { error: 'user_not_registered' })],
+  });
+
+  env.elements.apiBase.value = 'https://api.example.test';
+  await env.elements.login.click();
+
+  assert.equal(env.elements.status.className, 'status status-error');
+  assert.equal(env.elements.status.textContent, 'Account is not registered on this server');
+});
+
+test('save surfaces API error payload', async () => {
+  const env = await loadPopupScript({
+    storageData: {
+      apiBase: 'https://api.example.test',
+      token: 'stored-token',
+    },
+    fetchHandlers: [jsonResponse(429, { error: 'rate_limited' })],
+  });
+
+  await env.elements.save.click();
+
+  assert.equal(env.elements.status.className, 'status status-error');
+  assert.equal(env.elements.status.textContent, 'rate_limited');
 });
 
 test('tag suggestions fetch and click-to-add work', async () => {
