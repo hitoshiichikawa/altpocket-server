@@ -13,11 +13,12 @@ type Session struct {
 }
 
 func (s *Store) CreateSession(ctx context.Context, userID, csrfToken string, ttl time.Duration) (Session, error) {
+	ttlSeconds := int64(ttl.Seconds())
 	row := s.DB.QueryRow(ctx, `
 		INSERT INTO sessions (user_id, csrf_token, expires_at)
-		VALUES ($1, $2, NOW() + ($3 || ' seconds')::interval)
+		VALUES ($1, $2, NOW() + ($3::bigint * INTERVAL '1 second'))
 		RETURNING id, user_id, csrf_token, expires_at
-	`, userID, csrfToken, int(ttl.Seconds()))
+	`, userID, csrfToken, ttlSeconds)
 	var sess Session
 	if err := row.Scan(&sess.ID, &sess.UserID, &sess.CSRFToken, &sess.ExpiresAt); err != nil {
 		return Session{}, err
