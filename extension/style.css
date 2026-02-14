@@ -39,6 +39,20 @@ button {
   margin-bottom: 8px;
 }
 
+.status-info {
+  color: #333;
+}
+
+.status-success {
+  color: #2e7d32;
+  font-weight: 600;
+}
+
+.status-error {
+  color: #b71c1c;
+  font-weight: 600;
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
