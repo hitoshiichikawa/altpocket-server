@@ -58,18 +58,12 @@ func IssueJWT(secret, userID string, ttl time.Duration) (string, int64, error) {
 }
 
 func ParseJWT(secret, tokenString string) (string, error) {
-	parsed, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("unexpected signing method")
-		}
+	claims := jwt.MapClaims{}
+	parsed, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 		return []byte(secret), nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 	if err != nil || !parsed.Valid {
 		return "", errors.New("invalid token")
-	}
-	claims, ok := parsed.Claims.(jwt.MapClaims)
-	if !ok {
-		return "", errors.New("invalid claims")
 	}
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
