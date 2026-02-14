@@ -70,6 +70,14 @@ button {
   cursor: pointer;
 }
 
+.action-link {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  text-decoration: none;
+}
+
 button.delete { color: var(--danger); }
 
 .detail {
