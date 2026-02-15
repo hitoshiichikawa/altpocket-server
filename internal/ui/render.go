@@ -5,18 +5,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"time"
+	"runtime/debug"
 )
 
 type Renderer struct {
 	templates map[string]*template.Template
 }
 
+// BuildRevision can be injected at build time via -ldflags.
+var BuildRevision = "dev"
+
 func New(templateDir string) (*Renderer, error) {
-	assetVersion := os.Getenv("ASSET_VERSION")
-	if assetVersion == "" {
-		assetVersion = time.Now().UTC().Format("20060102150405")
-	}
+	assetVersion := resolveAssetVersion()
 
 	funcMap := template.FuncMap{
 		"assetVersion": func() string {
@@ -46,6 +46,23 @@ func New(templateDir string) (*Renderer, error) {
 		"detail":    detailTpl,
 		"quick_add": quickAddTpl,
 	}}, nil
+}
+
+func resolveAssetVersion() string {
+	if v := os.Getenv("ASSET_VERSION"); v != "" {
+		return v
+	}
+	if BuildRevision != "" && BuildRevision != "dev" {
+		return BuildRevision
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && setting.Value != "" {
+				return setting.Value
+			}
+		}
+	}
+	return "dev"
 }
 
 func (r *Renderer) Render(w http.ResponseWriter, name string, data any) error {

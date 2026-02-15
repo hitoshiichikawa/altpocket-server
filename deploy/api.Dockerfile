@@ -1,12 +1,9 @@
 FROM golang:1.22-bookworm AS build
 WORKDIR /app
-COPY go.mod go.sum ./
-COPY cmd ./cmd
-COPY internal ./internal
-COPY templates ./templates
-COPY static ./static
+COPY . .
 RUN go mod download
-RUN go build -o /out/api ./cmd/api
+RUN GIT_SHA=$(git rev-parse --short=12 HEAD 2>/dev/null || echo dev) && \
+    go build -ldflags "-X altpocket/internal/ui.BuildRevision=${GIT_SHA}" -o /out/api ./cmd/api
 
 FROM gcr.io/distroless/base-debian12
 WORKDIR /app
