@@ -63,6 +63,20 @@ body {
 
 .search-form { display: grid; gap: 8px; }
 
+.actions button,
+.action-button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 button {
   padding: 6px 10px;
   border: 1px solid var(--border);
