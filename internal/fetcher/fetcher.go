@@ -69,7 +69,7 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) (Result, error) {
 		return Result{}, err
 	}
 	if int64(len(buf)) > f.MaxBytes {
-		return Result{}, ErrTooLarge
+		buf = buf[:f.MaxBytes]
 	}
 
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(buf))
