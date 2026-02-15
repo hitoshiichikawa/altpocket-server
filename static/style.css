@@ -102,6 +102,42 @@ body {
   font: inherit;
 }
 
+#quick-add-tag-input {
+  width: 100%;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #e7edf4;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.tag-chip button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.tag-editor-suggestions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tag-editor-suggestions button {
+  border: 1px solid var(--border);
+  background: #fff;
+  padding: 4px 8px;
+  font: inherit;
+}
+
 .actions button,
 .action-button {
   padding: 6px 10px;
