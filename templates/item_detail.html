@@ -10,12 +10,22 @@
     {{if .Item.FetchError}}
       <div class="error">{{.Item.FetchError}}</div>
     {{end}}
-    <div class="tags">
+    <div class="tags" id="detail-tags">
       {{range .Item.Tags}}
         <span class="chip">{{.Name}}</span>
       {{end}}
     </div>
+    <div class="tag-editor" id="detail-tag-editor" data-item-id="{{.Item.ID}}" hidden>
+      <div id="detail-tag-chips" class="tags"></div>
+      <input id="detail-tag-input" type="text" autocomplete="off" placeholder="Type tag then press Enter, comma, or Tab">
+      <ul id="detail-tag-suggestions" class="tag-editor-dropdown" hidden></ul>
+      <div class="actions tag-editor-actions">
+        <button type="button" id="detail-tag-save">Save tags</button>
+        <button type="button" id="detail-tag-cancel" class="action-button">Cancel</button>
+      </div>
+    </div>
     <div class="actions">
+      <button type="button" class="edit-tags" data-item-id="{{.Item.ID}}">Edit tags</button>
       <button class="refetch" data-item-id="{{.Item.ID}}">Refetch</button>
       <button class="delete" data-item-id="{{.Item.ID}}">Delete</button>
       <a class="back" href="/ui/items">Back</a>

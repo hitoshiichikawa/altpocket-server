@@ -349,6 +349,87 @@ func (s *Store) RequestRefetch(ctx context.Context, userID, itemID string) error
 	return nil
 }
 
+func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagNames []string) ([]Tag, error) {
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	var existingItemID string
+	if err = tx.QueryRow(ctx, `SELECT id FROM items WHERE id=$1 AND user_id=$2`, itemID, userID).Scan(&existingItemID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, pgx.ErrNoRows
+		}
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx, `DELETE FROM item_tags WHERE item_id=$1`, itemID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, name := range tagNames {
+		var tagID string
+		if err = tx.QueryRow(ctx, `
+			INSERT INTO tags (name, normalized_name)
+			VALUES ($1, $2)
+			ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
+			RETURNING id
+		`, name, name).Scan(&tagID); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO item_tags (item_id, tag_id)
+			VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+		`, itemID, tagID); err != nil {
+			return nil, err
+		}
+	}
+
+	_, err = tx.Exec(ctx, `
+		DELETE FROM tags t
+		WHERE NOT EXISTS (SELECT 1 FROM item_tags it WHERE it.tag_id=t.id)
+	`)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT t.id, t.name, t.normalized_name
+		FROM tags t
+		JOIN item_tags it ON it.tag_id=t.id
+		WHERE it.item_id=$1
+		ORDER BY t.normalized_name
+	`, itemID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tags := []Tag{}
+	for rows.Next() {
+		var t Tag
+		if err = rows.Scan(&t.ID, &t.Name, &t.NormalizedName); err != nil {
+			return nil, err
+		}
+		tags = append(tags, t)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return tags, nil
+}
+
 func (s *Store) SuggestTags(ctx context.Context, q string) ([]Tag, error) {
 	rows, err := s.DB.Query(ctx, `
 		SELECT id, name, normalized_name FROM tags
