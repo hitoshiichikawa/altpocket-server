@@ -27,6 +27,9 @@
   </aside>
 
   <section class="items">
+    {{if .QuickAddNotice}}
+      <div class="notice">{{.QuickAddNotice}}</div>
+    {{end}}
     {{if not .Items}}
       <div class="empty">No items yet.</div>
     {{end}}
@@ -47,6 +50,7 @@
         </div>
         <div class="actions">
           <button class="refetch" data-item-id="{{.ID}}">Refetch</button>
+          <a class="action-button" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Original</a>
           <button class="delete" data-item-id="{{.ID}}">Delete</button>
         </div>
       </article>

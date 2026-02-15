@@ -1,0 +1,9 @@
+{$WWW_HOSTNAME} {
+  encode gzip zstd
+  reverse_proxy api:8080
+}
+
+{$API_HOSTNAME} {
+  encode gzip zstd
+  reverse_proxy api:8080
+}
