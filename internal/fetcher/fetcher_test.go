@@ -121,8 +121,10 @@ func TestFetchBadStatus(t *testing.T) {
 	}
 }
 
-func TestFetchTooLarge(t *testing.T) {
-	large := strings.Repeat("a", 2000)
+func TestFetchTruncatesOversizedResponse(t *testing.T) {
+	large := "<html><head><title>Big</title></head><body><p>" +
+		strings.Repeat("a", 2000) +
+		"</p><p>tail-marker</p></body></html>"
 	client := &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{
@@ -132,11 +134,20 @@ func TestFetchTooLarge(t *testing.T) {
 			}, nil
 		}),
 	}
-	f := New(100, 1024, 512)
+	f := New(120, 1024, 512)
 	f.Client = client
-	_, err := f.Fetch(context.Background(), "http://example.com/large")
-	if err != ErrTooLarge {
-		t.Fatalf("expected ErrTooLarge, got %v", err)
+	parsed, err := f.Fetch(context.Background(), "http://example.com/large")
+	if err != nil {
+		t.Fatalf("expected oversized response to be truncated, got error: %v", err)
+	}
+	if parsed.Title != "Big" {
+		t.Fatalf("title mismatch: %s", parsed.Title)
+	}
+	if parsed.ContentBytes == 0 {
+		t.Fatalf("expected non-empty content after truncation")
+	}
+	if strings.Contains(parsed.ContentFull, "tail-marker") {
+		t.Fatalf("expected tail content to be truncated, got %q", parsed.ContentFull)
 	}
 }
 
