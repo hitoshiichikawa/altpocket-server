@@ -3,28 +3,41 @@ package ui
 import (
 	"html/template"
 	"net/http"
+	"os"
 	"path/filepath"
+	"runtime/debug"
 )
 
 type Renderer struct {
 	templates map[string]*template.Template
 }
 
+// BuildRevision can be injected at build time via -ldflags.
+var BuildRevision = "dev"
+
 func New(templateDir string) (*Renderer, error) {
+	assetVersion := resolveAssetVersion()
+
+	funcMap := template.FuncMap{
+		"assetVersion": func() string {
+			return assetVersion
+		},
+	}
+
 	layout := filepath.Join(templateDir, "layout.html")
 	items := filepath.Join(templateDir, "items.html")
 	detail := filepath.Join(templateDir, "item_detail.html")
 	quickAdd := filepath.Join(templateDir, "quick_add.html")
 
-	itemsTpl, err := template.ParseFiles(layout, items)
+	itemsTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, items)
 	if err != nil {
 		return nil, err
 	}
-	detailTpl, err := template.ParseFiles(layout, detail)
+	detailTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, detail)
 	if err != nil {
 		return nil, err
 	}
-	quickAddTpl, err := template.ParseFiles(layout, quickAdd)
+	quickAddTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, quickAdd)
 	if err != nil {
 		return nil, err
 	}
@@ -33,6 +46,23 @@ func New(templateDir string) (*Renderer, error) {
 		"detail":    detailTpl,
 		"quick_add": quickAddTpl,
 	}}, nil
+}
+
+func resolveAssetVersion() string {
+	if v := os.Getenv("ASSET_VERSION"); v != "" {
+		return v
+	}
+	if BuildRevision != "" && BuildRevision != "dev" {
+		return BuildRevision
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && setting.Value != "" {
+				return setting.Value
+			}
+		}
+	}
+	return "dev"
 }
 
 func (r *Renderer) Render(w http.ResponseWriter, name string, data any) error {

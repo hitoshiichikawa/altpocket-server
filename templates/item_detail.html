@@ -1,41 +1,48 @@
 {{define "content"}}
-<section class="detail">
-  <div class="detail-header">
-    <h2>{{.Item.Title}}</h2>
-    <div class="detail-meta">
-      <a href="{{.Item.URL}}" target="_blank">Open original</a>
-      <span class="status">{{.Item.FetchStatus}}</span>
-      <span>{{.Item.CreatedAt.Format "2006-01-02 15:04"}}</span>
-    </div>
+<section class="detail-layout">
+  <article class="card detail-card">
+    <header class="detail-header">
+      <h1>{{.Item.Title}}</h1>
+      <div class="detail-meta">
+        <a class="btn-secondary" href="{{.Item.URL}}" target="_blank" rel="noopener noreferrer">Open original</a>
+        <span class="status-pill">{{.Item.FetchStatus}}</span>
+        <span>{{.Item.CreatedAt.Format "2006-01-02 15:04"}}</span>
+      </div>
+    </header>
+
     {{if .Item.FetchError}}
       <div class="error">{{.Item.FetchError}}</div>
     {{end}}
+
     <div class="tags" id="detail-tags">
       {{range .Item.Tags}}
-        <span class="chip">{{.Name}}</span>
+        <span class="tag">{{.Name}}</span>
       {{end}}
     </div>
+
     <div class="tag-editor" id="detail-tag-editor" data-item-id="{{.Item.ID}}" hidden>
       <div id="detail-tag-chips" class="tags"></div>
-      <input id="detail-tag-input" type="text" autocomplete="off" placeholder="Type tag then press Enter, comma, or Tab">
+      <input id="detail-tag-input" class="input" type="text" autocomplete="off" placeholder="Type tag then press Enter, comma, or Tab">
       <ul id="detail-tag-suggestions" class="tag-editor-dropdown" hidden></ul>
       <div class="actions tag-editor-actions">
-        <button type="button" id="detail-tag-save">Save tags</button>
-        <button type="button" id="detail-tag-cancel" class="action-button">Cancel</button>
+        <button type="button" id="detail-tag-save" class="btn-primary">Save tags</button>
+        <button type="button" id="detail-tag-cancel" class="btn-secondary">Cancel</button>
       </div>
     </div>
-    <div class="actions">
-      <button type="button" class="edit-tags" data-item-id="{{.Item.ID}}">Edit tags</button>
-      <button class="refetch" data-item-id="{{.Item.ID}}">Refetch</button>
-      <button class="delete" data-item-id="{{.Item.ID}}">Delete</button>
-      <a class="back" href="/ui/items">Back</a>
+
+    <div class="item-actions">
+      <button type="button" class="btn-secondary edit-tags" data-item-id="{{.Item.ID}}">Edit tags</button>
+      <button type="button" class="btn-secondary refetch" data-item-id="{{.Item.ID}}">Refetch</button>
+      <button type="button" class="btn-secondary delete" data-item-id="{{.Item.ID}}">Delete</button>
+      <a class="btn-secondary" href="/ui/items">Back</a>
     </div>
-  </div>
-  <article class="content">
+  </article>
+
+  <article class="card article-card">
     {{if .Item.ContentFull}}
       <pre>{{.Item.ContentFull}}</pre>
     {{else}}
-      <div class="empty">Content not fetched yet.</div>
+      <div class="empty-state">Content not fetched yet.</div>
     {{end}}
   </article>
 </section>

@@ -3,9 +3,21 @@
   "name": "altpocket",
   "version": "0.1.0",
   "description": "Pocket-compatible read-it-later saver",
+  "icons": {
+    "16": "assets/icon16.png",
+    "32": "assets/icon32.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
   "permissions": ["identity", "storage", "tabs", "activeTab"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "32": "assets/icon32.png",
+      "48": "assets/icon48.png",
+      "128": "assets/icon128.png"
+    }
   }
 }
