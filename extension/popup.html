@@ -1,30 +1,46 @@
 <!doctype html>
-<html>
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="popup.css">
   <title>altpocket</title>
 </head>
 <body>
-  <div class="container">
-    <h1>altpocket</h1>
-    <label>
-      API Base URL
-      <input id="apiBase" type="text" placeholder="http://localhost:8080">
-    </label>
-    <button id="login">Login with Google</button>
-    <div id="status" class="status status-info" role="alert" aria-live="polite"></div>
+  <main class="popup">
+    <header class="popup-header">
+      <div class="brand-wrap">
+        <div class="brand-logo" aria-hidden="true">a</div>
+        <div class="brand-copy">
+          <div class="brand-title">altpocket</div>
+          <div class="brand-subtitle">Save, tag, revisit</div>
+        </div>
+      </div>
+      <div id="status" class="status status-info" role="alert" aria-live="polite">Not logged in</div>
+    </header>
 
-    <label>
-      Tags
-      <input id="tagInput" type="text" placeholder="tag1, tag2">
-    </label>
-    <div id="suggestions" class="suggestions"></div>
-    <div id="tags" class="chips"></div>
+    <button id="save" class="btn btn-primary" type="button">Save current tab</button>
 
-    <button id="save">Save Current Tab</button>
-  </div>
+    <section class="section" aria-labelledby="tag-label">
+      <div id="tag-label" class="label">Tags</div>
+      <input id="tagInput" class="input" type="text" placeholder="Type tag and press Enter">
+      <div id="suggestions" class="suggestions"></div>
+      <div id="tags" class="chips"></div>
+    </section>
+
+    <details class="settings">
+      <summary>Settings</summary>
+      <div class="settings-body">
+        <label class="field" for="apiBase">
+          <span class="label">API Base URL</span>
+          <input id="apiBase" class="input" type="text" placeholder="https://api.example.com">
+        </label>
+        <button id="login" class="btn btn-secondary" type="button">Sign in with Google</button>
+      </div>
+    </details>
+
+    <button id="openWebUI" class="btn btn-ghost" type="button">Open Web App</button>
+  </main>
   <script src="popup.js"></script>
 </body>
 </html>

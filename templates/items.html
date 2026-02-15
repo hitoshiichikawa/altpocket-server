@@ -1,68 +1,87 @@
 {{define "content"}}
-<section class="split">
-  <aside class="sidebar">
-    <form method="get" action="/ui/items" class="search-form">
-      <input type="text" name="q" placeholder="Search" value="{{.Query}}">
-      <select name="sort">
-        <option value="newest" {{if eq .Sort "newest"}}selected{{end}}>Newest</option>
-        <option value="relevance" {{if eq .Sort "relevance"}}selected{{end}}>Relevance</option>
-      </select>
-      <select name="per_page">
-        {{range .PerPageOptions}}
-          <option value="{{.}}" {{if eq $.PerPage .}}selected{{end}}>{{.}}/page</option>
-        {{end}}
-      </select>
-      <button type="submit">Apply</button>
-    </form>
-
+<section class="page-grid">
+  <aside class="card filter-panel">
+    <div class="panel-title">Filters</div>
     <div class="tag-list">
       <div class="tag-title">Tags</div>
       <ul>
-        <li><a href="/ui/items">All</a></li>
+        <li><a href="/ui/items">All items</a></li>
         {{range .Tags}}
-          <li><a href="/ui/items?tag={{.NormalizedName}}">{{.Name}} ({{.Count}})</a></li>
+          <li><a href="/ui/items?tag={{.NormalizedName}}">{{.Name}} <span class="muted">({{.Count}})</span></a></li>
         {{end}}
       </ul>
     </div>
   </aside>
 
-  <section class="items">
+  <section class="content-column">
+    <form method="get" action="/ui/items" class="card search-form">
+      <label class="field">
+        <span class="field-label">Search</span>
+        <input class="input" type="text" name="q" placeholder="Search title, excerpt, URL, tags" value="{{.Query}}">
+      </label>
+      <div class="search-form-row">
+        <label class="field">
+          <span class="field-label">Sort</span>
+          <select class="input" name="sort">
+            <option value="newest" {{if eq .Sort "newest"}}selected{{end}}>Newest</option>
+            <option value="relevance" {{if eq .Sort "relevance"}}selected{{end}}>Relevance</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">Per Page</span>
+          <select class="input" name="per_page">
+            {{range .PerPageOptions}}
+              <option value="{{.}}" {{if eq $.PerPage .}}selected{{end}}>{{.}} / page</option>
+            {{end}}
+          </select>
+        </label>
+        <button type="submit" class="btn-primary">Apply</button>
+      </div>
+    </form>
+
     {{if .QuickAddNotice}}
       <div class="notice">{{.QuickAddNotice}}</div>
     {{end}}
+
     {{if not .Items}}
-      <div class="empty">No items yet.</div>
-    {{end}}
-    {{range .Items}}
-      <article class="tile {{if eq .FetchStatus "failed"}}failed{{end}}">
-        <a class="tile-link" href="/ui/items/{{.ID}}">
-          <h3>{{.Title}}</h3>
-          <p>{{.Excerpt}}</p>
-        </a>
-        <div class="meta">
-          <span class="status">{{.FetchStatus}}</span>
-          <span class="date">{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
-        </div>
-        <div class="tags">
-          {{range .Tags}}
-            <span class="chip">{{.Name}}</span>
-          {{end}}
-        </div>
-        <div class="actions">
-          <button class="refetch" data-item-id="{{.ID}}">Refetch</button>
-          <a class="action-button" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Original</a>
-          <button class="delete" data-item-id="{{.ID}}">Delete</button>
-        </div>
-      </article>
+      <div class="card empty-state">No items yet. Save a page from the extension or Quick Add.</div>
     {{end}}
 
-    <div class="pagination">
+    <div class="items-grid">
+      {{range .Items}}
+        <article class="card item-card {{if eq .FetchStatus "failed"}}failed{{end}}">
+          <a class="tile-link" href="/ui/items/{{.ID}}">
+            <h3>{{.Title}}</h3>
+            <p class="excerpt-clamp">{{.Excerpt}}</p>
+          </a>
+
+          <div class="item-meta">
+            <span class="status-pill">{{.FetchStatus}}</span>
+            <span>{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
+          </div>
+
+          <div class="tags">
+            {{range .Tags}}
+              <span class="tag">{{.Name}}</span>
+            {{end}}
+          </div>
+
+          <div class="item-actions">
+            <a class="btn-secondary" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Original</a>
+            <button type="button" class="btn-secondary refetch" data-item-id="{{.ID}}">Refetch</button>
+            <button type="button" class="btn-secondary delete" data-item-id="{{.ID}}">Delete</button>
+          </div>
+        </article>
+      {{end}}
+    </div>
+
+    <div class="card pagination">
       {{if gt .Page 1}}
-        <a href="{{.PrevURL}}">Prev</a>
+        <a class="btn-secondary" href="{{.PrevURL}}">Prev</a>
       {{end}}
       <span>Page {{.Page}} / {{.TotalPages}}</span>
       {{if lt .Page .TotalPages}}
-        <a href="{{.NextURL}}">Next</a>
+        <a class="btn-secondary" href="{{.NextURL}}">Next</a>
       {{end}}
     </div>
   </section>

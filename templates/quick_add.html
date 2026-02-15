@@ -1,37 +1,39 @@
 {{define "content"}}
-<section class="detail quick-add">
-  <h2>Quick Add</h2>
-  <p class="muted">Use this page to confirm and save a link sent by bookmarklet.</p>
+<section class="quick-add-shell">
+  <article class="card quick-add-card">
+    <h1>Quick Add</h1>
+    <p class="muted">Confirm the page details, add tags, and save to your library.</p>
 
-  {{if .Error}}
-    <div class="error">{{.Error}}</div>
-  {{end}}
+    {{if .Error}}
+      <div class="error">{{.Error}}</div>
+    {{end}}
 
-  <form method="post" action="/ui/quick-add" class="quick-add-form">
-    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <form method="post" action="/ui/quick-add" class="quick-add-form">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
 
-    <div class="quick-add-field">
-      <label for="quick-add-url">URL</label>
-      <input id="quick-add-url" type="url" name="url" required value="{{.URL}}" placeholder="https://example.com/article">
-    </div>
+      <label class="field" for="quick-add-url">
+        <span class="field-label">URL</span>
+        <input id="quick-add-url" class="input" type="url" name="url" required value="{{.URL}}" placeholder="https://example.com/article">
+      </label>
 
-    <div class="quick-add-field">
-      <label for="quick-add-title">Title (optional)</label>
-      <input id="quick-add-title" type="text" name="title" value="{{.SourceTitle}}" placeholder="Page title">
-    </div>
+      <label class="field" for="quick-add-title">
+        <span class="field-label">Title (optional)</span>
+        <input id="quick-add-title" class="input" type="text" name="title" value="{{.SourceTitle}}" placeholder="Page title">
+      </label>
 
-    <div class="quick-add-field">
-      <label for="quick-add-tag-input">Tags</label>
-      <input id="quick-add-tags-value" type="hidden" name="tags" value="{{.Tags}}">
-      <div id="quick-add-tags" class="tags"></div>
-      <input id="quick-add-tag-input" type="text" placeholder="Type tag then press Enter or comma">
-      <div id="quick-add-suggestions" class="tag-editor-suggestions"></div>
-    </div>
+      <div class="field">
+        <span class="field-label">Tags</span>
+        <input id="quick-add-tags-value" type="hidden" name="tags" value="{{.Tags}}">
+        <div id="quick-add-tags" class="tags"></div>
+        <input id="quick-add-tag-input" class="input" type="text" autocomplete="off" placeholder="Type tag then press Enter or comma">
+        <div id="quick-add-suggestions" class="tag-editor-suggestions"></div>
+      </div>
 
-    <div class="actions quick-add-actions">
-      <button type="submit">Save</button>
-      <a class="action-button" href="/ui/items">Cancel</a>
-    </div>
-  </form>
+      <div class="quick-add-actions">
+        <button type="submit" class="btn-primary">Save</button>
+        <a class="btn-secondary" href="/ui/items">Cancel</a>
+      </div>
+    </form>
+  </article>
 </section>
 {{end}}

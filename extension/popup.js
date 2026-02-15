@@ -3,6 +3,7 @@ const CLIENT_ID = 'YOUR_EXTENSION_CLIENT_ID';
 const apiBaseInput = document.getElementById('apiBase');
 const loginBtn = document.getElementById('login');
 const saveBtn = document.getElementById('save');
+const openWebUIBtn = document.getElementById('openWebUI');
 const statusEl = document.getElementById('status');
 const tagInput = document.getElementById('tagInput');
 const tagsEl = document.getElementById('tags');
@@ -216,9 +217,31 @@ async function saveCurrentTab() {
   }
 }
 
+async function openWebUI() {
+  const apiBase = normalizeAPIBase(apiBaseInput.value);
+  if (!apiBase) {
+    setError('Set API Base URL');
+    return;
+  }
+  apiBaseInput.value = apiBase;
+  const webURL = `${apiBase}/ui/items`;
+  try {
+    if (chrome.tabs && typeof chrome.tabs.create === 'function') {
+      await chrome.tabs.create({ url: webURL });
+      return;
+    }
+    window.open(webURL, '_blank', 'noopener,noreferrer');
+  } catch (err) {
+    setError(`Failed to open Web App: ${errorMessage(err, 'unexpected error')}`);
+  }
+}
+
 loginBtn.addEventListener('click', () => login());
 
 saveBtn.addEventListener('click', () => saveCurrentTab());
+if (openWebUIBtn) {
+  openWebUIBtn.addEventListener('click', () => openWebUI());
+}
 
 tagInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' || e.key === ',') {
