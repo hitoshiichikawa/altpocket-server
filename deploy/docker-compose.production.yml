@@ -1,0 +1,56 @@
+services:
+  db:
+    restart: unless-stopped
+    ports: []
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+  api:
+    restart: unless-stopped
+    ports: []
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      HTTP_ADDR: ":8080"
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_EXT_CLIENT_ID: ${GOOGLE_EXT_CLIENT_ID}
+      CONTENT_FULL_LIMIT_BYTES: ${CONTENT_FULL_LIMIT_BYTES:-1000000}
+      CONTENT_SEARCH_LIMIT_BYTES: ${CONTENT_SEARCH_LIMIT_BYTES:-16384}
+
+  worker:
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+      JWT_SECRET: ${JWT_SECRET}
+      GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_EXT_CLIENT_ID: ${GOOGLE_EXT_CLIENT_ID}
+      CONTENT_FULL_LIMIT_BYTES: ${CONTENT_FULL_LIMIT_BYTES:-1000000}
+      CONTENT_SEARCH_LIMIT_BYTES: ${CONTENT_SEARCH_LIMIT_BYTES:-16384}
+
+  edge:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      WWW_HOSTNAME: ${WWW_HOSTNAME}
+      API_HOSTNAME: ${API_HOSTNAME}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

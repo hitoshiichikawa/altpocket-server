@@ -4,9 +4,9 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_USER: altpocket
-      POSTGRES_PASSWORD: altpocket
-      POSTGRES_DB: altpocket
+      POSTGRES_USER: ${POSTGRES_USER:-altpocket}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-altpocket}
+      POSTGRES_DB: ${POSTGRES_DB:-altpocket}
     ports:
       - "5432:5432"
     volumes:
@@ -17,16 +17,16 @@ services:
       context: .
       dockerfile: deploy/api.Dockerfile
     environment:
-      DATABASE_URL: postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable
-      HTTP_ADDR: ":8080"
-      PUBLIC_BASE_URL: http://localhost:8080
-      SESSION_SECRET: change-me
-      JWT_SECRET: change-me
-      GOOGLE_WEB_CLIENT_ID: your-web-client-id
-      GOOGLE_CLIENT_SECRET: your-web-client-secret
-      GOOGLE_EXT_CLIENT_ID: your-extension-client-id
-      CONTENT_FULL_LIMIT_BYTES: "1000000"
-      CONTENT_SEARCH_LIMIT_BYTES: "16384"
+      DATABASE_URL: ${DATABASE_URL:-postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable}
+      HTTP_ADDR: ${HTTP_ADDR:-:8080}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID:-your-web-client-id}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-your-web-client-secret}
+      GOOGLE_EXT_CLIENT_ID: ${GOOGLE_EXT_CLIENT_ID:-your-extension-client-id}
+      CONTENT_FULL_LIMIT_BYTES: ${CONTENT_FULL_LIMIT_BYTES:-1000000}
+      CONTENT_SEARCH_LIMIT_BYTES: ${CONTENT_SEARCH_LIMIT_BYTES:-16384}
     depends_on:
       - db
     ports:
@@ -37,15 +37,15 @@ services:
       context: .
       dockerfile: deploy/worker.Dockerfile
     environment:
-      DATABASE_URL: postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable
-      SESSION_SECRET: change-me
-      JWT_SECRET: change-me
-      GOOGLE_WEB_CLIENT_ID: your-web-client-id
-      GOOGLE_CLIENT_SECRET: your-web-client-secret
-      GOOGLE_EXT_CLIENT_ID: your-extension-client-id
-      PUBLIC_BASE_URL: http://localhost:8080
-      CONTENT_FULL_LIMIT_BYTES: "1000000"
-      CONTENT_SEARCH_LIMIT_BYTES: "16384"
+      DATABASE_URL: ${DATABASE_URL:-postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID:-your-web-client-id}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-your-web-client-secret}
+      GOOGLE_EXT_CLIENT_ID: ${GOOGLE_EXT_CLIENT_ID:-your-extension-client-id}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      CONTENT_FULL_LIMIT_BYTES: ${CONTENT_FULL_LIMIT_BYTES:-1000000}
+      CONTENT_SEARCH_LIMIT_BYTES: ${CONTENT_SEARCH_LIMIT_BYTES:-16384}
     depends_on:
       - db
 
