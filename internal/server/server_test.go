@@ -33,3 +33,25 @@ func TestPageURL(t *testing.T) {
 		t.Fatalf("unexpected url: %s", got)
 	}
 }
+
+func TestParseTagInput(t *testing.T) {
+	got := parseTagInput(" Go,news;go\nweb ")
+	if len(got) != 3 {
+		t.Fatalf("expected 3 tags, got %d", len(got))
+	}
+	if got[0] != "go" || got[1] != "news" || got[2] != "web" {
+		t.Fatalf("unexpected tags: %#v", got)
+	}
+}
+
+func TestQuickAddNotice(t *testing.T) {
+	if quickAddNotice("created") == "" {
+		t.Fatalf("created state should return notice")
+	}
+	if quickAddNotice("exists") == "" {
+		t.Fatalf("exists state should return notice")
+	}
+	if quickAddNotice("other") != "" {
+		t.Fatalf("unexpected notice for unknown state")
+	}
+}

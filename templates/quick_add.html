@@ -1,0 +1,37 @@
+{{define "content"}}
+<section class="detail quick-add">
+  <h2>Quick Add</h2>
+  <p class="muted">Use this page to confirm and save a link sent by bookmarklet.</p>
+
+  {{if .Error}}
+    <div class="error">{{.Error}}</div>
+  {{end}}
+
+  <form method="post" action="/ui/quick-add" class="quick-add-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+    <div class="quick-add-field">
+      <label for="quick-add-url">URL</label>
+      <input id="quick-add-url" type="url" name="url" required value="{{.URL}}" placeholder="https://example.com/article">
+    </div>
+
+    <div class="quick-add-field">
+      <label for="quick-add-title">Title (optional)</label>
+      <input id="quick-add-title" type="text" name="title" value="{{.SourceTitle}}" placeholder="Page title">
+    </div>
+
+    <div class="quick-add-field">
+      <label for="quick-add-tag-input">Tags</label>
+      <input id="quick-add-tags-value" type="hidden" name="tags" value="{{.Tags}}">
+      <div id="quick-add-tags" class="tags"></div>
+      <input id="quick-add-tag-input" type="text" placeholder="Type tag then press Enter or comma">
+      <div id="quick-add-suggestions" class="tag-editor-suggestions"></div>
+    </div>
+
+    <div class="actions quick-add-actions">
+      <button type="submit">Save</button>
+      <a class="action-button" href="/ui/items">Cancel</a>
+    </div>
+  </form>
+</section>
+{{end}}
