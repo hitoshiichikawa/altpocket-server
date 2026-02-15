@@ -35,7 +35,72 @@ func TestFetchSuccess(t *testing.T) {
 	if parsed.ContentBytes == 0 {
 		t.Fatalf("content bytes should be > 0")
 	}
+}
 
+func TestFetchExtractsReadableArticleContent(t *testing.T) {
+	body := []byte(`<html><head><title>Readable</title><script>window.banner='noise'</script></head><body>
+<header>Site Header</header>
+<nav>Top navigation links</nav>
+<main>
+  <article>
+    <h1>Readable Article</h1>
+    <p>This is the actual article body text that users expect to read in the saved content view.</p>
+    <p>This second paragraph should also be included in full text extraction output.</p>
+  </article>
+</main>
+<footer>Footer noise</footer>
+<script>console.log('noise')</script>
+</body></html>`)
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+			}, nil
+		}),
+	}
+	f := New(1_000_000, 4096, 1024)
+	f.Client = client
+	parsed, err := f.Fetch(context.Background(), "http://example.com/article")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(parsed.ContentFull, "Readable Article") {
+		t.Fatalf("expected article heading in content_full, got %q", parsed.ContentFull)
+	}
+	if !strings.Contains(parsed.ContentFull, "actual article body text") {
+		t.Fatalf("expected article body in content_full, got %q", parsed.ContentFull)
+	}
+	for _, unwanted := range []string{"Top navigation", "Site Header", "Footer noise", "window.banner", "console.log"} {
+		if strings.Contains(parsed.ContentFull, unwanted) {
+			t.Fatalf("unexpected non-content text %q in content_full: %q", unwanted, parsed.ContentFull)
+		}
+	}
+}
+
+func TestFetchFallsBackToBodyTextWhenNoSemanticBlocks(t *testing.T) {
+	body := []byte("<html><head><title>Fallback</title></head><body>Plain text page without paragraph tags.</body></html>")
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+			}, nil
+		}),
+	}
+	f := New(1_000_000, 4096, 1024)
+	f.Client = client
+	parsed, err := f.Fetch(context.Background(), "http://example.com/fallback")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(parsed.ContentFull, "Plain text page without paragraph tags.") {
+		t.Fatalf("expected fallback body text, got %q", parsed.ContentFull)
+	}
 }
 
 func TestFetchBadStatus(t *testing.T) {
