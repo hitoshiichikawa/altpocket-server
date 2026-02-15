@@ -580,6 +580,43 @@ button:hover {
   place-items: center;
 }
 
+.auth-shell {
+  min-height: calc(100vh - 240px);
+  display: grid;
+  place-items: center;
+}
+
+.auth-card {
+  width: min(720px, 100%);
+  padding: 28px;
+  display: grid;
+  gap: 12px;
+}
+
+.auth-card h1 {
+  margin: 0;
+  font-size: clamp(30px, 4vw, 44px);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.auth-eyebrow {
+  margin: 0;
+  color: var(--color-info);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.auth-actions {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .quick-add-card {
   width: min(760px, 100%);
   padding: 24px;
@@ -680,13 +717,16 @@ summary:focus-visible {
   }
 
   .quick-add-actions,
-  .item-actions {
+  .item-actions,
+  .auth-actions {
     flex-direction: column;
     align-items: stretch;
   }
 
   .quick-add-actions .btn-secondary,
   .quick-add-actions .btn-primary,
+  .auth-actions .btn-secondary,
+  .auth-actions .btn-primary,
   .item-actions .btn-secondary,
   .item-actions .btn-primary {
     width: 100%;
