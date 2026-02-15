@@ -16,8 +16,11 @@
     <label for="quick-add-title">Title (optional)</label>
     <input id="quick-add-title" type="text" name="title" value="{{.SourceTitle}}" placeholder="Page title">
 
-    <label for="quick-add-tags">Tags (comma separated)</label>
-    <input id="quick-add-tags" type="text" name="tags" value="{{.Tags}}" placeholder="go, reading">
+    <label for="quick-add-tag-input">Tags</label>
+    <input id="quick-add-tags-value" type="hidden" name="tags" value="{{.Tags}}">
+    <div id="quick-add-tags" class="tags"></div>
+    <input id="quick-add-tag-input" type="text" placeholder="Type tag then press Enter or comma">
+    <div id="quick-add-suggestions" class="tag-editor-suggestions"></div>
 
     <div class="actions">
       <button type="submit">Save</button>
