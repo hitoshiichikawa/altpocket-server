@@ -632,7 +632,7 @@ summary:focus-visible {
   outline-offset: 2px;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 860px) {
   .page-grid {
     grid-template-columns: 1fr;
   }
