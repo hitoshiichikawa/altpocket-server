@@ -551,6 +551,7 @@ func (s *Server) renderUIQuickAdd(w http.ResponseWriter, r *http.Request, status
 		"Error":       errMsg,
 	}
 	if status != http.StatusOK {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(status)
 	}
 	if err := s.renderer.Render(w, "quick_add", data); err != nil {
