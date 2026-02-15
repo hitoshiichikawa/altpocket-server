@@ -87,7 +87,14 @@ body {
 
 .quick-add-form {
   display: grid;
-  gap: 8px;
+  gap: 12px;
+}
+
+.quick-add-field {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
 }
 
 .quick-add-form label {
@@ -136,6 +143,10 @@ body {
   background: #fff;
   padding: 4px 8px;
   font: inherit;
+}
+
+.quick-add-actions {
+  margin-top: 4px;
 }
 
 .actions button,
