@@ -20,13 +20,15 @@
       <div id="status" class="status status-info" role="alert" aria-live="polite">Not logged in</div>
     </header>
 
-    <button id="save" class="btn btn-primary" type="button">Save current tab</button>
+    <section id="authControls" class="auth-controls" hidden>
+      <button id="save" class="btn btn-primary" type="button">Save current tab</button>
 
-    <section class="section" aria-labelledby="tag-label">
-      <div id="tag-label" class="label">Tags</div>
-      <input id="tagInput" class="input" type="text" placeholder="Type tag and press Enter">
-      <div id="suggestions" class="suggestions"></div>
-      <div id="tags" class="chips"></div>
+      <section class="section" aria-labelledby="tag-label">
+        <div id="tag-label" class="label">Tags</div>
+        <input id="tagInput" class="input" type="text" placeholder="Type tag and press Enter">
+        <div id="suggestions" class="suggestions"></div>
+        <div id="tags" class="chips"></div>
+      </section>
     </section>
 
     <details class="settings">
