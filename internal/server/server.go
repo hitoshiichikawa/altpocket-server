@@ -40,6 +40,8 @@ type Server struct {
 	idTokenValidateFn func(context.Context, string, string) (*idtoken.Payload, error)
 }
 
+var errInvalidURL = errors.New("invalid_url")
+
 func New(cfg config.Config, st *store.Store, limiter *ratelimit.Limiter, log *slog.Logger, renderer *ui.Renderer) *Server {
 	oauthCfg := &oauth2.Config{
 		ClientID:     cfg.GoogleWebClientID,
@@ -112,6 +114,8 @@ func (s *Server) Routes() http.Handler {
 	r.Route("/ui", func(r chi.Router) {
 		r.Get("/items", s.requireWeb(s.handleUIItems))
 		r.Get("/items/{id}", s.requireWeb(s.handleUIItem))
+		r.Get("/quick-add", s.requireWeb(s.handleUIQuickAdd))
+		r.Post("/quick-add", s.requireWeb(s.handleUIQuickAddSubmit))
 	})
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
@@ -322,36 +326,14 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canonicalURL, canonicalHash, err := urlnorm.Canonicalize(req.URL)
+	itemID, created, err := s.createItem(r.Context(), user.ID, req.URL, req.Tags)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_url"})
-		return
-	}
-
-	normTags := []string{}
-	seen := map[string]struct{}{}
-	for _, t := range req.Tags {
-		norm := tag.Normalize(t)
-		if norm != "" {
-			if _, ok := seen[norm]; ok {
-				continue
-			}
-			seen[norm] = struct{}{}
-			normTags = append(normTags, norm)
+		if errors.Is(err, errInvalidURL) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_url"})
+			return
 		}
-	}
-
-	itemID, created, err := s.store.CreateItem(r.Context(), user.ID, req.URL, canonicalURL, canonicalHash, normTags)
-	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
-	}
-
-	if created {
-		s.logger.Info("items.create", slog.String("item_id", itemID), slog.Bool("created", true), slog.String("request_id", s.requestID(r.Context())))
-	} else {
-		s.logger.Info("items.create", slog.String("item_id", itemID), slog.Bool("created", false), slog.String("request_id", s.requestID(r.Context())))
-		s.logger.Info("duplicate_noop", slog.String("item_id", itemID), slog.String("request_id", s.requestID(r.Context())))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"item_id": itemID, "created": created})
@@ -467,6 +449,7 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		"PrevURL":        pageURL(r.URL, pag.Page-1),
 		"NextURL":        pageURL(r.URL, pag.Page+1),
 		"CSRFToken":      s.csrfFromContext(r.Context()),
+		"QuickAddNotice": quickAddNotice(r.URL.Query().Get("quick_add")),
 	}
 
 	if err := s.renderer.Render(w, "items", data); err != nil {
@@ -493,6 +476,85 @@ func (s *Server) handleUIItem(w http.ResponseWriter, r *http.Request) {
 		"CSRFToken": s.csrfFromContext(r.Context()),
 	}
 	if err := s.renderer.Render(w, "detail", data); err != nil {
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleUIQuickAdd(w http.ResponseWriter, r *http.Request) {
+	s.renderUIQuickAdd(
+		w,
+		r,
+		http.StatusOK,
+		strings.TrimSpace(r.URL.Query().Get("url")),
+		strings.TrimSpace(r.URL.Query().Get("title")),
+		strings.TrimSpace(r.URL.Query().Get("tags")),
+		"",
+	)
+}
+
+func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	urlValue := strings.TrimSpace(r.PostFormValue("url"))
+	titleValue := strings.TrimSpace(r.PostFormValue("title"))
+	tagsValue := strings.TrimSpace(r.PostFormValue("tags"))
+
+	csrfExpected := s.csrfFromContext(r.Context())
+	csrfProvided := r.PostFormValue("csrf_token")
+	if csrfExpected == "" || csrfProvided == "" || csrfProvided != csrfExpected {
+		s.renderUIQuickAdd(w, r, http.StatusForbidden, urlValue, titleValue, tagsValue, "CSRF token mismatch.")
+		return
+	}
+	if urlValue == "" {
+		s.renderUIQuickAdd(w, r, http.StatusBadRequest, urlValue, titleValue, tagsValue, "URL is required.")
+		return
+	}
+	if !s.limiter.Allow(user.ID) {
+		s.renderUIQuickAdd(w, r, http.StatusTooManyRequests, urlValue, titleValue, tagsValue, "Too many requests. Please wait and retry.")
+		return
+	}
+
+	_, created, err := s.createItem(r.Context(), user.ID, urlValue, parseTagInput(tagsValue))
+	if err != nil {
+		if errors.Is(err, errInvalidURL) {
+			s.renderUIQuickAdd(w, r, http.StatusBadRequest, urlValue, titleValue, tagsValue, "Invalid URL.")
+			return
+		}
+		s.renderUIQuickAdd(w, r, http.StatusInternalServerError, urlValue, titleValue, tagsValue, "Failed to save item.")
+		return
+	}
+
+	if created {
+		http.Redirect(w, r, "/ui/items?quick_add=created", http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, "/ui/items?quick_add=exists", http.StatusFound)
+}
+
+func (s *Server) renderUIQuickAdd(w http.ResponseWriter, r *http.Request, status int, urlValue, titleValue, tagsValue, errMsg string) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	data := map[string]interface{}{
+		"Title":       "Quick Add",
+		"User":        user,
+		"CSRFToken":   s.csrfFromContext(r.Context()),
+		"URL":         urlValue,
+		"SourceTitle": titleValue,
+		"Tags":        tagsValue,
+		"Error":       errMsg,
+	}
+	if status != http.StatusOK {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(status)
+	}
+	if err := s.renderer.Render(w, "quick_add", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
 }
@@ -628,6 +690,62 @@ func (s *Server) checkCSRF(r *http.Request) error {
 		return errors.New("csrf")
 	}
 	return nil
+}
+
+func (s *Server) createItem(ctx context.Context, userID, rawURL string, rawTags []string) (string, bool, error) {
+	canonicalURL, canonicalHash, err := urlnorm.Canonicalize(rawURL)
+	if err != nil {
+		return "", false, errInvalidURL
+	}
+
+	normTags := normalizeTagNames(rawTags)
+	itemID, created, err := s.store.CreateItem(ctx, userID, rawURL, canonicalURL, canonicalHash, normTags)
+	if err != nil {
+		return "", false, err
+	}
+
+	if created {
+		s.logger.Info("items.create", slog.String("item_id", itemID), slog.Bool("created", true), slog.String("request_id", s.requestID(ctx)))
+		return itemID, true, nil
+	}
+	s.logger.Info("items.create", slog.String("item_id", itemID), slog.Bool("created", false), slog.String("request_id", s.requestID(ctx)))
+	s.logger.Info("duplicate_noop", slog.String("item_id", itemID), slog.String("request_id", s.requestID(ctx)))
+	return itemID, false, nil
+}
+
+func normalizeTagNames(rawTags []string) []string {
+	normTags := make([]string, 0, len(rawTags))
+	seen := map[string]struct{}{}
+	for _, t := range rawTags {
+		norm := tag.Normalize(t)
+		if norm == "" {
+			continue
+		}
+		if _, ok := seen[norm]; ok {
+			continue
+		}
+		seen[norm] = struct{}{}
+		normTags = append(normTags, norm)
+	}
+	return normTags
+}
+
+func parseTagInput(v string) []string {
+	parts := strings.FieldsFunc(v, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	})
+	return normalizeTagNames(parts)
+}
+
+func quickAddNotice(state string) string {
+	switch state {
+	case "created":
+		return "Saved page from bookmarklet."
+	case "exists":
+		return "This page is already saved."
+	default:
+		return ""
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v interface{}) {
