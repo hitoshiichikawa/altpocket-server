@@ -106,6 +106,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/", s.requireAuth(s.handleListItems))
 			r.Post("/", s.requireAuth(s.handleCreateItem))
 			r.Get("/{id}", s.requireAuth(s.handleGetItem))
+			r.Put("/{id}/tags", s.requireAuth(s.handleUpdateItemTags))
 			r.Delete("/{id}", s.requireAuth(s.handleDeleteItem))
 			r.Post("/{id}/refetch", s.requireAuth(s.handleRefetchItem))
 		})
@@ -397,6 +398,39 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleUpdateItemTags(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.limiter.Allow(user.ID) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		return
+	}
+
+	var req struct {
+		Tags []string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+
+	itemID := chi.URLParam(r, "id")
+	tags, err := s.store.ReplaceItemTags(r.Context(), user.ID, itemID, normalizeTagNames(req.Tags))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"tags": tags})
+}
+
 func (s *Server) handleRefetchItem(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -658,7 +692,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

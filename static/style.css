@@ -67,6 +67,44 @@ body {
   font-size: 12px;
 }
 
+.tag-editor {
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+#detail-tag-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font: inherit;
+}
+
+.tag-editor-dropdown {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  border: 1px solid var(--border);
+  background: #fff;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.tag-editor-dropdown li {
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tag-editor-dropdown li[aria-selected="true"] {
+  background: #eaf3fc;
+}
+
+.tag-editor-actions {
+  margin-top: 0;
+}
+
 .search-form { display: grid; gap: 8px; }
 
 .notice {
