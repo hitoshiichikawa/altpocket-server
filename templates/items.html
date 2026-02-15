@@ -27,6 +27,9 @@
   </aside>
 
   <section class="items">
+    {{if .QuickAddNotice}}
+      <div class="notice">{{.QuickAddNotice}}</div>
+    {{end}}
     {{if not .Items}}
       <div class="empty">No items yet.</div>
     {{end}}

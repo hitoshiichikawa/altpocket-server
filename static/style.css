@@ -63,6 +63,45 @@ body {
 
 .search-form { display: grid; gap: 8px; }
 
+.notice {
+  border: 1px solid #bcd8f3;
+  background: #eaf3fc;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.error {
+  border: 1px solid #efc2bf;
+  background: #fdf1f0;
+  color: var(--danger);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.muted { color: var(--muted); }
+
+.quick-add {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.quick-add-form {
+  display: grid;
+  gap: 8px;
+}
+
+.quick-add-form label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.quick-add-form input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font: inherit;
+}
+
 .actions button,
 .action-button {
   padding: 6px 10px;

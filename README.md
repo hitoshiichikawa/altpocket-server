@@ -44,6 +44,16 @@ Web UI: http://localhost:8080/ui/items
 2. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
 3. PopupでAPI Base URLを入力し、Login → Save Current Tab
 
+## モバイルChrome向けBookmarklet
+1. まず `https://YOUR_DOMAIN/ui/items` でGoogleログインしておきます（Webセッション必須）
+2. 以下の文字列をブックマークURLとして登録します（`YOUR_DOMAIN` を置換）
+
+```javascript
+javascript:(()=>{const base='https://YOUR_DOMAIN/ui/quick-add';const u=new URL(base);u.searchParams.set('url',location.href);u.searchParams.set('title',document.title||'');const w=window.open(u.toString(),'_blank','noopener,noreferrer');if(!w){location.href=u.toString();}})();
+```
+
+3. 保存したいページでbookmarkletを実行すると、`/ui/quick-add` が開き、確認後に登録できます。
+
 ## API概要
 - `POST /v1/items` {url,tags[]} -> 200 {item_id, created}
 - `GET /v1/items` page/per_page/q/tag/sort

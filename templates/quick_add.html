@@ -1,0 +1,28 @@
+{{define "content"}}
+<section class="detail quick-add">
+  <h2>Quick Add</h2>
+  <p class="muted">Use this page to confirm and save a link sent by bookmarklet.</p>
+
+  {{if .Error}}
+    <div class="error">{{.Error}}</div>
+  {{end}}
+
+  <form method="post" action="/ui/quick-add" class="quick-add-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+    <label for="quick-add-url">URL</label>
+    <input id="quick-add-url" type="url" name="url" required value="{{.URL}}" placeholder="https://example.com/article">
+
+    <label for="quick-add-title">Title (optional)</label>
+    <input id="quick-add-title" type="text" name="title" value="{{.SourceTitle}}" placeholder="Page title">
+
+    <label for="quick-add-tags">Tags (comma separated)</label>
+    <input id="quick-add-tags" type="text" name="tags" value="{{.Tags}}" placeholder="go, reading">
+
+    <div class="actions">
+      <button type="submit">Save</button>
+      <a class="action-button" href="/ui/items">Cancel</a>
+    </div>
+  </form>
+</section>
+{{end}}
