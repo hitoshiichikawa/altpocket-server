@@ -25,10 +25,20 @@ func New(templateDir string) (*Renderer, error) {
 	}
 
 	layout := filepath.Join(templateDir, "layout.html")
+	home := filepath.Join(templateDir, "home.html")
+	register := filepath.Join(templateDir, "register.html")
 	items := filepath.Join(templateDir, "items.html")
 	detail := filepath.Join(templateDir, "item_detail.html")
 	quickAdd := filepath.Join(templateDir, "quick_add.html")
 
+	homeTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, home)
+	if err != nil {
+		return nil, err
+	}
+	registerTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, register)
+	if err != nil {
+		return nil, err
+	}
 	itemsTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, items)
 	if err != nil {
 		return nil, err
@@ -42,6 +52,8 @@ func New(templateDir string) (*Renderer, error) {
 		return nil, err
 	}
 	return &Renderer{templates: map[string]*template.Template{
+		"home":      homeTpl,
+		"register":  registerTpl,
 		"items":     itemsTpl,
 		"detail":    detailTpl,
 		"quick_add": quickAddTpl,

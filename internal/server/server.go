@@ -93,6 +93,8 @@ func (s *Server) Routes() http.Handler {
 	r.Use(RequestID)
 	r.Use(AccessLog(s.logger))
 
+	r.Get("/", s.handleHome)
+	r.Get("/register", s.handleRegister)
 	r.Get("/healthz", s.handleHealth)
 
 	r.Route("/v1", func(r chi.Router) {
@@ -126,6 +128,32 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.webSession(r); ok {
+		http.Redirect(w, r, "/ui/items", http.StatusFound)
+		return
+	}
+	data := map[string]interface{}{
+		"Title": "Sign In",
+	}
+	if err := s.renderer.Render(w, "home", data); err != nil {
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.webSession(r); ok {
+		http.Redirect(w, r, "/ui/items", http.StatusFound)
+		return
+	}
+	data := map[string]interface{}{
+		"Title": "Register",
+	}
+	if err := s.renderer.Render(w, "register", data); err != nil {
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) handleGoogleLogin(w http.ResponseWriter, r *http.Request) {

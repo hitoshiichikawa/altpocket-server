@@ -12,12 +12,20 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/ui/items">altpocket</a>
-      <nav class="topnav" aria-label="Primary">
-        <a href="/ui/items">Items</a>
-        <a href="/ui/quick-add">Quick Add</a>
-      </nav>
-      <div class="user-pill">{{.User.Name}}</div>
+      {{if .User}}
+        <a class="brand" href="/ui/items">altpocket</a>
+        <nav class="topnav" aria-label="Primary">
+          <a href="/ui/items">Items</a>
+          <a href="/ui/quick-add">Quick Add</a>
+        </nav>
+        <div class="user-pill">{{.User.Name}}</div>
+      {{else}}
+        <a class="brand" href="/">altpocket</a>
+        <nav class="topnav" aria-label="Primary">
+          <a href="/v1/auth/google/login">Sign in</a>
+          <a href="/register">Register</a>
+        </nav>
+      {{end}}
     </div>
   </header>
 
