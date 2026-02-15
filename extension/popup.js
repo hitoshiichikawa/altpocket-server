@@ -18,6 +18,11 @@ function setAuthControlsVisible(visible) {
   authControlsEl.hidden = !visible;
 }
 
+function setLoginButtonAuthenticated(authenticated) {
+  if (!loginBtn) return;
+  loginBtn.textContent = authenticated ? 'Sign out' : 'Sign in with Google';
+}
+
 function setStatus(msg, level = 'info') {
   const classes = {
     info: 'status status-info',
@@ -58,6 +63,7 @@ function showUnauthenticatedUI(message = 'Not logged in', level = 'info') {
   if (tagInput) tagInput.value = '';
   if (suggestionsEl) suggestionsEl.innerHTML = '';
   setAuthControlsVisible(false);
+  setLoginButtonAuthenticated(false);
   setStatus(message, level);
 }
 
@@ -68,6 +74,7 @@ async function moveToUnauthenticated(message = 'Not logged in', level = 'info') 
 
 function moveToAuthenticated(message = 'Ready') {
   setAuthControlsVisible(true);
+  setLoginButtonAuthenticated(true);
   setSuccess(message);
 }
 
@@ -221,6 +228,10 @@ async function login() {
   }
 }
 
+async function signOut() {
+  await moveToUnauthenticated('Signed out');
+}
+
 async function saveCurrentTab() {
   const apiBase = normalizeAPIBase(apiBaseInput.value);
   if (!apiBase || !token) {
@@ -285,7 +296,13 @@ async function openWebUI() {
   }
 }
 
-loginBtn.addEventListener('click', () => login());
+loginBtn.addEventListener('click', async () => {
+  if (token) {
+    await signOut();
+    return;
+  }
+  await login();
+});
 
 saveBtn.addEventListener('click', () => saveCurrentTab());
 if (openWebUIBtn) {
@@ -335,6 +352,7 @@ tagInput.addEventListener('blur', () => {
 (async () => {
   try {
     setAuthControlsVisible(false);
+    setLoginButtonAuthenticated(false);
     const data = await chrome.storage.local.get(['apiBase', 'token']);
     if (data.apiBase) apiBaseInput.value = normalizeAPIBase(data.apiBase);
     if (typeof data.token === 'string' && data.token.trim() !== '') {

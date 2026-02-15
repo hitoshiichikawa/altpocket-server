@@ -224,6 +224,7 @@ test('login requires API base URL', async () => {
   const env = await loadPopupScript();
 
   assert.equal(env.elements.authControls.hidden, true);
+  assert.equal(env.elements.login.textContent, 'Sign in with Google');
 
   await env.elements.login.click();
 
@@ -255,6 +256,7 @@ test('login exchanges id token and stores API token', async () => {
   assert.equal(env.storageSetCalls[0].token, 'jwt-token');
   assert.equal(env.storageData.token, 'jwt-token');
   assert.equal(env.elements.authControls.hidden, false);
+  assert.equal(env.elements.login.textContent, 'Sign out');
 });
 
 test('save requires login token', async () => {
@@ -283,6 +285,7 @@ test('save current tab sends bearer token and tags', async () => {
 
   assert.equal(env.elements.status.textContent, 'Ready');
   assert.equal(env.elements.authControls.hidden, false);
+  assert.equal(env.elements.login.textContent, 'Sign out');
 
   env.elements.tagInput.value = 'go';
   await env.elements.tagInput.dispatch('keydown', { key: 'Enter' });
@@ -384,6 +387,27 @@ test('init without token stays unauthenticated and hides save UI', async () => {
   assert.equal(env.elements.status.textContent, 'Not logged in');
   assert.equal(env.elements.status.className, 'status status-info');
   assert.equal(env.elements.authControls.hidden, true);
+  assert.equal(env.elements.login.textContent, 'Sign in with Google');
+});
+
+test('authenticated click on auth button signs out and clears token', async () => {
+  const env = await loadPopupScript({
+    storageData: {
+      apiBase: 'https://api.example.test',
+      token: 'stored-token',
+    },
+  });
+
+  assert.equal(env.elements.login.textContent, 'Sign out');
+
+  await env.elements.login.click();
+
+  assert.equal(env.elements.status.textContent, 'Signed out');
+  assert.equal(env.elements.status.className, 'status status-info');
+  assert.equal(env.elements.authControls.hidden, true);
+  assert.equal(env.elements.login.textContent, 'Sign in with Google');
+  assert.equal(env.storageRemoveCalls.length, 1);
+  assert.equal(env.storageData.token, undefined);
 });
 
 test('save with expired token returns to unauthenticated state', async () => {
