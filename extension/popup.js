@@ -1,5 +1,6 @@
 const CLIENT_ID = 'YOUR_EXTENSION_CLIENT_ID';
 
+const authControlsEl = document.getElementById('authControls');
 const apiBaseInput = document.getElementById('apiBase');
 const loginBtn = document.getElementById('login');
 const saveBtn = document.getElementById('save');
@@ -11,6 +12,11 @@ const suggestionsEl = document.getElementById('suggestions');
 
 let tags = [];
 let token = null;
+
+function setAuthControlsVisible(visible) {
+  if (!authControlsEl) return;
+  authControlsEl.hidden = !visible;
+}
 
 function setStatus(msg, level = 'info') {
   const classes = {
@@ -28,6 +34,41 @@ function setError(msg) {
 
 function setSuccess(msg) {
   setStatus(msg, 'success');
+}
+
+async function clearStoredToken() {
+  token = null;
+  try {
+    if (chrome.storage && chrome.storage.local) {
+      if (typeof chrome.storage.local.remove === 'function') {
+        await chrome.storage.local.remove('token');
+      } else if (typeof chrome.storage.local.set === 'function') {
+        await chrome.storage.local.set({ token: '' });
+      }
+    }
+  } catch {
+    // Ignore storage cleanup failures and keep UI in unauthenticated mode.
+  }
+}
+
+function showUnauthenticatedUI(message = 'Not logged in', level = 'info') {
+  token = null;
+  tags = [];
+  renderTags();
+  if (tagInput) tagInput.value = '';
+  if (suggestionsEl) suggestionsEl.innerHTML = '';
+  setAuthControlsVisible(false);
+  setStatus(message, level);
+}
+
+async function moveToUnauthenticated(message = 'Not logged in', level = 'info') {
+  await clearStoredToken();
+  showUnauthenticatedUI(message, level);
+}
+
+function moveToAuthenticated(message = 'Ready') {
+  setAuthControlsVisible(true);
+  setSuccess(message);
 }
 
 function normalizeAPIBase(value) {
@@ -63,6 +104,10 @@ function apiErrorMessage(status, data, fallback) {
     return data.error;
   }
   return `${fallback} (${status})`;
+}
+
+function isAuthFailureStatus(status) {
+  return status === 401 || status === 403;
 }
 
 function renderTags() {
@@ -170,7 +215,7 @@ async function login() {
 
     token = data.token;
     await chrome.storage.local.set({ apiBase, token });
-    setSuccess('Logged in');
+    moveToAuthenticated('Logged in');
   } catch (err) {
     setError(`Login error: ${errorMessage(err, 'unexpected error')}`);
   }
@@ -179,7 +224,7 @@ async function login() {
 async function saveCurrentTab() {
   const apiBase = normalizeAPIBase(apiBaseInput.value);
   if (!apiBase || !token) {
-    setError('Login required');
+    await moveToUnauthenticated('Login required', 'error');
     return;
   }
   apiBaseInput.value = apiBase;
@@ -208,6 +253,10 @@ async function saveCurrentTab() {
 
     if (!res.ok) {
       const { data } = await readResponseBody(res);
+      if (isAuthFailureStatus(res.status)) {
+        await moveToUnauthenticated('Session expired. Please sign in again.', 'error');
+        return;
+      }
       setError(apiErrorMessage(res.status, data, 'Save failed'));
       return;
     }
@@ -263,6 +312,9 @@ tagInput.addEventListener('input', async () => {
       headers: { 'Authorization': `Bearer ${token}` },
     });
     if (!res.ok) {
+      if (isAuthFailureStatus(res.status)) {
+        await moveToUnauthenticated('Session expired. Please sign in again.', 'error');
+      }
       suggestionsEl.innerHTML = '';
       return;
     }
@@ -282,14 +334,15 @@ tagInput.addEventListener('blur', () => {
 
 (async () => {
   try {
+    setAuthControlsVisible(false);
     const data = await chrome.storage.local.get(['apiBase', 'token']);
     if (data.apiBase) apiBaseInput.value = normalizeAPIBase(data.apiBase);
-    if (data.token) {
+    if (typeof data.token === 'string' && data.token.trim() !== '') {
       token = data.token;
-      setSuccess('Ready');
+      moveToAuthenticated('Ready');
       return;
     }
-    setStatus('Not logged in');
+    showUnauthenticatedUI('Not logged in');
   } catch (err) {
     setError(`Init error: ${errorMessage(err, 'storage unavailable')}`);
   }

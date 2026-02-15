@@ -65,6 +65,15 @@ body {
   gap: 12px;
 }
 
+.auth-controls {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-controls[hidden] {
+  display: none !important;
+}
+
 .popup-header {
   display: flex;
   align-items: center;

@@ -12,6 +12,7 @@ class FakeElement {
     this.value = '';
     this.textContent = '';
     this.className = '';
+    this.hidden = false;
     this.dataset = {};
     this.children = [];
     this._innerHTML = '';
@@ -104,6 +105,7 @@ function createChromeMock({
 } = {}) {
   const data = { ...storageData };
   const storageSetCalls = [];
+  const storageRemoveCalls = [];
   const identityCalls = [];
 
   const chrome = {
@@ -137,6 +139,13 @@ function createChromeMock({
           storageSetCalls.push(values);
           Object.assign(data, values);
         },
+        async remove(keys) {
+          const list = Array.isArray(keys) ? keys : [keys];
+          storageRemoveCalls.push(list);
+          for (const key of list) {
+            delete data[key];
+          }
+        },
       },
     },
     tabs: {
@@ -146,14 +155,16 @@ function createChromeMock({
     },
   };
 
-  return { chrome, storageSetCalls, identityCalls, storageData: data };
+  return { chrome, storageSetCalls, storageRemoveCalls, identityCalls, storageData: data };
 }
 
 function createDocument() {
   const elements = {
+    authControls: new FakeElement('authControls', 'section'),
     apiBase: new FakeElement('apiBase', 'input'),
     login: new FakeElement('login', 'button'),
     save: new FakeElement('save', 'button'),
+    openWebUI: new FakeElement('openWebUI', 'button'),
     status: new FakeElement('status', 'div'),
     tagInput: new FakeElement('tagInput', 'input'),
     tags: new FakeElement('tags', 'div'),
@@ -179,7 +190,7 @@ async function flushTasks() {
 
 async function loadPopupScript(options = {}) {
   const { document, elements } = createDocument();
-  const { chrome, storageSetCalls, identityCalls, storageData } = createChromeMock(options);
+  const { chrome, storageSetCalls, storageRemoveCalls, identityCalls, storageData } = createChromeMock(options);
   const { fetch, calls } = createFetchMock(options.fetchHandlers || []);
 
   const context = vm.createContext({
@@ -203,6 +214,7 @@ async function loadPopupScript(options = {}) {
     elements,
     fetchCalls: calls,
     storageSetCalls,
+    storageRemoveCalls,
     identityCalls,
     storageData,
   };
@@ -211,11 +223,14 @@ async function loadPopupScript(options = {}) {
 test('login requires API base URL', async () => {
   const env = await loadPopupScript();
 
+  assert.equal(env.elements.authControls.hidden, true);
+
   await env.elements.login.click();
 
   assert.equal(env.elements.status.textContent, 'Set API Base URL');
   assert.equal(env.fetchCalls.length, 0);
   assert.equal(env.elements.status.className, 'status status-error');
+  assert.equal(env.elements.authControls.hidden, true);
 });
 
 test('login exchanges id token and stores API token', async () => {
@@ -239,6 +254,7 @@ test('login exchanges id token and stores API token', async () => {
   assert.equal(env.storageSetCalls[0].apiBase, 'https://api.example.test');
   assert.equal(env.storageSetCalls[0].token, 'jwt-token');
   assert.equal(env.storageData.token, 'jwt-token');
+  assert.equal(env.elements.authControls.hidden, false);
 });
 
 test('save requires login token', async () => {
@@ -250,6 +266,9 @@ test('save requires login token', async () => {
   assert.equal(env.elements.status.textContent, 'Login required');
   assert.equal(env.elements.status.className, 'status status-error');
   assert.equal(env.fetchCalls.length, 0);
+  assert.equal(env.elements.authControls.hidden, true);
+  assert.equal(env.storageRemoveCalls.length, 1);
+  assert.deepEqual(env.storageRemoveCalls[0], ['token']);
 });
 
 test('save current tab sends bearer token and tags', async () => {
@@ -261,6 +280,9 @@ test('save current tab sends bearer token and tags', async () => {
     fetchHandlers: [jsonResponse(200, {})],
     tabURL: 'https://news.example/item',
   });
+
+  assert.equal(env.elements.status.textContent, 'Ready');
+  assert.equal(env.elements.authControls.hidden, false);
 
   env.elements.tagInput.value = 'go';
   await env.elements.tagInput.dispatch('keydown', { key: 'Enter' });
@@ -278,6 +300,7 @@ test('save current tab sends bearer token and tags', async () => {
 
   assert.equal(env.elements.status.textContent, 'Saved');
   assert.equal(env.elements.status.className, 'status status-success');
+  assert.equal(env.elements.authControls.hidden, false);
 });
 
 test('login surfaces exchange network errors', async () => {
@@ -293,6 +316,7 @@ test('login surfaces exchange network errors', async () => {
   assert.equal(env.fetchCalls.length, 1);
   assert.equal(env.elements.status.className, 'status status-error');
   assert.match(env.elements.status.textContent, /^Exchange request failed:/);
+  assert.equal(env.elements.authControls.hidden, true);
 });
 
 test('login surfaces user_not_registered from exchange', async () => {
@@ -305,6 +329,7 @@ test('login surfaces user_not_registered from exchange', async () => {
 
   assert.equal(env.elements.status.className, 'status status-error');
   assert.equal(env.elements.status.textContent, 'Account is not registered on this server');
+  assert.equal(env.elements.authControls.hidden, true);
 });
 
 test('save surfaces API error payload', async () => {
@@ -320,6 +345,7 @@ test('save surfaces API error payload', async () => {
 
   assert.equal(env.elements.status.className, 'status status-error');
   assert.equal(env.elements.status.textContent, 'rate_limited');
+  assert.equal(env.elements.authControls.hidden, false);
 });
 
 test('tag suggestions fetch and click-to-add work', async () => {
@@ -346,4 +372,52 @@ test('tag suggestions fetch and click-to-add work', async () => {
   assert.equal(env.elements.tags.children.length, 1);
   assert.equal(env.elements.tags.children[0].textContent, 'go');
   assert.equal(env.elements.tagInput.value, '');
+});
+
+test('init without token stays unauthenticated and hides save UI', async () => {
+  const env = await loadPopupScript({
+    storageData: {
+      apiBase: 'https://api.example.test',
+    },
+  });
+
+  assert.equal(env.elements.status.textContent, 'Not logged in');
+  assert.equal(env.elements.status.className, 'status status-info');
+  assert.equal(env.elements.authControls.hidden, true);
+});
+
+test('save with expired token returns to unauthenticated state', async () => {
+  const env = await loadPopupScript({
+    storageData: {
+      apiBase: 'https://api.example.test',
+      token: 'expired-token',
+    },
+    fetchHandlers: [jsonResponse(401, { error: 'unauthorized' })],
+  });
+
+  await env.elements.save.click();
+
+  assert.equal(env.elements.status.textContent, 'Session expired. Please sign in again.');
+  assert.equal(env.elements.status.className, 'status status-error');
+  assert.equal(env.elements.authControls.hidden, true);
+  assert.equal(env.storageRemoveCalls.length, 1);
+  assert.equal(env.storageData.token, undefined);
+});
+
+test('tag suggestions auth failure returns to unauthenticated state', async () => {
+  const env = await loadPopupScript({
+    storageData: {
+      apiBase: 'https://api.example.test',
+      token: 'expired-token',
+    },
+    fetchHandlers: [jsonResponse(401, { error: 'unauthorized' })],
+  });
+
+  env.elements.tagInput.value = 'g';
+  await env.elements.tagInput.dispatch('input');
+
+  assert.equal(env.elements.status.textContent, 'Session expired. Please sign in again.');
+  assert.equal(env.elements.status.className, 'status status-error');
+  assert.equal(env.elements.authControls.hidden, true);
+  assert.equal(env.storageRemoveCalls.length, 1);
 });
