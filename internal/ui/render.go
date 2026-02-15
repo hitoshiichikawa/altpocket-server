@@ -3,7 +3,9 @@ package ui
 import (
 	"html/template"
 	"net/http"
+	"os"
 	"path/filepath"
+	"time"
 )
 
 type Renderer struct {
@@ -11,20 +13,31 @@ type Renderer struct {
 }
 
 func New(templateDir string) (*Renderer, error) {
+	assetVersion := os.Getenv("ASSET_VERSION")
+	if assetVersion == "" {
+		assetVersion = time.Now().UTC().Format("20060102150405")
+	}
+
+	funcMap := template.FuncMap{
+		"assetVersion": func() string {
+			return assetVersion
+		},
+	}
+
 	layout := filepath.Join(templateDir, "layout.html")
 	items := filepath.Join(templateDir, "items.html")
 	detail := filepath.Join(templateDir, "item_detail.html")
 	quickAdd := filepath.Join(templateDir, "quick_add.html")
 
-	itemsTpl, err := template.ParseFiles(layout, items)
+	itemsTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, items)
 	if err != nil {
 		return nil, err
 	}
-	detailTpl, err := template.ParseFiles(layout, detail)
+	detailTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, detail)
 	if err != nil {
 		return nil, err
 	}
-	quickAddTpl, err := template.ParseFiles(layout, quickAdd)
+	quickAddTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, quickAdd)
 	if err != nil {
 		return nil, err
 	}
