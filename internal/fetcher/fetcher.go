@@ -20,17 +20,17 @@ var (
 )
 
 type Result struct {
-	Title        string
-	Excerpt      string
-	ContentFull  string
+	Title         string
+	Excerpt       string
+	ContentFull   string
 	ContentSearch string
-	ContentBytes int
+	ContentBytes  int
 }
 
 type Fetcher struct {
-	Client           *http.Client
-	MaxBytes         int64
-	ContentFullLimit int
+	Client             *http.Client
+	MaxBytes           int64
+	ContentFullLimit   int
 	ContentSearchLimit int
 }
 
@@ -77,19 +77,149 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) (Result, error) {
 		return Result{}, err
 	}
 	title := strings.TrimSpace(doc.Find("title").First().Text())
-	text := strings.TrimSpace(doc.Text())
-	text = strings.Join(strings.Fields(text), " ")
-	contentFull := truncateUTF8(text, f.ContentFullLimit)
-	contentSearch := truncateUTF8(contentFull, f.ContentSearchLimit)
-	excerpt := truncateUTF8(contentFull, 200)
+	contentText := extractReadableContent(doc)
+	contentFull := truncateUTF8(contentText, f.ContentFullLimit)
+	searchText := normalizeText(contentFull)
+	contentSearch := truncateUTF8(searchText, f.ContentSearchLimit)
+	excerpt := truncateUTF8(searchText, 200)
 
 	return Result{
-		Title:        title,
-		Excerpt:      excerpt,
-		ContentFull:  contentFull,
+		Title:         title,
+		Excerpt:       excerpt,
+		ContentFull:   contentFull,
 		ContentSearch: contentSearch,
-		ContentBytes: len([]byte(contentFull)),
+		ContentBytes:  len([]byte(contentFull)),
 	}, nil
+}
+
+var pruneSelectors = []string{
+	"script",
+	"style",
+	"noscript",
+	"template",
+	"iframe",
+	"canvas",
+	"svg",
+	"object",
+	"embed",
+	"nav",
+	"aside",
+	"footer",
+	"form",
+	"button",
+	"input",
+	"select",
+	"textarea",
+	"[hidden]",
+	"[aria-hidden='true']",
+	"[role='navigation']",
+	"[role='contentinfo']",
+	"[role='search']",
+	"[style*='display:none']",
+	"[style*='visibility:hidden']",
+	"[class*='sidebar']",
+	"[class*='footer']",
+	"[class*='nav']",
+	"[class*='menu']",
+	"[class*='breadcrumb']",
+	"[class*='share']",
+	"[class*='social']",
+	"[class*='related']",
+	"[class*='comment']",
+	"[class*='ad-']",
+	"[class*='ads']",
+	"[id*='sidebar']",
+	"[id*='footer']",
+	"[id*='nav']",
+	"[id*='menu']",
+	"[id*='breadcrumb']",
+	"[id*='comment']",
+	"[id*='ad-']",
+	"[id*='ads']",
+}
+
+var contentSelectors = []string{
+	"article",
+	"main",
+	"[role='main']",
+	"#content",
+	"#main",
+	".content",
+	".main",
+	".post-content",
+	".entry-content",
+	".article-content",
+	".article-body",
+	".markdown-body",
+}
+
+func extractReadableContent(doc *goquery.Document) string {
+	pruneNonContent(doc)
+	root := selectContentRoot(doc)
+	if root.Length() == 0 {
+		root = doc.Find("body").First()
+	}
+	if root.Length() == 0 {
+		root = doc.Selection
+	}
+
+	blocks := extractBlocks(root)
+	if len(blocks) == 0 {
+		return normalizeText(root.Text())
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
+func pruneNonContent(doc *goquery.Document) {
+	for _, selector := range pruneSelectors {
+		doc.Find(selector).Each(func(_ int, s *goquery.Selection) {
+			s.Remove()
+		})
+	}
+}
+
+func selectContentRoot(doc *goquery.Document) *goquery.Selection {
+	best := doc.Find("body").First()
+	bestScore := textScore(best.Text())
+
+	for _, selector := range contentSelectors {
+		doc.Find(selector).Each(func(_ int, s *goquery.Selection) {
+			score := textScore(s.Text())
+			if score > bestScore {
+				best = s
+				bestScore = score
+			}
+		})
+	}
+
+	return best
+}
+
+func extractBlocks(root *goquery.Selection) []string {
+	blocks := []string{}
+	seen := map[string]struct{}{}
+
+	root.Find("h1,h2,h3,h4,h5,h6,p,li,blockquote,pre").Each(func(_ int, s *goquery.Selection) {
+		text := normalizeText(s.Text())
+		if text == "" {
+			return
+		}
+		if _, ok := seen[text]; ok {
+			return
+		}
+		seen[text] = struct{}{}
+		blocks = append(blocks, text)
+	})
+
+	return blocks
+}
+
+func normalizeText(text string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+}
+
+func textScore(text string) int {
+	return utf8.RuneCountInString(normalizeText(text))
 }
 
 func truncateUTF8(s string, limit int) string {
