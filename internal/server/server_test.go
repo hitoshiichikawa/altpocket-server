@@ -1,7 +1,10 @@
 package server
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +56,55 @@ func TestQuickAddNotice(t *testing.T) {
 	}
 	if quickAddNotice("other") != "" {
 		t.Fatalf("unexpected notice for unknown state")
+	}
+}
+
+func TestExtractHTTPURLFromText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: ""},
+		{name: "plain text", in: "hello world", want: ""},
+		{name: "http url", in: "check http://example.com/page", want: "http://example.com/page"},
+		{name: "https with punctuation", in: "see (https://example.com/path?q=1).", want: "https://example.com/path?q=1"},
+		{name: "non http scheme ignored", in: "ftp://example.com", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractHTTPURLFromText(tc.in)
+			if got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleUIQuickAddShareTargetRedirectsWithURLFallback(t *testing.T) {
+	s := newAuthTestServer()
+	form := "title=Example+Article&text=Read+https%3A%2F%2Fexample.com%2Fabc+later"
+	req := httptest.NewRequest(http.MethodPost, "/ui/quick-add/share-target", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+
+	s.handleUIQuickAddShareTarget(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("expected 302, got %d", rr.Code)
+	}
+	loc := rr.Header().Get("Location")
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("failed to parse redirect location %q: %v", loc, err)
+	}
+	if u.Path != "/ui/quick-add" {
+		t.Fatalf("expected redirect path /ui/quick-add, got %q", u.Path)
+	}
+	if got := u.Query().Get("url"); got != "https://example.com/abc" {
+		t.Fatalf("expected extracted url, got %q", got)
+	}
+	if got := u.Query().Get("title"); got != "Example Article" {
+		t.Fatalf("expected title to be forwarded, got %q", got)
 	}
 }

@@ -4,8 +4,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0d12">
   <meta name="csrf-token" content="{{.CSRFToken}}">
   <title>{{.Title}}</title>
+  <link rel="manifest" href="/manifest.webmanifest?v={{assetVersion}}">
   <link rel="stylesheet" href="/static/theme.css?v={{assetVersion}}">
   <link rel="stylesheet" href="/static/style.css?v={{assetVersion}}">
 </head>
@@ -34,6 +36,7 @@
   </main>
 
   <script src="/static/app.js?v={{assetVersion}}"></script>
+  <script src="/static/pwa.js?v={{assetVersion}}"></script>
 </body>
 </html>
 {{end}}
