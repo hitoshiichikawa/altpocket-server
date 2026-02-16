@@ -203,8 +203,8 @@ function createChromeMock({
 function createDocument() {
   const elements = {
     authControls: new FakeElement('authControls', 'section'),
-    apiBase: new FakeElement('apiBase', 'input'),
     login: new FakeElement('login', 'button'),
+    signOut: new FakeElement('signOut', 'button'),
     save: new FakeElement('save', 'button'),
     openWebUI: new FakeElement('openWebUI', 'button'),
     status: new FakeElement('status', 'div'),
@@ -256,7 +256,9 @@ async function loadPopupScript(options = {}) {
     clearTimeout,
   });
 
-  const source = readFileSync(resolve(process.cwd(), 'extension/popup.js'), 'utf8');
+  const apiBase = options.apiBase ?? 'https://api.example.test';
+  let source = readFileSync(resolve(process.cwd(), 'extension/popup.js'), 'utf8');
+  source = source.replace("const API_BASE = 'https://YOUR_API_BASE_URL';", `const API_BASE = ${JSON.stringify(apiBase)};`);
   new vm.Script(source, { filename: 'extension/popup.js' }).runInContext(context);
 
   await flushTasks();
@@ -274,15 +276,16 @@ async function loadPopupScript(options = {}) {
   };
 }
 
-test('login requires API base URL', async () => {
-  const env = await loadPopupScript();
+test('login requires configured API base URL', async () => {
+  const env = await loadPopupScript({ apiBase: '' });
 
   assert.equal(env.elements.authControls.hidden, true);
   assert.equal(env.elements.login.textContent, 'Sign in with Google');
+  assert.equal(env.elements.signOut.hidden, true);
 
   await env.elements.login.click();
 
-  assert.equal(env.elements.status.textContent, 'Set API Base URL');
+  assert.equal(env.elements.status.textContent, 'Extension API base is not configured');
   assert.equal(env.fetchCalls.length, 0);
   assert.equal(env.elements.status.className, 'status status-error');
   assert.equal(env.elements.authControls.hidden, true);
@@ -293,7 +296,6 @@ test('login exchanges id token and stores API token', async () => {
     fetchHandlers: [jsonResponse(200, { token: 'jwt-token' })],
   });
 
-  env.elements.apiBase.value = 'https://api.example.test';
   await env.elements.login.click();
 
   assert.equal(env.fetchCalls.length, 1);
@@ -306,11 +308,11 @@ test('login exchanges id token and stores API token', async () => {
   assert.equal(env.elements.status.textContent, 'Logged in');
   assert.equal(env.elements.status.className, 'status status-success');
   assert.equal(env.storageSetCalls.length, 1);
-  assert.equal(env.storageSetCalls[0].apiBase, 'https://api.example.test');
   assert.equal(env.storageSetCalls[0].token, 'jwt-token');
   assert.equal(env.storageData.token, 'jwt-token');
   assert.equal(env.elements.authControls.hidden, false);
-  assert.equal(env.elements.login.textContent, 'Sign out');
+  assert.equal(env.elements.login.hidden, true);
+  assert.equal(env.elements.signOut.hidden, false);
 });
 
 test('login requests optional host permission when missing', async () => {
@@ -320,7 +322,6 @@ test('login requests optional host permission when missing', async () => {
     fetchHandlers: [jsonResponse(200, { token: 'jwt-token' })],
   });
 
-  env.elements.apiBase.value = 'https://api.example.test';
   await env.elements.login.click();
 
   assert.equal(env.permissionContainsCalls.length, 1);
@@ -332,8 +333,6 @@ test('login requests optional host permission when missing', async () => {
 
 test('save requires login token', async () => {
   const env = await loadPopupScript();
-
-  env.elements.apiBase.value = 'https://api.example.test';
   await env.elements.save.click();
 
   assert.equal(env.elements.status.textContent, 'Login required');
@@ -347,7 +346,6 @@ test('save requires login token', async () => {
 test('save stops when host permission request is denied', async () => {
   const env = await loadPopupScript({
     storageData: {
-      apiBase: 'https://api.example.test',
       token: 'stored-token',
     },
     permissionsDefaultGranted: false,
@@ -365,7 +363,6 @@ test('save stops when host permission request is denied', async () => {
 test('save current tab sends bearer token and tags', async () => {
   const env = await loadPopupScript({
     storageData: {
-      apiBase: 'https://api.example.test',
       token: 'stored-token',
     },
     fetchHandlers: [jsonResponse(200, {})],
@@ -374,7 +371,8 @@ test('save current tab sends bearer token and tags', async () => {
 
   assert.equal(env.elements.status.textContent, 'Ready');
   assert.equal(env.elements.authControls.hidden, false);
-  assert.equal(env.elements.login.textContent, 'Sign out');
+  assert.equal(env.elements.login.hidden, true);
+  assert.equal(env.elements.signOut.hidden, false);
 
   env.elements.tagInput.value = 'go';
   await env.elements.tagInput.dispatch('keydown', { key: 'Enter' });
@@ -398,7 +396,6 @@ test('save current tab sends bearer token and tags', async () => {
 test('save sends captured content asynchronously when item is newly created', async () => {
   const env = await loadPopupScript({
     storageData: {
-      apiBase: 'https://api.example.test',
       token: 'stored-token',
     },
     enableScripting: true,
@@ -436,7 +433,6 @@ test('login surfaces exchange network errors', async () => {
     }],
   });
 
-  env.elements.apiBase.value = 'https://api.example.test';
   await env.elements.login.click();
 
   assert.equal(env.fetchCalls.length, 1);
@@ -450,7 +446,6 @@ test('login surfaces user_not_registered from exchange', async () => {
     fetchHandlers: [jsonResponse(403, { error: 'user_not_registered' })],
   });
 
-  env.elements.apiBase.value = 'https://api.example.test';
   await env.elements.login.click();
 
   assert.equal(env.elements.status.className, 'status status-error');
@@ -461,7 +456,6 @@ test('login surfaces user_not_registered from exchange', async () => {
 test('save surfaces API error payload', async () => {
   const env = await loadPopupScript({
     storageData: {
-      apiBase: 'https://api.example.test',
       token: 'stored-token',
     },
     fetchHandlers: [jsonResponse(429, { error: 'rate_limited' })],
@@ -477,7 +471,6 @@ test('save surfaces API error payload', async () => {
 test('tag suggestions fetch and click-to-add work', async () => {
   const env = await loadPopupScript({
     storageData: {
-      apiBase: 'https://api.example.test',
       token: 'stored-token',
     },
     fetchHandlers: [jsonResponse(200, [{ name: 'go' }])],
@@ -501,34 +494,30 @@ test('tag suggestions fetch and click-to-add work', async () => {
 });
 
 test('init without token stays unauthenticated and hides save UI', async () => {
-  const env = await loadPopupScript({
-    storageData: {
-      apiBase: 'https://api.example.test',
-    },
-  });
+  const env = await loadPopupScript();
 
   assert.equal(env.elements.status.textContent, 'Not logged in');
   assert.equal(env.elements.status.className, 'status status-info');
   assert.equal(env.elements.authControls.hidden, true);
   assert.equal(env.elements.login.textContent, 'Sign in with Google');
+  assert.equal(env.elements.signOut.hidden, true);
 });
 
 test('authenticated click on auth button signs out and clears token', async () => {
   const env = await loadPopupScript({
     storageData: {
-      apiBase: 'https://api.example.test',
       token: 'stored-token',
     },
   });
 
-  assert.equal(env.elements.login.textContent, 'Sign out');
-
-  await env.elements.login.click();
+  assert.equal(env.elements.signOut.hidden, false);
+  await env.elements.signOut.click();
 
   assert.equal(env.elements.status.textContent, 'Signed out');
   assert.equal(env.elements.status.className, 'status status-info');
   assert.equal(env.elements.authControls.hidden, true);
-  assert.equal(env.elements.login.textContent, 'Sign in with Google');
+  assert.equal(env.elements.login.hidden, false);
+  assert.equal(env.elements.signOut.hidden, true);
   assert.equal(env.storageRemoveCalls.length, 1);
   assert.equal(env.storageData.token, undefined);
 });
@@ -536,7 +525,6 @@ test('authenticated click on auth button signs out and clears token', async () =
 test('save with expired token returns to unauthenticated state', async () => {
   const env = await loadPopupScript({
     storageData: {
-      apiBase: 'https://api.example.test',
       token: 'expired-token',
     },
     fetchHandlers: [jsonResponse(401, { error: 'unauthorized' })],
@@ -554,7 +542,6 @@ test('save with expired token returns to unauthenticated state', async () => {
 test('tag suggestions auth failure returns to unauthenticated state', async () => {
   const env = await loadPopupScript({
     storageData: {
-      apiBase: 'https://api.example.test',
       token: 'expired-token',
     },
     fetchHandlers: [jsonResponse(401, { error: 'unauthorized' })],
