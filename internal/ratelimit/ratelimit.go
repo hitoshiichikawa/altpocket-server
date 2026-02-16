@@ -5,24 +5,31 @@ import (
 	"time"
 )
 
+const cleanupInterval = 5 * time.Minute
+const bucketExpiry = 10 * time.Minute
+
 type bucket struct {
 	tokens    float64
 	lastCheck time.Time
 }
 
 type Limiter struct {
-	mu     sync.Mutex
+	mu      sync.Mutex
 	buckets map[string]*bucket
-	rate   float64
-	burst  float64
+	rate    float64
+	burst   float64
+	stop    chan struct{}
 }
 
 func New(ratePerMinute int, burst int) *Limiter {
-	return &Limiter{
+	l := &Limiter{
 		buckets: map[string]*bucket{},
-		rate:   float64(ratePerMinute) / 60.0,
-		burst:  float64(burst),
+		rate:    float64(ratePerMinute) / 60.0,
+		burst:   float64(burst),
+		stop:    make(chan struct{}),
 	}
+	go l.cleanup()
+	return l
 }
 
 func (l *Limiter) Allow(key string) bool {
@@ -45,4 +52,33 @@ func (l *Limiter) Allow(key string) bool {
 	}
 	b.tokens -= 1
 	return true
+}
+
+// Stop halts the background cleanup goroutine.
+func (l *Limiter) Stop() {
+	close(l.stop)
+}
+
+func (l *Limiter) cleanup() {
+	ticker := time.NewTicker(cleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			l.evictStale()
+		case <-l.stop:
+			return
+		}
+	}
+}
+
+func (l *Limiter) evictStale() {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key, b := range l.buckets {
+		if now.Sub(b.lastCheck) > bucketExpiry {
+			delete(l.buckets, key)
+		}
+	}
 }
