@@ -1,0 +1,18 @@
+html,
+body.sidepanel-body {
+  width: auto;
+  min-height: 100%;
+}
+
+body.sidepanel-body {
+  padding: 16px;
+}
+
+body.sidepanel-body .popup {
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+body.sidepanel-body .status {
+  max-width: none;
+}
