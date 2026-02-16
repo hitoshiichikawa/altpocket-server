@@ -10,7 +10,7 @@
     "128": "assets/icon128.png"
   },
   "permissions": ["identity", "storage", "activeTab"],
-  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "optional_host_permissions": ["https://*/*"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
