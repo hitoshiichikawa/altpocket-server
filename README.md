@@ -41,7 +41,7 @@ Web UI: http://localhost:8080/ui/items
 
 ## 拡張機能のロード
 1. `extension/popup.js` の `CLIENT_ID` を自分のExtension用OAuthクライアントIDに置換
-2. `extension/popup.js` の `API_BASE`（または `globalThis.ALTPocketAPIBase`）を固定のAPIオリジンに設定
+2. `extension/popup.js` の `API_BASE` を固定のAPIオリジンに設定
 3. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
 4. 拡張機能アイコンをクリックしてSide Panelを開き、Login → Save Current Tab
 5. Save時はまずURL/タグだけを保存し、その後拡張機能が抽出した本文を非同期で `POST /v1/items/:id/capture` に送信します（保存操作は待たない）

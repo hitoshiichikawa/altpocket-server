@@ -1,9 +1,5 @@
 const CLIENT_ID = 'YOUR_EXTENSION_CLIENT_ID';
-const API_BASE = (
-  typeof globalThis.ALTPocketAPIBase === 'string' && globalThis.ALTPocketAPIBase !== ''
-    ? globalThis.ALTPocketAPIBase
-    : 'https://YOUR_API_BASE_URL'
-).trim().replace(/\/+$/, '');
+const API_BASE = 'https://YOUR_API_BASE_URL';
 
 const authControlsEl = document.getElementById('authControls');
 const loginBtn = document.getElementById('login');
@@ -85,11 +81,12 @@ function moveToAuthenticated(message = 'Ready') {
 }
 
 function getConfiguredAPIBase() {
-  if (!API_BASE || API_BASE.includes('YOUR_API_BASE_URL')) {
+  const configured = API_BASE.trim().replace(/\/+$/, '');
+  if (!configured || configured.includes('YOUR_API_BASE_URL')) {
     return '';
   }
   try {
-    const parsed = new URL(API_BASE);
+    const parsed = new URL(configured);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return '';
     }

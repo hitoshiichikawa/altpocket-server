@@ -248,7 +248,6 @@ async function loadPopupScript(options = {}) {
     crypto: webcrypto,
     document,
     fetch,
-    ALTPocketAPIBase: options.apiBase ?? 'https://api.example.test',
     URL,
     URLSearchParams,
     console,
@@ -256,7 +255,9 @@ async function loadPopupScript(options = {}) {
     clearTimeout,
   });
 
-  const source = readFileSync(resolve(process.cwd(), 'extension/popup.js'), 'utf8');
+  const apiBase = options.apiBase ?? 'https://api.example.test';
+  let source = readFileSync(resolve(process.cwd(), 'extension/popup.js'), 'utf8');
+  source = source.replace("const API_BASE = 'https://YOUR_API_BASE_URL';", `const API_BASE = ${JSON.stringify(apiBase)};`);
   new vm.Script(source, { filename: 'extension/popup.js' }).runInContext(context);
 
   await flushTasks();
