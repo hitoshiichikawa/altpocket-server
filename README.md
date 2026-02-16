@@ -21,7 +21,10 @@ JWT_SECRET=change-me
 GOOGLE_WEB_CLIENT_ID=your-web-client-id
 GOOGLE_CLIENT_SECRET=your-web-client-secret
 GOOGLE_EXT_CLIENT_ID=your-extension-client-id
+CORS_ALLOW_ORIGINS=chrome-extension://your-extension-id,https://your-web-origin
 ```
+
+`APP_ENV=production` では `CORS_ALLOW_ORIGINS` が必須です（未設定だと起動時にpanicします）。
 
 ### Google OAuth 設定
 - Web: OAuth同意画面 + WebクライアントIDを作成し、リダイレクトURIに `http://localhost:8080/v1/auth/google/callback` を登録

@@ -122,3 +122,80 @@ func TestHandleUIQuickAddShareTargetRedirectsWithURLFallback(t *testing.T) {
 		t.Fatalf("expected title to be forwarded, got %q", got)
 	}
 }
+
+func TestCORSRejectsDisallowedOrigin(t *testing.T) {
+	s := newAuthTestServer()
+	s.cfg.CORSAllowOrigins = []string{"chrome-extension://allowed-extension-id"}
+
+	called := false
+	handler := s.cors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "https://api.example.test/v1/items", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
+	}
+	if called {
+		t.Fatalf("expected next handler not to be called")
+	}
+	if rr.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("disallowed origin must not receive allow-origin header")
+	}
+}
+
+func TestCORSAllowsConfiguredOriginPreflight(t *testing.T) {
+	s := newAuthTestServer()
+	allowed := "chrome-extension://allowed-extension-id"
+	s.cfg.CORSAllowOrigins = []string{allowed}
+
+	handler := s.cors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	req := httptest.NewRequest(http.MethodOptions, "https://api.example.test/v1/items", nil)
+	req.Header.Set("Origin", allowed)
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rr.Code)
+	}
+	if rr.Header().Get("Access-Control-Allow-Origin") != allowed {
+		t.Fatalf("expected allow-origin %q, got %q", allowed, rr.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestCORSAllowsSameHostOrigin(t *testing.T) {
+	s := newAuthTestServer()
+	s.cfg.CORSAllowOrigins = nil
+
+	called := false
+	handler := s.cors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "https://api.example.test/v1/items", nil)
+	req.Header.Set("Origin", "https://api.example.test")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if !called {
+		t.Fatalf("expected next handler to be called")
+	}
+	if rr.Header().Get("Access-Control-Allow-Origin") != "https://api.example.test" {
+		t.Fatalf("expected same-host origin to be allowed")
+	}
+}
