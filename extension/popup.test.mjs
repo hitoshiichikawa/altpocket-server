@@ -204,6 +204,7 @@ function createDocument() {
   const elements = {
     authControls: new FakeElement('authControls', 'section'),
     login: new FakeElement('login', 'button'),
+    signOut: new FakeElement('signOut', 'button'),
     save: new FakeElement('save', 'button'),
     openWebUI: new FakeElement('openWebUI', 'button'),
     status: new FakeElement('status', 'div'),
@@ -280,6 +281,7 @@ test('login requires configured API base URL', async () => {
 
   assert.equal(env.elements.authControls.hidden, true);
   assert.equal(env.elements.login.textContent, 'Sign in with Google');
+  assert.equal(env.elements.signOut.hidden, true);
 
   await env.elements.login.click();
 
@@ -309,7 +311,8 @@ test('login exchanges id token and stores API token', async () => {
   assert.equal(env.storageSetCalls[0].token, 'jwt-token');
   assert.equal(env.storageData.token, 'jwt-token');
   assert.equal(env.elements.authControls.hidden, false);
-  assert.equal(env.elements.login.textContent, 'Sign out');
+  assert.equal(env.elements.login.hidden, true);
+  assert.equal(env.elements.signOut.hidden, false);
 });
 
 test('login requests optional host permission when missing', async () => {
@@ -368,7 +371,8 @@ test('save current tab sends bearer token and tags', async () => {
 
   assert.equal(env.elements.status.textContent, 'Ready');
   assert.equal(env.elements.authControls.hidden, false);
-  assert.equal(env.elements.login.textContent, 'Sign out');
+  assert.equal(env.elements.login.hidden, true);
+  assert.equal(env.elements.signOut.hidden, false);
 
   env.elements.tagInput.value = 'go';
   await env.elements.tagInput.dispatch('keydown', { key: 'Enter' });
@@ -496,6 +500,7 @@ test('init without token stays unauthenticated and hides save UI', async () => {
   assert.equal(env.elements.status.className, 'status status-info');
   assert.equal(env.elements.authControls.hidden, true);
   assert.equal(env.elements.login.textContent, 'Sign in with Google');
+  assert.equal(env.elements.signOut.hidden, true);
 });
 
 test('authenticated click on auth button signs out and clears token', async () => {
@@ -505,14 +510,14 @@ test('authenticated click on auth button signs out and clears token', async () =
     },
   });
 
-  assert.equal(env.elements.login.textContent, 'Sign out');
-
-  await env.elements.login.click();
+  assert.equal(env.elements.signOut.hidden, false);
+  await env.elements.signOut.click();
 
   assert.equal(env.elements.status.textContent, 'Signed out');
   assert.equal(env.elements.status.className, 'status status-info');
   assert.equal(env.elements.authControls.hidden, true);
-  assert.equal(env.elements.login.textContent, 'Sign in with Google');
+  assert.equal(env.elements.login.hidden, false);
+  assert.equal(env.elements.signOut.hidden, true);
   assert.equal(env.storageRemoveCalls.length, 1);
   assert.equal(env.storageData.token, undefined);
 });

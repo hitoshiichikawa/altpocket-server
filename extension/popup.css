@@ -224,6 +224,17 @@ body {
   border-color: color-mix(in srgb, var(--color-primary) 40%, var(--border-strong));
 }
 
+.btn-danger {
+  background: color-mix(in srgb, var(--color-danger) 88%, #111);
+  border-color: color-mix(in srgb, var(--color-danger) 80%, #111);
+  color: #fff;
+}
+
+.btn-danger:hover {
+  background: color-mix(in srgb, var(--color-danger) 95%, #111);
+  border-color: color-mix(in srgb, var(--color-danger) 95%, #111);
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;

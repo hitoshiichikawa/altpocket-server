@@ -3,6 +3,7 @@ const API_BASE = 'https://YOUR_API_BASE_URL';
 
 const authControlsEl = document.getElementById('authControls');
 const loginBtn = document.getElementById('login');
+const signOutBtn = document.getElementById('signOut');
 const saveBtn = document.getElementById('save');
 const openWebUIBtn = document.getElementById('openWebUI');
 const statusEl = document.getElementById('status');
@@ -20,9 +21,14 @@ function setAuthControlsVisible(visible) {
   authControlsEl.hidden = !visible;
 }
 
-function setLoginButtonAuthenticated(authenticated) {
-  if (!loginBtn) return;
-  loginBtn.textContent = authenticated ? 'Sign out' : 'Sign in with Google';
+function setAuthButtons(authenticated) {
+  if (loginBtn) {
+    loginBtn.textContent = 'Sign in with Google';
+    loginBtn.hidden = authenticated;
+  }
+  if (signOutBtn) {
+    signOutBtn.hidden = !authenticated;
+  }
 }
 
 function setStatus(msg, level = 'info') {
@@ -65,7 +71,7 @@ function showUnauthenticatedUI(message = 'Not logged in', level = 'info') {
   if (tagInput) tagInput.value = '';
   if (suggestionsEl) suggestionsEl.innerHTML = '';
   setAuthControlsVisible(false);
-  setLoginButtonAuthenticated(false);
+  setAuthButtons(false);
   setStatus(message, level);
 }
 
@@ -76,7 +82,7 @@ async function moveToUnauthenticated(message = 'Not logged in', level = 'info') 
 
 function moveToAuthenticated(message = 'Ready') {
   setAuthControlsVisible(true);
-  setLoginButtonAuthenticated(true);
+  setAuthButtons(true);
   setSuccess(message);
 }
 
@@ -471,13 +477,16 @@ async function openWebUI() {
   }
 }
 
-loginBtn.addEventListener('click', async () => {
-  if (token) {
+if (loginBtn) {
+  loginBtn.addEventListener('click', async () => {
+    await login();
+  });
+}
+if (signOutBtn) {
+  signOutBtn.addEventListener('click', async () => {
     await signOut();
-    return;
-  }
-  await login();
-});
+  });
+}
 
 saveBtn.addEventListener('click', () => saveCurrentTab());
 if (openWebUIBtn) {
@@ -533,7 +542,7 @@ tagInput.addEventListener('blur', () => {
 (async () => {
   try {
     setAuthControlsVisible(false);
-    setLoginButtonAuthenticated(false);
+    setAuthButtons(false);
     const data = await chrome.storage.local.get(['token']);
     if (typeof data.token === 'string' && data.token.trim() !== '') {
       token = data.token;
