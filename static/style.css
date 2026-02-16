@@ -135,6 +135,7 @@ a {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 18px;
+  align-items: start;
 }
 
 .content-column {
@@ -163,6 +164,14 @@ a {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
   padding: 16px;
+}
+
+.sidebar,
+.filter-panel {
+  position: sticky;
+  top: 72px;
+  max-height: calc(100vh - 88px);
+  overflow-y: auto;
 }
 
 .panel-title {
@@ -680,6 +689,10 @@ summary:focus-visible {
 
   .filter-panel {
     order: 2;
+    position: static;
+    top: auto;
+    max-height: none;
+    overflow: visible;
   }
 
   .content-column {
@@ -688,6 +701,10 @@ summary:focus-visible {
 
   .sidebar {
     order: 2;
+    position: static;
+    top: auto;
+    max-height: none;
+    overflow: visible;
   }
 
   .items {
