@@ -104,6 +104,9 @@ function createChromeMock({
   tabURL = 'https://example.com/current',
   permissionsDefaultGranted = true,
   permissionsRequestResult = true,
+  enableScripting = false,
+  scriptingExecuteResult = null,
+  scriptingExecuteError = null,
 } = {}) {
   const data = { ...storageData };
   const storageSetCalls = [];
@@ -111,6 +114,7 @@ function createChromeMock({
   const identityCalls = [];
   const permissionContainsCalls = [];
   const permissionRequestCalls = [];
+  const scriptingExecuteCalls = [];
 
   const chrome = {
     identity: {
@@ -164,10 +168,25 @@ function createChromeMock({
     },
     tabs: {
       async query() {
-        return [{ url: tabURL }];
+        return [{ id: 1, url: tabURL }];
       },
     },
   };
+
+  if (enableScripting) {
+    chrome.scripting = {
+      async executeScript(args) {
+        scriptingExecuteCalls.push(args);
+        if (scriptingExecuteError) {
+          throw scriptingExecuteError;
+        }
+        if (scriptingExecuteResult === null) {
+          return [{ result: null }];
+        }
+        return [{ result: scriptingExecuteResult }];
+      },
+    };
+  }
 
   return {
     chrome,
@@ -176,6 +195,7 @@ function createChromeMock({
     identityCalls,
     permissionContainsCalls,
     permissionRequestCalls,
+    scriptingExecuteCalls,
     storageData: data,
   };
 }
@@ -219,6 +239,7 @@ async function loadPopupScript(options = {}) {
     identityCalls,
     permissionContainsCalls,
     permissionRequestCalls,
+    scriptingExecuteCalls,
     storageData,
   } = createChromeMock(options);
   const { fetch, calls } = createFetchMock(options.fetchHandlers || []);
@@ -248,6 +269,7 @@ async function loadPopupScript(options = {}) {
     identityCalls,
     permissionContainsCalls,
     permissionRequestCalls,
+    scriptingExecuteCalls,
     storageData,
   };
 }
@@ -371,6 +393,40 @@ test('save current tab sends bearer token and tags', async () => {
   assert.equal(env.elements.status.textContent, 'Saved');
   assert.equal(env.elements.status.className, 'status status-success');
   assert.equal(env.elements.authControls.hidden, false);
+});
+
+test('save sends captured content asynchronously when item is newly created', async () => {
+  const env = await loadPopupScript({
+    storageData: {
+      apiBase: 'https://api.example.test',
+      token: 'stored-token',
+    },
+    enableScripting: true,
+    scriptingExecuteResult: {
+      title: 'Captured title',
+      content_full: 'Captured body text',
+    },
+    fetchHandlers: [
+      jsonResponse(200, { item_id: 'item-123', created: true }),
+      jsonResponse(204, {}),
+    ],
+    tabURL: 'https://news.example/item',
+  });
+
+  await env.elements.save.click();
+  await flushTasks();
+
+  assert.equal(env.fetchCalls.length, 2);
+  assert.equal(env.fetchCalls[0].url, 'https://api.example.test/v1/items');
+  assert.equal(env.fetchCalls[1].url, 'https://api.example.test/v1/items/item-123/capture');
+  assert.equal(env.fetchCalls[1].options.method, 'POST');
+  assert.equal(env.fetchCalls[1].options.headers.Authorization, 'Bearer stored-token');
+
+  const capturePayload = JSON.parse(env.fetchCalls[1].options.body);
+  assert.equal(capturePayload.title, 'Captured title');
+  assert.equal(capturePayload.content_full, 'Captured body text');
+  assert.equal(env.scriptingExecuteCalls.length, 1);
+  assert.equal(env.scriptingExecuteCalls[0].target.tabId, 1);
 });
 
 test('login surfaces exchange network errors', async () => {

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"altpocket/internal/auth"
 	"altpocket/internal/config"
@@ -41,6 +42,8 @@ type Server struct {
 }
 
 var errInvalidURL = errors.New("invalid_url")
+
+const maxCapturedContentPayloadBytes = 256 * 1024
 
 func New(cfg config.Config, st *store.Store, limiter *ratelimit.Limiter, log *slog.Logger, renderer *ui.Renderer) *Server {
 	oauthCfg := &oauth2.Config{
@@ -111,6 +114,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/", s.requireAuth(s.handleCreateItem))
 			r.Get("/{id}", s.requireAuth(s.handleGetItem))
 			r.Put("/{id}/tags", s.requireAuth(s.handleUpdateItemTags))
+			r.Post("/{id}/capture", s.requireAuth(s.handleCaptureItemContent))
 			r.Delete("/{id}", s.requireAuth(s.handleDeleteItem))
 			r.Post("/{id}/refetch", s.requireAuth(s.handleRefetchItem))
 		})
@@ -438,6 +442,55 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleCaptureItemContent(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxCapturedContentPayloadBytes)
+	var req struct {
+		Title       string `json:"title"`
+		ContentFull string `json:"content_full"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+
+	contentFull := truncateUTF8(strings.TrimSpace(req.ContentFull), s.cfg.ContentFullLimit)
+	if contentFull == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+
+	searchText := normalizeWhitespace(contentFull)
+	excerpt := truncateUTF8(searchText, 200)
+	contentSearch := truncateUTF8(searchText, s.cfg.ContentSearchLimit)
+	itemID := chi.URLParam(r, "id")
+
+	if err := s.store.UpdateCapturedContent(
+		r.Context(),
+		user.ID,
+		itemID,
+		strings.TrimSpace(req.Title),
+		excerpt,
+		contentFull,
+		contentSearch,
+		len([]byte(contentFull)),
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -844,6 +897,25 @@ func parseTagInput(v string) []string {
 		return r == ',' || r == ';' || r == '\n' || r == '\r'
 	})
 	return normalizeTagNames(parts)
+}
+
+func normalizeWhitespace(v string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(v)), " ")
+}
+
+func truncateUTF8(v string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	b := []byte(v)
+	if len(b) <= limit {
+		return v
+	}
+	trunc := b[:limit]
+	for len(trunc) > 0 && !utf8.Valid(trunc) {
+		trunc = trunc[:len(trunc)-1]
+	}
+	return string(trunc)
 }
 
 func extractHTTPURLFromText(v string) string {

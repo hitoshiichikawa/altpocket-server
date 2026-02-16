@@ -544,13 +544,17 @@ func (s *Store) UpdateFetchSuccess(ctx context.Context, itemID, title, excerpt, 
 		}
 	}()
 
-	_, err = tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE items
 		SET title=$1, excerpt=$2, fetch_status='success', fetch_error='', fetched_at=NOW(), refetch_requested=false
 		WHERE id=$3
+		  AND (fetch_status <> 'success' OR refetch_requested=true)
 	`, title, excerpt, itemID)
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
 	}
 
 	_, err = tx.Exec(ctx, `
@@ -570,6 +574,50 @@ func (s *Store) UpdateFetchFailure(ctx context.Context, itemID, reason string) e
 		UPDATE items
 		SET fetch_status='failed', fetch_error=$1, refetch_requested=false
 		WHERE id=$2
+		  AND (fetch_status <> 'success' OR refetch_requested=true)
 	`, reason, itemID)
 	return err
+}
+
+func (s *Store) UpdateCapturedContent(ctx context.Context, userID, itemID, title, excerpt, contentFull, contentSearch string, contentBytes int) error {
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE items
+		SET title = CASE WHEN $1 <> '' THEN $1 ELSE title END,
+			excerpt = $2,
+			fetch_status = 'success',
+			fetch_error = '',
+			fetched_at = NOW(),
+			refetch_requested = false
+		WHERE id = $3 AND user_id = $4
+	`, title, excerpt, itemID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO item_contents (item_id, content_full, content_search, content_bytes)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (item_id) DO UPDATE
+		SET content_full = EXCLUDED.content_full,
+			content_search = EXCLUDED.content_search,
+			content_bytes = EXCLUDED.content_bytes
+	`, itemID, contentFull, contentSearch, contentBytes)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }

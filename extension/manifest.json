@@ -9,7 +9,7 @@
     "48": "assets/icon48.png",
     "128": "assets/icon128.png"
   },
-  "permissions": ["identity", "storage", "activeTab", "sidePanel"],
+  "permissions": ["identity", "storage", "activeTab", "sidePanel", "scripting"],
   "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "background.js"

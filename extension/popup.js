@@ -13,6 +13,8 @@ const suggestionsEl = document.getElementById('suggestions');
 let tags = [];
 let token = null;
 
+const CONTENT_CAPTURE_LIMIT = 200_000;
+
 function setAuthControlsVisible(visible) {
   if (!authControlsEl) return;
   authControlsEl.hidden = !visible;
@@ -155,6 +157,102 @@ function apiErrorMessage(status, data, fallback) {
 
 function isAuthFailureStatus(status) {
   return status === 401 || status === 403;
+}
+
+async function extractPageCapture(tabId) {
+  if (!chrome.scripting || typeof chrome.scripting.executeScript !== 'function') {
+    return null;
+  }
+  if (typeof tabId !== 'number') {
+    return null;
+  }
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (limit) => {
+        const normalize = (v) => v.trim().replace(/\s+/g, ' ');
+        const truncate = (v, max) => (v.length > max ? v.slice(0, max) : v);
+        const selectorsToDrop = [
+          'script',
+          'style',
+          'noscript',
+          'template',
+          'svg',
+          'canvas',
+          'iframe',
+          'nav',
+          'aside',
+          'footer',
+          'form',
+          '[hidden]',
+          '[aria-hidden="true"]',
+        ];
+
+        const source = document.querySelector('article, main, [role="main"]') || document.body;
+        if (!source) {
+          return null;
+        }
+
+        const clone = source.cloneNode(true);
+        for (const selector of selectorsToDrop) {
+          clone.querySelectorAll(selector).forEach((node) => node.remove());
+        }
+
+        const rawText = clone.innerText || clone.textContent || '';
+        const contentFull = truncate(normalize(rawText), limit);
+        if (!contentFull) {
+          return null;
+        }
+
+        return {
+          title: normalize(document.title || ''),
+          content_full: contentFull,
+        };
+      },
+      args: [CONTENT_CAPTURE_LIMIT],
+    });
+    if (!Array.isArray(results) || results.length === 0) {
+      return null;
+    }
+    const value = results[0]?.result;
+    if (!value || typeof value.content_full !== 'string' || value.content_full === '') {
+      return null;
+    }
+    return {
+      title: typeof value.title === 'string' ? value.title : '',
+      content_full: value.content_full,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function sendCapturedContent(apiBase, itemID, capture) {
+  if (!capture || !capture.content_full) {
+    return;
+  }
+  if (!token) {
+    return;
+  }
+
+  let res;
+  try {
+    res = await fetch(`${apiBase}/v1/items/${encodeURIComponent(itemID)}/capture`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(capture),
+    });
+  } catch {
+    return;
+  }
+
+  if (isAuthFailureStatus(res.status)) {
+    await moveToUnauthenticated('Session expired. Please sign in again.', 'error');
+  }
 }
 
 function renderTags() {
@@ -322,7 +420,20 @@ async function saveCurrentTab() {
       setError(apiErrorMessage(res.status, data, 'Save failed'));
       return;
     }
+
+    const { data } = await readResponseBody(res);
+    const itemID = typeof data?.item_id === 'string' ? data.item_id : '';
+    const created = data?.created === true;
     setSuccess('Saved');
+
+    if (!created || itemID === '') {
+      return;
+    }
+
+    void (async () => {
+      const capture = await extractPageCapture(tab.id);
+      await sendCapturedContent(apiBase, itemID, capture);
+    })();
   } catch (err) {
     setError(`Save error: ${errorMessage(err, 'unexpected error')}`);
   }
