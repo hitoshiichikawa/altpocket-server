@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"math"
 	"sync"
 	"time"
 )
@@ -68,7 +69,7 @@ func (l *Limiter) bucketExpiry() time.Duration {
 	if l.rate <= 0 {
 		return 10 * time.Minute
 	}
-	refillSec := l.burst / l.rate
+	refillSec := math.Ceil(l.burst / l.rate)
 	expiry := time.Duration(refillSec) * time.Second
 	// Floor at 1 minute to avoid churn for very fast rates.
 	if expiry < time.Minute {
