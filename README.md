@@ -42,7 +42,7 @@ Web UI: http://localhost:8080/ui/items
 ## 拡張機能のロード
 1. `extension/popup.js` の `CLIENT_ID` を自分のExtension用OAuthクライアントIDに置換
 2. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
-3. PopupでAPI Base URLを入力し、Login → Save Current Tab
+3. 拡張機能アイコンをクリックしてSide Panelを開き、API Base URLを入力して Login → Save Current Tab
 
 ## モバイルChrome向けBookmarklet
 1. まず `https://YOUR_DOMAIN/ui/items` でGoogleログインしておきます（Webセッション必須）

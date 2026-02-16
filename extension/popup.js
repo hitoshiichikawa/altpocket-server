@@ -82,6 +82,46 @@ function normalizeAPIBase(value) {
   return value.trim().replace(/\/+$/, '');
 }
 
+function apiOriginPattern(apiBase) {
+  try {
+    const parsed = new URL(apiBase);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+    return `${parsed.origin}/*`;
+  } catch {
+    return '';
+  }
+}
+
+async function ensureAPIAccessPermission(apiBase, options = {}) {
+  const { interactive = false, silent = false } = options;
+  const originPattern = apiOriginPattern(apiBase);
+  if (!originPattern) {
+    if (!silent) setError('Set valid API Base URL');
+    return false;
+  }
+  if (!chrome.permissions || typeof chrome.permissions.contains !== 'function') {
+    return true;
+  }
+
+  const request = { origins: [originPattern] };
+  const hasPermission = await chrome.permissions.contains(request);
+  if (hasPermission) {
+    return true;
+  }
+  if (!interactive || typeof chrome.permissions.request !== 'function') {
+    if (!silent) setError('Allow site access to this API Base URL');
+    return false;
+  }
+
+  const granted = await chrome.permissions.request(request);
+  if (!granted && !silent) {
+    setError('Site access permission is required');
+  }
+  return granted;
+}
+
 function parseJSONSafe(text) {
   if (!text) return null;
   try {
@@ -170,9 +210,15 @@ async function login() {
     return;
   }
   apiBaseInput.value = apiBase;
-  setStatus('Signing in...');
 
   try {
+    const hasAccess = await ensureAPIAccessPermission(apiBase, { interactive: true });
+    if (!hasAccess) {
+      return;
+    }
+
+    setStatus('Signing in...');
+
     const redirectUrl = chrome.identity.getRedirectURL();
     const nonce = crypto.getRandomValues(new Uint8Array(16)).join('');
     const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -241,6 +287,11 @@ async function saveCurrentTab() {
   apiBaseInput.value = apiBase;
 
   try {
+    const hasAccess = await ensureAPIAccessPermission(apiBase, { interactive: true });
+    if (!hasAccess) {
+      return;
+    }
+
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.url) {
       setError('No tab URL');
@@ -325,6 +376,12 @@ tagInput.addEventListener('input', async () => {
     return;
   }
   try {
+    const hasAccess = await ensureAPIAccessPermission(apiBase, { silent: true });
+    if (!hasAccess) {
+      suggestionsEl.innerHTML = '';
+      return;
+    }
+
     const res = await fetch(`${apiBase}/v1/tags?q=${encodeURIComponent(q)}`, {
       headers: { 'Authorization': `Bearer ${token}` },
     });
