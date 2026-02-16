@@ -43,6 +43,7 @@ Web UI: http://localhost:8080/ui/items
 1. `extension/popup.js` の `CLIENT_ID` を自分のExtension用OAuthクライアントIDに置換
 2. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
 3. 拡張機能アイコンをクリックしてSide Panelを開き、API Base URLを入力して Login → Save Current Tab
+4. Save時はまずURL/タグだけを保存し、その後拡張機能が抽出した本文を非同期で `POST /v1/items/:id/capture` に送信します（保存操作は待たない）
 
 ## モバイル登録導線
 
@@ -60,6 +61,7 @@ Web UI: http://localhost:8080/ui/items
 
 ## API概要
 - `POST /v1/items` {url,tags[]} -> 200 {item_id, created}
+- `POST /v1/items/:id/capture` {title,content_full} -> 204（拡張機能の非同期本文アップロード）
 - `GET /v1/items` page/per_page/q/tag/sort
 - `GET /v1/items/:id`
 - `DELETE /v1/items/:id`

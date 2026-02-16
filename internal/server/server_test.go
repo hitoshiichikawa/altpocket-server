@@ -47,6 +47,20 @@ func TestParseTagInput(t *testing.T) {
 	}
 }
 
+func TestNormalizeWhitespace(t *testing.T) {
+	got := normalizeWhitespace("  hello \n  world\tgo  ")
+	if got != "hello world go" {
+		t.Fatalf("unexpected normalized text: %q", got)
+	}
+}
+
+func TestTruncateUTF8(t *testing.T) {
+	got := truncateUTF8("あいうえお", 7)
+	if got != "あい" {
+		t.Fatalf("expected UTF-8 safe truncation, got %q", got)
+	}
+}
+
 func TestQuickAddNotice(t *testing.T) {
 	if quickAddNotice("created") == "" {
 		t.Fatalf("created state should return notice")
