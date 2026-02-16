@@ -1,0 +1,42 @@
+.auth-body {
+  width: auto;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.auth-shell {
+  max-width: 520px;
+  margin: 0 auto;
+  display: grid;
+  gap: 12px;
+}
+
+.auth-shell h1 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.auth-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.auth-shell .status {
+  max-width: none;
+}
+
+@media (max-width: 560px) {
+  .auth-body {
+    padding: 14px;
+  }
+
+  .auth-shell h1 {
+    font-size: 20px;
+  }
+
+  .auth-actions {
+    grid-template-columns: 1fr;
+  }
+}

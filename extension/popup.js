@@ -1,5 +1,3 @@
-const CLIENT_ID = 'YOUR_EXTENSION_CLIENT_ID';
-
 const authControlsEl = document.getElementById('authControls');
 const apiBaseInput = document.getElementById('apiBase');
 const loginBtn = document.getElementById('login');
@@ -197,10 +195,14 @@ function addTag(value) {
   renderTags();
 }
 
-function parseFragment(fragment) {
-  if (!fragment) return '';
-  const params = new URLSearchParams(fragment.replace(/^#/, ''));
-  return params.get('id_token');
+async function openAuthTab(apiBase) {
+  const authURL = new URL(chrome.runtime.getURL('auth.html'));
+  authURL.searchParams.set('api_base', apiBase);
+  if (chrome.tabs && typeof chrome.tabs.create === 'function') {
+    await chrome.tabs.create({ url: authURL.toString() });
+    return;
+  }
+  window.open(authURL.toString(), '_blank', 'noopener,noreferrer');
 }
 
 async function login() {
@@ -212,65 +214,11 @@ async function login() {
   apiBaseInput.value = apiBase;
 
   try {
-    const hasAccess = await ensureAPIAccessPermission(apiBase, { interactive: true });
-    if (!hasAccess) {
-      return;
-    }
-
-    setStatus('Signing in...');
-
-    const redirectUrl = chrome.identity.getRedirectURL();
-    const nonce = crypto.getRandomValues(new Uint8Array(16)).join('');
-    const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    authUrl.searchParams.set('client_id', CLIENT_ID);
-    authUrl.searchParams.set('response_type', 'id_token');
-    authUrl.searchParams.set('redirect_uri', redirectUrl);
-    authUrl.searchParams.set('scope', 'openid email profile');
-    authUrl.searchParams.set('nonce', nonce);
-
-    const resultUrl = await chrome.identity.launchWebAuthFlow({
-      url: authUrl.toString(),
-      interactive: true,
-    });
-    if (!resultUrl) {
-      setError('Login canceled');
-      return;
-    }
-
-    const parsedResultURL = new URL(resultUrl);
-    const idToken = parseFragment(parsedResultURL.hash);
-    if (!idToken) {
-      setError('Login failed');
-      return;
-    }
-
-    let res;
-    try {
-      res = await fetch(`${apiBase}/v1/auth/extension/exchange`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id_token: idToken }),
-      });
-    } catch (err) {
-      setError(`Exchange request failed: ${errorMessage(err, 'network error')}`);
-      return;
-    }
-
-    const { data } = await readResponseBody(res);
-    if (!res.ok) {
-      setError(apiErrorMessage(res.status, data, 'Exchange failed'));
-      return;
-    }
-    if (!data || typeof data.token !== 'string' || data.token === '') {
-      setError('Exchange failed: token missing');
-      return;
-    }
-
-    token = data.token;
-    await chrome.storage.local.set({ apiBase, token });
-    moveToAuthenticated('Logged in');
+    await chrome.storage.local.set({ apiBase });
+    await openAuthTab(apiBase);
+    setStatus('Continue sign-in in the opened tab');
   } catch (err) {
-    setError(`Login error: ${errorMessage(err, 'unexpected error')}`);
+    setError(`Failed to open sign-in tab: ${errorMessage(err, 'unexpected error')}`);
   }
 }
 

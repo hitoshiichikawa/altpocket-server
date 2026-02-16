@@ -99,30 +99,22 @@ function createFetchMock(handlers) {
 
 function createChromeMock({
   storageData = {},
-  launchWebAuthFlowResult = 'https://redirect.local/#id_token=test-id-token',
-  launchWebAuthFlowError = null,
   tabURL = 'https://example.com/current',
+  tabCreateError = null,
   permissionsDefaultGranted = true,
   permissionsRequestResult = true,
 } = {}) {
   const data = { ...storageData };
   const storageSetCalls = [];
   const storageRemoveCalls = [];
-  const identityCalls = [];
+  const tabsCreateCalls = [];
   const permissionContainsCalls = [];
   const permissionRequestCalls = [];
 
   const chrome = {
-    identity: {
-      getRedirectURL() {
-        return 'https://redirect.local/callback';
-      },
-      async launchWebAuthFlow(args) {
-        identityCalls.push(args);
-        if (launchWebAuthFlowError) {
-          throw launchWebAuthFlowError;
-        }
-        return launchWebAuthFlowResult;
+    runtime: {
+      getURL(path) {
+        return `chrome-extension://unit-test-extension/${path}`;
       },
     },
     storage: {
@@ -166,6 +158,12 @@ function createChromeMock({
       async query() {
         return [{ url: tabURL }];
       },
+      async create(payload) {
+        tabsCreateCalls.push(payload);
+        if (tabCreateError) {
+          throw tabCreateError;
+        }
+      },
     },
   };
 
@@ -173,7 +171,7 @@ function createChromeMock({
     chrome,
     storageSetCalls,
     storageRemoveCalls,
-    identityCalls,
+    tabsCreateCalls,
     permissionContainsCalls,
     permissionRequestCalls,
     storageData: data,
@@ -216,7 +214,7 @@ async function loadPopupScript(options = {}) {
     chrome,
     storageSetCalls,
     storageRemoveCalls,
-    identityCalls,
+    tabsCreateCalls,
     permissionContainsCalls,
     permissionRequestCalls,
     storageData,
@@ -245,7 +243,7 @@ async function loadPopupScript(options = {}) {
     fetchCalls: calls,
     storageSetCalls,
     storageRemoveCalls,
-    identityCalls,
+    tabsCreateCalls,
     permissionContainsCalls,
     permissionRequestCalls,
     storageData,
@@ -266,46 +264,37 @@ test('login requires API base URL', async () => {
   assert.equal(env.elements.authControls.hidden, true);
 });
 
-test('login exchanges id token and stores API token', async () => {
-  const env = await loadPopupScript({
-    fetchHandlers: [jsonResponse(200, { token: 'jwt-token' })],
-  });
+test('login opens auth tab and stores normalized API base', async () => {
+  const env = await loadPopupScript();
 
-  env.elements.apiBase.value = 'https://api.example.test';
+  env.elements.apiBase.value = 'https://api.example.test/';
   await env.elements.login.click();
 
-  assert.equal(env.fetchCalls.length, 1);
-  assert.equal(env.fetchCalls[0].url, 'https://api.example.test/v1/auth/extension/exchange');
-  assert.equal(env.fetchCalls[0].options.method, 'POST');
-
-  const payload = JSON.parse(env.fetchCalls[0].options.body);
-  assert.equal(payload.id_token, 'test-id-token');
-
-  assert.equal(env.elements.status.textContent, 'Logged in');
-  assert.equal(env.elements.status.className, 'status status-success');
+  assert.equal(env.fetchCalls.length, 0);
   assert.equal(env.storageSetCalls.length, 1);
   assert.equal(env.storageSetCalls[0].apiBase, 'https://api.example.test');
-  assert.equal(env.storageSetCalls[0].token, 'jwt-token');
-  assert.equal(env.storageData.token, 'jwt-token');
-  assert.equal(env.elements.authControls.hidden, false);
-  assert.equal(env.elements.login.textContent, 'Sign out');
+  assert.equal(env.tabsCreateCalls.length, 1);
+  assert.equal(
+    env.tabsCreateCalls[0].url,
+    'chrome-extension://unit-test-extension/auth.html?api_base=https%3A%2F%2Fapi.example.test',
+  );
+  assert.equal(env.elements.status.textContent, 'Continue sign-in in the opened tab');
+  assert.equal(env.elements.status.className, 'status status-info');
+  assert.equal(env.elements.authControls.hidden, true);
+  assert.equal(env.elements.login.textContent, 'Sign in with Google');
 });
 
-test('login requests optional host permission when missing', async () => {
+test('login surfaces auth-tab open errors', async () => {
   const env = await loadPopupScript({
-    permissionsDefaultGranted: false,
-    permissionsRequestResult: true,
-    fetchHandlers: [jsonResponse(200, { token: 'jwt-token' })],
+    tabCreateError: new Error('tabs unavailable'),
   });
 
   env.elements.apiBase.value = 'https://api.example.test';
   await env.elements.login.click();
 
-  assert.equal(env.permissionContainsCalls.length, 1);
-  assert.equal(env.permissionContainsCalls[0].origins[0], 'https://api.example.test/*');
-  assert.equal(env.permissionRequestCalls.length, 1);
-  assert.equal(env.permissionRequestCalls[0].origins[0], 'https://api.example.test/*');
-  assert.equal(env.elements.status.textContent, 'Logged in');
+  assert.equal(env.tabsCreateCalls.length, 1);
+  assert.equal(env.elements.status.className, 'status status-error');
+  assert.match(env.elements.status.textContent, /^Failed to open sign-in tab:/);
 });
 
 test('save requires login token', async () => {
@@ -371,35 +360,6 @@ test('save current tab sends bearer token and tags', async () => {
   assert.equal(env.elements.status.textContent, 'Saved');
   assert.equal(env.elements.status.className, 'status status-success');
   assert.equal(env.elements.authControls.hidden, false);
-});
-
-test('login surfaces exchange network errors', async () => {
-  const env = await loadPopupScript({
-    fetchHandlers: [() => {
-      throw new Error('connect ECONNREFUSED');
-    }],
-  });
-
-  env.elements.apiBase.value = 'https://api.example.test';
-  await env.elements.login.click();
-
-  assert.equal(env.fetchCalls.length, 1);
-  assert.equal(env.elements.status.className, 'status status-error');
-  assert.match(env.elements.status.textContent, /^Exchange request failed:/);
-  assert.equal(env.elements.authControls.hidden, true);
-});
-
-test('login surfaces user_not_registered from exchange', async () => {
-  const env = await loadPopupScript({
-    fetchHandlers: [jsonResponse(403, { error: 'user_not_registered' })],
-  });
-
-  env.elements.apiBase.value = 'https://api.example.test';
-  await env.elements.login.click();
-
-  assert.equal(env.elements.status.className, 'status status-error');
-  assert.equal(env.elements.status.textContent, 'Account is not registered on this server');
-  assert.equal(env.elements.authControls.hidden, true);
 });
 
 test('save surfaces API error payload', async () => {
