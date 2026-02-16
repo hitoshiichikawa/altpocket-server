@@ -44,15 +44,19 @@ Web UI: http://localhost:8080/ui/items
 2. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
 3. 拡張機能アイコンをクリックしてSide Panelを開き、API Base URLを入力して Login → Save Current Tab
 
-## モバイルChrome向けBookmarklet
-1. まず `https://YOUR_DOMAIN/ui/items` でGoogleログインしておきます（Webセッション必須）
-2. 以下の文字列をブックマークURLとして登録します（`YOUR_DOMAIN` を置換）
+## モバイル登録導線
 
-```javascript
-javascript:(()=>{const base='https://YOUR_DOMAIN/ui/quick-add';const u=new URL(base);u.searchParams.set('url',location.href);u.searchParams.set('title',document.title||'');const w=window.open(u.toString(),'_blank','noopener,noreferrer');if(!w){location.href=u.toString();}})();
-```
+### Android (Chrome): PWA Share Target
+1. `https://YOUR_DOMAIN/ui/items` でGoogleログインします（Webセッション必須）。
+2. Chromeメニューから「ホーム画面に追加」で altpocket をインストールします。
+3. 保存したいページで「共有」→ `altpocket` を選択します。
+4. `Quick Add` 画面が開くので、内容を確認して保存します。
 
-3. 保存したいページでbookmarkletを実行すると、`/ui/quick-add` が開き、確認後に登録できます。
+### iPhone (Safari): ショートカット共有導線
+1. `https://YOUR_DOMAIN/ui/items` でGoogleログインします（Webセッション必須）。
+2. iOSショートカットを作成し、共有シートから受け取る入力を `URL` に設定します。
+3. アクション「URLを開く」で `https://YOUR_DOMAIN/ui/quick-add?url=<共有されたURL>` を開くよう設定します。
+4. Safariの共有シートから作成したショートカットを実行し、`Quick Add` 画面で保存します。
 
 ## API概要
 - `POST /v1/items` {url,tags[]} -> 200 {item_id, created}

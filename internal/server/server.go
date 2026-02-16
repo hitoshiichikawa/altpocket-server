@@ -96,6 +96,8 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/", s.handleHome)
 	r.Get("/register", s.handleRegister)
 	r.Get("/healthz", s.handleHealth)
+	r.Get("/manifest.webmanifest", s.handleWebManifest)
+	r.Get("/sw.js", s.handleServiceWorker)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(s.cors)
@@ -119,6 +121,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/items/{id}", s.requireWeb(s.handleUIItem))
 		r.Get("/quick-add", s.requireWeb(s.handleUIQuickAdd))
 		r.Post("/quick-add", s.requireWeb(s.handleUIQuickAddSubmit))
+		r.Post("/quick-add/share-target", s.requireWeb(s.handleUIQuickAddShareTarget))
 	})
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
@@ -128,6 +131,18 @@ func (s *Server) Routes() http.Handler {
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+func (s *Server) handleWebManifest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/manifest+json")
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFile(w, r, "static/manifest.webmanifest")
+}
+
+func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFile(w, r, "static/sw.js")
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -543,15 +558,47 @@ func (s *Server) handleUIItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUIQuickAdd(w http.ResponseWriter, r *http.Request) {
+	urlValue := strings.TrimSpace(r.URL.Query().Get("url"))
+	textValue := strings.TrimSpace(r.URL.Query().Get("text"))
+	if urlValue == "" {
+		urlValue = extractHTTPURLFromText(textValue)
+	}
+
 	s.renderUIQuickAdd(
 		w,
 		r,
 		http.StatusOK,
-		strings.TrimSpace(r.URL.Query().Get("url")),
+		urlValue,
 		strings.TrimSpace(r.URL.Query().Get("title")),
 		strings.TrimSpace(r.URL.Query().Get("tags")),
 		"",
 	)
+}
+
+func (s *Server) handleUIQuickAddShareTarget(w http.ResponseWriter, r *http.Request) {
+	urlValue := strings.TrimSpace(r.PostFormValue("url"))
+	titleValue := strings.TrimSpace(r.PostFormValue("title"))
+	textValue := strings.TrimSpace(r.PostFormValue("text"))
+	if urlValue == "" {
+		urlValue = extractHTTPURLFromText(textValue)
+	}
+
+	q := url.Values{}
+	if urlValue != "" {
+		q.Set("url", urlValue)
+	}
+	if titleValue != "" {
+		q.Set("title", titleValue)
+	}
+	if textValue != "" {
+		q.Set("text", textValue)
+	}
+
+	target := "/ui/quick-add"
+	if encoded := q.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) {
@@ -799,10 +846,27 @@ func parseTagInput(v string) []string {
 	return normalizeTagNames(parts)
 }
 
+func extractHTTPURLFromText(v string) string {
+	if v == "" {
+		return ""
+	}
+	for _, part := range strings.Fields(v) {
+		candidate := strings.Trim(part, "\"'()[]{}<>,.;")
+		u, err := url.Parse(candidate)
+		if err != nil {
+			continue
+		}
+		if (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func quickAddNotice(state string) string {
 	switch state {
 	case "created":
-		return "Saved page from bookmarklet."
+		return "Saved page."
 	case "exists":
 		return "This page is already saved."
 	default:
