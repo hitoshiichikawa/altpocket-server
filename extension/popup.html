@@ -20,6 +20,8 @@
       <div id="status" class="status status-info" role="alert" aria-live="polite">Not logged in</div>
     </header>
 
+    <button id="login" class="btn btn-secondary" type="button">Sign in with Google</button>
+
     <section id="authControls" class="auth-controls" hidden>
       <button id="save" class="btn btn-primary" type="button">Save current tab</button>
 
@@ -30,17 +32,6 @@
         <div id="tags" class="chips"></div>
       </section>
     </section>
-
-    <details class="settings">
-      <summary>Settings</summary>
-      <div class="settings-body">
-        <label class="field" for="apiBase">
-          <span class="label">API Base URL</span>
-          <input id="apiBase" class="input" type="text" placeholder="https://api.example.com">
-        </label>
-        <button id="login" class="btn btn-secondary" type="button">Sign in with Google</button>
-      </div>
-    </details>
 
     <button id="openWebUI" class="btn btn-ghost" type="button">Open Web App</button>
   </main>

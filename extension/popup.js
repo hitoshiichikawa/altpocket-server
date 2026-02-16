@@ -1,7 +1,11 @@
 const CLIENT_ID = 'YOUR_EXTENSION_CLIENT_ID';
+const API_BASE = (
+  typeof globalThis.ALTPocketAPIBase === 'string' && globalThis.ALTPocketAPIBase !== ''
+    ? globalThis.ALTPocketAPIBase
+    : 'https://YOUR_API_BASE_URL'
+).trim().replace(/\/+$/, '');
 
 const authControlsEl = document.getElementById('authControls');
-const apiBaseInput = document.getElementById('apiBase');
 const loginBtn = document.getElementById('login');
 const saveBtn = document.getElementById('save');
 const openWebUIBtn = document.getElementById('openWebUI');
@@ -80,8 +84,19 @@ function moveToAuthenticated(message = 'Ready') {
   setSuccess(message);
 }
 
-function normalizeAPIBase(value) {
-  return value.trim().replace(/\/+$/, '');
+function getConfiguredAPIBase() {
+  if (!API_BASE || API_BASE.includes('YOUR_API_BASE_URL')) {
+    return '';
+  }
+  try {
+    const parsed = new URL(API_BASE);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+    return parsed.origin;
+  } catch {
+    return '';
+  }
 }
 
 function apiOriginPattern(apiBase) {
@@ -100,7 +115,7 @@ async function ensureAPIAccessPermission(apiBase, options = {}) {
   const { interactive = false, silent = false } = options;
   const originPattern = apiOriginPattern(apiBase);
   if (!originPattern) {
-    if (!silent) setError('Set valid API Base URL');
+    if (!silent) setError('Extension API base is not configured');
     return false;
   }
   if (!chrome.permissions || typeof chrome.permissions.contains !== 'function') {
@@ -302,12 +317,11 @@ function parseFragment(fragment) {
 }
 
 async function login() {
-  const apiBase = normalizeAPIBase(apiBaseInput.value);
+  const apiBase = getConfiguredAPIBase();
   if (!apiBase) {
-    setError('Set API Base URL');
+    setError('Extension API base is not configured');
     return;
   }
-  apiBaseInput.value = apiBase;
 
   try {
     const hasAccess = await ensureAPIAccessPermission(apiBase, { interactive: true });
@@ -365,7 +379,7 @@ async function login() {
     }
 
     token = data.token;
-    await chrome.storage.local.set({ apiBase, token });
+    await chrome.storage.local.set({ token });
     moveToAuthenticated('Logged in');
   } catch (err) {
     setError(`Login error: ${errorMessage(err, 'unexpected error')}`);
@@ -377,12 +391,15 @@ async function signOut() {
 }
 
 async function saveCurrentTab() {
-  const apiBase = normalizeAPIBase(apiBaseInput.value);
-  if (!apiBase || !token) {
+  const apiBase = getConfiguredAPIBase();
+  if (!apiBase) {
+    setError('Extension API base is not configured');
+    return;
+  }
+  if (!token) {
     await moveToUnauthenticated('Login required', 'error');
     return;
   }
-  apiBaseInput.value = apiBase;
 
   try {
     const hasAccess = await ensureAPIAccessPermission(apiBase, { interactive: true });
@@ -440,12 +457,11 @@ async function saveCurrentTab() {
 }
 
 async function openWebUI() {
-  const apiBase = normalizeAPIBase(apiBaseInput.value);
+  const apiBase = getConfiguredAPIBase();
   if (!apiBase) {
-    setError('Set API Base URL');
+    setError('Extension API base is not configured');
     return;
   }
-  apiBaseInput.value = apiBase;
   const webURL = `${apiBase}/ui/items`;
   try {
     if (chrome.tabs && typeof chrome.tabs.create === 'function') {
@@ -480,7 +496,7 @@ tagInput.addEventListener('keydown', (e) => {
 });
 
 tagInput.addEventListener('input', async () => {
-  const apiBase = normalizeAPIBase(apiBaseInput.value);
+  const apiBase = getConfiguredAPIBase();
   const q = tagInput.value.trim();
   if (!apiBase || !token || q.length < 1) {
     suggestionsEl.innerHTML = '';
@@ -521,8 +537,7 @@ tagInput.addEventListener('blur', () => {
   try {
     setAuthControlsVisible(false);
     setLoginButtonAuthenticated(false);
-    const data = await chrome.storage.local.get(['apiBase', 'token']);
-    if (data.apiBase) apiBaseInput.value = normalizeAPIBase(data.apiBase);
+    const data = await chrome.storage.local.get(['token']);
     if (typeof data.token === 'string' && data.token.trim() !== '') {
       token = data.token;
       moveToAuthenticated('Ready');
