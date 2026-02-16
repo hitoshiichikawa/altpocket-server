@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,8 +17,9 @@ type Config struct {
 	GoogleExtClientID string
 	GoogleClientSecret string
 	PublicBaseURL     string
-	ContentFullLimit  int
+	ContentFullLimit   int
 	ContentSearchLimit int
+	CORSAllowOrigins   []string
 }
 
 func Load() Config {
@@ -33,6 +35,7 @@ func Load() Config {
 		PublicBaseURL:      mustEnv("PUBLIC_BASE_URL"),
 		ContentFullLimit:   getEnvInt("CONTENT_FULL_LIMIT_BYTES", 1_000_000),
 		ContentSearchLimit: getEnvInt("CONTENT_SEARCH_LIMIT_BYTES", 16_384),
+		CORSAllowOrigins:   getEnvList("CORS_ALLOW_ORIGINS"),
 	}
 }
 
@@ -50,6 +53,22 @@ func mustEnv(key string) string {
 		panic("missing env: " + key)
 	}
 	return v
+}
+
+func getEnvList(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnvInt(key string, fallback int) int {

@@ -817,8 +817,29 @@ func (s *Server) requestID(ctx context.Context) string {
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {
+	allowed := s.cfg.CORSAllowOrigins
+	allowAll := len(allowed) == 0
+	allowedSet := map[string]struct{}{}
+	for _, o := range allowed {
+		allowedSet[o] = struct{}{}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if allowAll {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else if _, ok := allowedSet[origin]; ok {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		} else {
+			// Origin not allowed — skip CORS headers
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
