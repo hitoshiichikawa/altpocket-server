@@ -102,11 +102,15 @@ function createChromeMock({
   launchWebAuthFlowResult = 'https://redirect.local/#id_token=test-id-token',
   launchWebAuthFlowError = null,
   tabURL = 'https://example.com/current',
+  permissionsDefaultGranted = true,
+  permissionsRequestResult = true,
 } = {}) {
   const data = { ...storageData };
   const storageSetCalls = [];
   const storageRemoveCalls = [];
   const identityCalls = [];
+  const permissionContainsCalls = [];
+  const permissionRequestCalls = [];
 
   const chrome = {
     identity: {
@@ -148,6 +152,16 @@ function createChromeMock({
         },
       },
     },
+    permissions: {
+      async contains(payload) {
+        permissionContainsCalls.push(payload);
+        return permissionsDefaultGranted;
+      },
+      async request(payload) {
+        permissionRequestCalls.push(payload);
+        return permissionsRequestResult;
+      },
+    },
     tabs: {
       async query() {
         return [{ url: tabURL }];
@@ -155,7 +169,15 @@ function createChromeMock({
     },
   };
 
-  return { chrome, storageSetCalls, storageRemoveCalls, identityCalls, storageData: data };
+  return {
+    chrome,
+    storageSetCalls,
+    storageRemoveCalls,
+    identityCalls,
+    permissionContainsCalls,
+    permissionRequestCalls,
+    storageData: data,
+  };
 }
 
 function createDocument() {
@@ -190,7 +212,15 @@ async function flushTasks() {
 
 async function loadPopupScript(options = {}) {
   const { document, elements } = createDocument();
-  const { chrome, storageSetCalls, storageRemoveCalls, identityCalls, storageData } = createChromeMock(options);
+  const {
+    chrome,
+    storageSetCalls,
+    storageRemoveCalls,
+    identityCalls,
+    permissionContainsCalls,
+    permissionRequestCalls,
+    storageData,
+  } = createChromeMock(options);
   const { fetch, calls } = createFetchMock(options.fetchHandlers || []);
 
   const context = vm.createContext({
@@ -216,6 +246,8 @@ async function loadPopupScript(options = {}) {
     storageSetCalls,
     storageRemoveCalls,
     identityCalls,
+    permissionContainsCalls,
+    permissionRequestCalls,
     storageData,
   };
 }
@@ -259,6 +291,23 @@ test('login exchanges id token and stores API token', async () => {
   assert.equal(env.elements.login.textContent, 'Sign out');
 });
 
+test('login requests optional host permission when missing', async () => {
+  const env = await loadPopupScript({
+    permissionsDefaultGranted: false,
+    permissionsRequestResult: true,
+    fetchHandlers: [jsonResponse(200, { token: 'jwt-token' })],
+  });
+
+  env.elements.apiBase.value = 'https://api.example.test';
+  await env.elements.login.click();
+
+  assert.equal(env.permissionContainsCalls.length, 1);
+  assert.equal(env.permissionContainsCalls[0].origins[0], 'https://api.example.test/*');
+  assert.equal(env.permissionRequestCalls.length, 1);
+  assert.equal(env.permissionRequestCalls[0].origins[0], 'https://api.example.test/*');
+  assert.equal(env.elements.status.textContent, 'Logged in');
+});
+
 test('save requires login token', async () => {
   const env = await loadPopupScript();
 
@@ -271,6 +320,24 @@ test('save requires login token', async () => {
   assert.equal(env.elements.authControls.hidden, true);
   assert.equal(env.storageRemoveCalls.length, 1);
   assert.deepEqual(env.storageRemoveCalls[0], ['token']);
+});
+
+test('save stops when host permission request is denied', async () => {
+  const env = await loadPopupScript({
+    storageData: {
+      apiBase: 'https://api.example.test',
+      token: 'stored-token',
+    },
+    permissionsDefaultGranted: false,
+    permissionsRequestResult: false,
+  });
+
+  await env.elements.save.click();
+
+  assert.equal(env.permissionContainsCalls.length, 1);
+  assert.equal(env.permissionRequestCalls.length, 1);
+  assert.equal(env.fetchCalls.length, 0);
+  assert.equal(env.elements.status.textContent, 'Site access permission is required');
 });
 
 test('save current tab sends bearer token and tags', async () => {
