@@ -2,6 +2,26 @@ package urlnorm
 
 import "testing"
 
+func TestCanonicalizeRejectsInvalidURLs(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"empty_string", ""},
+		{"no_scheme", "example.com/page"},
+		{"javascript_scheme", "javascript:alert(1)"},
+		{"ftp_scheme", "ftp://example.com/file"},
+		{"data_scheme", "data:text/html,<h1>hi</h1>"},
+		{"relative_path", "/some/path"},
+	}
+	for _, tc := range cases {
+		_, _, err := Canonicalize(tc.raw)
+		if err == nil {
+			t.Fatalf("%s: expected error for %q but got nil", tc.name, tc.raw)
+		}
+	}
+}
+
 func TestCanonicalize(t *testing.T) {
 	cases := []struct {
 		name       string

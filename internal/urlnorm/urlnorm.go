@@ -3,6 +3,7 @@ package urlnorm
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/url"
 	"sort"
 	"strings"
@@ -13,10 +14,19 @@ var stripKeys = map[string]struct{}{
 	"gclid":  {},
 }
 
+var errInvalidScheme = errors.New("invalid_scheme")
+var errMissingHost = errors.New("missing_host")
+
 func Canonicalize(raw string) (canonicalURL string, canonicalHash string, err error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return "", "", err
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", "", errInvalidScheme
+	}
+	if u.Host == "" {
+		return "", "", errMissingHost
 	}
 	q := u.Query()
 	for key := range q {
