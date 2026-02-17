@@ -722,3 +722,42 @@ func (s *Store) UpdateCapturedContent(ctx context.Context, userID, itemID, title
 
 	return tx.Commit(ctx)
 }
+
+func (s *Store) SeedCapturedContent(ctx context.Context, userID, itemID, title, excerpt, contentFull, contentSearch string, contentBytes int) error {
+	tx, err := s.DB.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE items
+		SET title = CASE WHEN $1 <> '' THEN $1 ELSE title END,
+			excerpt = CASE WHEN excerpt = '' THEN $2 ELSE excerpt END
+		WHERE id = $3 AND user_id = $4 AND fetch_status <> 'success'
+	`, title, excerpt, itemID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return tx.Commit(ctx)
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO item_contents (item_id, content_full, content_search, content_bytes)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (item_id) DO UPDATE
+		SET content_full = EXCLUDED.content_full,
+			content_search = EXCLUDED.content_search,
+			content_bytes = EXCLUDED.content_bytes
+	`, itemID, contentFull, contentSearch, contentBytes)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}

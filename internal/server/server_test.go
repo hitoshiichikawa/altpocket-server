@@ -119,6 +119,21 @@ func TestExtractHTTPURLFromText(t *testing.T) {
 	}
 }
 
+func TestQuickAddContentPreview(t *testing.T) {
+	got := quickAddContentPreview("https://example.com/abc", "Read https://example.com/abc later")
+	if got != "Read later" {
+		t.Fatalf("unexpected content preview: %q", got)
+	}
+}
+
+func TestQuickAddContentPreviewTruncatesTo200Runes(t *testing.T) {
+	input := strings.Repeat("あ", 220)
+	got := quickAddContentPreview("", input)
+	if len([]rune(got)) != 200 {
+		t.Fatalf("expected 200 runes, got %d", len([]rune(got)))
+	}
+}
+
 func TestHandleUIQuickAddShareTargetRedirectsWithURLFallback(t *testing.T) {
 	s := newAuthTestServer()
 	form := "title=Example+Article&text=Read+https%3A%2F%2Fexample.com%2Fabc+later"
@@ -144,6 +159,9 @@ func TestHandleUIQuickAddShareTargetRedirectsWithURLFallback(t *testing.T) {
 	}
 	if got := u.Query().Get("title"); got != "Example Article" {
 		t.Fatalf("expected title to be forwarded, got %q", got)
+	}
+	if got := u.Query().Get("content"); got != "Read later" {
+		t.Fatalf("expected content preview, got %q", got)
 	}
 }
 

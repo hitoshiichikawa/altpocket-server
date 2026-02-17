@@ -50,7 +50,7 @@ Web UI: http://localhost:8080/ui/items
 2. `extension/popup.js` の `API_BASE` を固定のAPIオリジンに設定
 3. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
 4. 拡張機能アイコンをクリックしてSide Panelを開き、Login → Save Current Tab
-5. Save時はまずURL/タグだけを保存し、その後拡張機能が抽出した本文を非同期で `POST /v1/items/:id/capture` に送信します（保存操作は待たない）
+5. Save時はまずURL/タグだけを保存し、その後拡張機能が抽出した本文を非同期で `POST /v1/items/:id/capture` に送信します（保存操作は待たない）。この本文はworker fetch失敗時のフォールバックとして扱われ、worker fetch成功時はworker側の本文が優先されます。
 
 ## モバイル登録導線
 
@@ -65,6 +65,14 @@ Web UI: http://localhost:8080/ui/items
 2. iOSショートカットを作成し、共有シートから受け取る入力を `URL` に設定します。
 3. アクション「URLを開く」で `https://YOUR_DOMAIN/ui/quick-add?url=<共有されたURL>` を開くよう設定します。
 4. Safariの共有シートから作成したショートカットを実行し、`Quick Add` 画面で保存します。
+
+### Bookmarklet（デスクトップ向け）
+以下をブックマークURLに設定すると、`Quick Add` を別タブで開きます。URL/タイトルに加えて、本文候補（最大200文字）を `content` として渡します。元ページは遷移しません。
+`content` は worker fetch が失敗したときのフォールバック用途で、worker fetch が成功した場合は worker 側の本文が優先されます。
+
+```text
+javascript:(()=>{const base='https://YOUR_DOMAIN/ui/quick-add';const u=new URL(base);u.searchParams.set('url',location.href);u.searchParams.set('title',document.title||'');const normalize=v=>v.trim().replace(/\s+/g,' ');const truncate=(v,max)=>v.length>max?v.slice(0,max):v;const drop=['script','style','noscript','template','svg','canvas','iframe','nav','aside','footer','form','[hidden]','[aria-hidden=\"true\"]'];const source=document.querySelector('article, main, [role=\"main\"]')||document.body;if(source){const clone=source.cloneNode(true);drop.forEach(s=>clone.querySelectorAll(s).forEach(n=>n.remove()));const preview=truncate(normalize(clone.innerText||clone.textContent||''),200);if(preview){u.searchParams.set('content',preview);}}window.open(u.toString(),'_blank','noopener,noreferrer');})();
+```
 
 ## API概要
 - `POST /v1/items` {url,tags[]} -> 200 {item_id, created}
