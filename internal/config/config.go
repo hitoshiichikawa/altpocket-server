@@ -3,26 +3,34 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
-	Env               string
-	HTTPAddr          string
-	DatabaseURL       string
-	SessionSecret     string
-	JWTSecret         string
-	GoogleWebClientID string
-	GoogleExtClientID string
+	Env                string
+	HTTPAddr           string
+	DatabaseURL        string
+	SessionSecret      string
+	JWTSecret          string
+	GoogleWebClientID  string
+	GoogleExtClientID  string
 	GoogleClientSecret string
-	PublicBaseURL     string
-	ContentFullLimit  int
+	PublicBaseURL      string
+	ContentFullLimit   int
 	ContentSearchLimit int
+	CORSAllowOrigins   []string
 }
 
 func Load() Config {
+	env := getEnv("APP_ENV", "development")
+	corsAllowOrigins := getEnvList("CORS_ALLOW_ORIGINS")
+	if env == "production" && len(corsAllowOrigins) == 0 {
+		panic("missing env: CORS_ALLOW_ORIGINS")
+	}
+
 	return Config{
-		Env:                getEnv("APP_ENV", "development"),
+		Env:                env,
 		HTTPAddr:           getEnv("HTTP_ADDR", ":8080"),
 		DatabaseURL:        mustEnv("DATABASE_URL"),
 		SessionSecret:      mustEnv("SESSION_SECRET"),
@@ -33,6 +41,7 @@ func Load() Config {
 		PublicBaseURL:      mustEnv("PUBLIC_BASE_URL"),
 		ContentFullLimit:   getEnvInt("CONTENT_FULL_LIMIT_BYTES", 1_000_000),
 		ContentSearchLimit: getEnvInt("CONTENT_SEARCH_LIMIT_BYTES", 16_384),
+		CORSAllowOrigins:   corsAllowOrigins,
 	}
 }
 
@@ -50,6 +59,22 @@ func mustEnv(key string) string {
 		panic("missing env: " + key)
 	}
 	return v
+}
+
+func getEnvList(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnvInt(key string, fallback int) int {

@@ -817,8 +817,31 @@ func (s *Server) requestID(ctx context.Context) string {
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {
+	allowed := s.cfg.CORSAllowOrigins
+	allowedSet := map[string]struct{}{}
+	for _, o := range allowed {
+		allowedSet[o] = struct{}{}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		_, allowedOrigin := allowedSet[origin]
+		if !allowedOrigin && !requestOriginMatchesHost(r, origin) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Add("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
@@ -827,6 +850,17 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestOriginMatchesHost(r *http.Request, origin string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
 }
 
 func (s *Server) checkCSRF(r *http.Request) error {
