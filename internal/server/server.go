@@ -44,6 +44,7 @@ type Server struct {
 var errInvalidURL = errors.New("invalid_url")
 
 const maxCapturedContentPayloadBytes = 256 * 1024
+const quickAddContentPreviewRuneLimit = 200
 
 func New(cfg config.Config, st *store.Store, limiter *ratelimit.Limiter, log *slog.Logger, renderer *ui.Renderer) *Server {
 	oauthCfg := &oauth2.Config{
@@ -473,7 +474,7 @@ func (s *Server) handleCaptureItemContent(w http.ResponseWriter, r *http.Request
 	contentSearch := truncateUTF8(searchText, s.cfg.ContentSearchLimit)
 	itemID := chi.URLParam(r, "id")
 
-	if err := s.store.UpdateCapturedContent(
+	if err := s.store.SeedCapturedContent(
 		r.Context(),
 		user.ID,
 		itemID,
@@ -616,6 +617,10 @@ func (s *Server) handleUIQuickAdd(w http.ResponseWriter, r *http.Request) {
 	if urlValue == "" {
 		urlValue = extractHTTPURLFromText(textValue)
 	}
+	contentPreview := strings.TrimSpace(r.URL.Query().Get("content"))
+	if contentPreview == "" {
+		contentPreview = quickAddContentPreview(urlValue, textValue)
+	}
 
 	s.renderUIQuickAdd(
 		w,
@@ -624,6 +629,7 @@ func (s *Server) handleUIQuickAdd(w http.ResponseWriter, r *http.Request) {
 		urlValue,
 		strings.TrimSpace(r.URL.Query().Get("title")),
 		strings.TrimSpace(r.URL.Query().Get("tags")),
+		contentPreview,
 		"",
 	)
 }
@@ -643,8 +649,9 @@ func (s *Server) handleUIQuickAddShareTarget(w http.ResponseWriter, r *http.Requ
 	if titleValue != "" {
 		q.Set("title", titleValue)
 	}
-	if textValue != "" {
-		q.Set("text", textValue)
+	contentPreview := quickAddContentPreview(urlValue, textValue)
+	if contentPreview != "" {
+		q.Set("content", contentPreview)
 	}
 
 	target := "/ui/quick-add"
@@ -664,30 +671,53 @@ func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) 
 	urlValue := strings.TrimSpace(r.PostFormValue("url"))
 	titleValue := strings.TrimSpace(r.PostFormValue("title"))
 	tagsValue := strings.TrimSpace(r.PostFormValue("tags"))
+	contentPreview := truncateRunes(normalizeWhitespace(r.PostFormValue("content_preview")), quickAddContentPreviewRuneLimit)
 
 	csrfExpected := s.csrfFromContext(r.Context())
 	csrfProvided := r.PostFormValue("csrf_token")
 	if csrfExpected == "" || csrfProvided == "" || csrfProvided != csrfExpected {
-		s.renderUIQuickAdd(w, r, http.StatusForbidden, urlValue, titleValue, tagsValue, "CSRF token mismatch.")
+		s.renderUIQuickAdd(w, r, http.StatusForbidden, urlValue, titleValue, tagsValue, contentPreview, "CSRF token mismatch.")
 		return
 	}
 	if urlValue == "" {
-		s.renderUIQuickAdd(w, r, http.StatusBadRequest, urlValue, titleValue, tagsValue, "URL is required.")
+		s.renderUIQuickAdd(w, r, http.StatusBadRequest, urlValue, titleValue, tagsValue, contentPreview, "URL is required.")
 		return
 	}
 	if !s.limiter.Allow(user.ID) {
-		s.renderUIQuickAdd(w, r, http.StatusTooManyRequests, urlValue, titleValue, tagsValue, "Too many requests. Please wait and retry.")
+		s.renderUIQuickAdd(w, r, http.StatusTooManyRequests, urlValue, titleValue, tagsValue, contentPreview, "Too many requests. Please wait and retry.")
 		return
 	}
 
-	_, created, err := s.createItem(r.Context(), user.ID, urlValue, parseTagInput(tagsValue))
+	itemID, created, err := s.createItem(r.Context(), user.ID, urlValue, parseTagInput(tagsValue))
 	if err != nil {
 		if errors.Is(err, errInvalidURL) {
-			s.renderUIQuickAdd(w, r, http.StatusBadRequest, urlValue, titleValue, tagsValue, "Invalid URL.")
+			s.renderUIQuickAdd(w, r, http.StatusBadRequest, urlValue, titleValue, tagsValue, contentPreview, "Invalid URL.")
 			return
 		}
-		s.renderUIQuickAdd(w, r, http.StatusInternalServerError, urlValue, titleValue, tagsValue, "Failed to save item.")
+		s.renderUIQuickAdd(w, r, http.StatusInternalServerError, urlValue, titleValue, tagsValue, contentPreview, "Failed to save item.")
 		return
+	}
+
+	if created && contentPreview != "" {
+		contentFull := truncateUTF8(contentPreview, s.cfg.ContentFullLimit)
+		searchText := normalizeWhitespace(contentFull)
+		excerpt := truncateUTF8(searchText, 200)
+		contentSearch := truncateUTF8(searchText, s.cfg.ContentSearchLimit)
+		if err := s.store.SeedCapturedContent(
+			r.Context(),
+			user.ID,
+			itemID,
+			titleValue,
+			excerpt,
+			contentFull,
+			contentSearch,
+			len([]byte(contentFull)),
+		); err != nil {
+			s.logger.Warn("ui.quick_add.capture_failed",
+				slog.String("request_id", s.requestID(r.Context())),
+				slog.String("item_id", itemID),
+				slog.String("error", err.Error()))
+		}
 	}
 
 	if created {
@@ -697,20 +727,21 @@ func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) 
 	http.Redirect(w, r, "/ui/items?quick_add=exists", http.StatusFound)
 }
 
-func (s *Server) renderUIQuickAdd(w http.ResponseWriter, r *http.Request, status int, urlValue, titleValue, tagsValue, errMsg string) {
+func (s *Server) renderUIQuickAdd(w http.ResponseWriter, r *http.Request, status int, urlValue, titleValue, tagsValue, contentPreview, errMsg string) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	data := map[string]interface{}{
-		"Title":       "Quick Add",
-		"User":        user,
-		"CSRFToken":   s.csrfFromContext(r.Context()),
-		"URL":         urlValue,
-		"SourceTitle": titleValue,
-		"Tags":        tagsValue,
-		"Error":       errMsg,
+		"Title":          "Quick Add",
+		"User":           user,
+		"CSRFToken":      s.csrfFromContext(r.Context()),
+		"URL":            urlValue,
+		"SourceTitle":    titleValue,
+		"Tags":           tagsValue,
+		"ContentPreview": contentPreview,
+		"Error":          errMsg,
 	}
 	if status != http.StatusOK {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -967,6 +998,29 @@ func extractHTTPURLFromText(v string) string {
 		}
 	}
 	return ""
+}
+
+func quickAddContentPreview(urlValue, textValue string) string {
+	candidate := normalizeWhitespace(textValue)
+	if candidate == "" {
+		return ""
+	}
+	if urlValue != "" {
+		candidate = strings.ReplaceAll(candidate, urlValue, " ")
+	}
+	candidate = truncateRunes(normalizeWhitespace(candidate), quickAddContentPreviewRuneLimit)
+	return candidate
+}
+
+func truncateRunes(v string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(v)
+	if len(runes) <= limit {
+		return v
+	}
+	return string(runes[:limit])
 }
 
 func quickAddNotice(state string) string {
