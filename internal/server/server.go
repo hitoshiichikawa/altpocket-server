@@ -474,7 +474,7 @@ func (s *Server) handleCaptureItemContent(w http.ResponseWriter, r *http.Request
 	contentSearch := truncateUTF8(searchText, s.cfg.ContentSearchLimit)
 	itemID := chi.URLParam(r, "id")
 
-	if err := s.store.UpdateCapturedContent(
+	if err := s.store.SeedCapturedContent(
 		r.Context(),
 		user.ID,
 		itemID,
@@ -703,7 +703,7 @@ func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) 
 		searchText := normalizeWhitespace(contentFull)
 		excerpt := truncateUTF8(searchText, 200)
 		contentSearch := truncateUTF8(searchText, s.cfg.ContentSearchLimit)
-		if err := s.store.UpdateCapturedContent(
+		if err := s.store.SeedCapturedContent(
 			r.Context(),
 			user.ID,
 			itemID,
