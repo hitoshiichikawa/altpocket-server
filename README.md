@@ -64,11 +64,11 @@ Web UI: http://localhost:8080/ui/items
 4. Safariの共有シートから作成したショートカットを実行し、`Quick Add` 画面で保存します。
 
 ### Bookmarklet（デスクトップ向け）
-以下をブックマークURLに設定すると、`Quick Add` を別タブで開きます。URL/タイトルに加えて、本文候補（最大200文字）を `content` として渡します。
+以下をブックマークURLに設定すると、`Quick Add` を別タブで開きます。URL/タイトルに加えて、本文候補（最大200文字）を `content` として渡します。元ページは遷移しません。
 `content` は worker fetch が失敗したときのフォールバック用途で、worker fetch が成功した場合は worker 側の本文が優先されます。
 
 ```text
-javascript:(()=>{const base='https://YOUR_DOMAIN/ui/quick-add';const u=new URL(base);u.searchParams.set('url',location.href);u.searchParams.set('title',document.title||'');const normalize=v=>v.trim().replace(/\s+/g,' ');const truncate=(v,max)=>v.length>max?v.slice(0,max):v;const drop=['script','style','noscript','template','svg','canvas','iframe','nav','aside','footer','form','[hidden]','[aria-hidden=\"true\"]'];const source=document.querySelector('article, main, [role=\"main\"]')||document.body;if(source){const clone=source.cloneNode(true);drop.forEach(s=>clone.querySelectorAll(s).forEach(n=>n.remove()));const preview=truncate(normalize(clone.innerText||clone.textContent||''),200);if(preview){u.searchParams.set('content',preview);}}const w=window.open(u.toString(),'_blank','noopener,noreferrer');if(!w){location.href=u.toString();}})();
+javascript:(()=>{const base='https://YOUR_DOMAIN/ui/quick-add';const u=new URL(base);u.searchParams.set('url',location.href);u.searchParams.set('title',document.title||'');const normalize=v=>v.trim().replace(/\s+/g,' ');const truncate=(v,max)=>v.length>max?v.slice(0,max):v;const drop=['script','style','noscript','template','svg','canvas','iframe','nav','aside','footer','form','[hidden]','[aria-hidden=\"true\"]'];const source=document.querySelector('article, main, [role=\"main\"]')||document.body;if(source){const clone=source.cloneNode(true);drop.forEach(s=>clone.querySelectorAll(s).forEach(n=>n.remove()));const preview=truncate(normalize(clone.innerText||clone.textContent||''),200);if(preview){u.searchParams.set('content',preview);}}window.open(u.toString(),'_blank','noopener,noreferrer');})();
 ```
 
 ## API概要
