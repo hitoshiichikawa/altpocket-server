@@ -688,6 +688,17 @@ button:hover {
   font-weight: 600;
 }
 
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.settings-actions form {
+  margin: 0;
+}
+
 .auth-shell {
   min-height: calc(100vh - 240px);
   display: grid;
@@ -848,7 +859,8 @@ summary:focus-visible {
 
   .quick-add-actions,
   .item-actions,
-  .auth-actions {
+  .auth-actions,
+  .settings-actions {
     flex-direction: column;
     align-items: stretch;
   }
@@ -857,6 +869,8 @@ summary:focus-visible {
   .quick-add-actions .btn-primary,
   .auth-actions .btn-secondary,
   .auth-actions .btn-primary,
+  .settings-actions .btn-secondary,
+  .settings-actions .btn-primary,
   .item-actions .btn-secondary,
   .item-actions .btn-primary {
     width: 100%;

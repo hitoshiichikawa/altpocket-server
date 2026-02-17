@@ -28,12 +28,14 @@ CORS_ALLOW_ORIGINS=chrome-extension://your-extension-id,https://your-web-origin
 
 ### Google OAuth 設定
 - Web: OAuth同意画面 + WebクライアントIDを作成し、リダイレクトURIに `http://localhost:8080/v1/auth/google/callback` を登録
+- Google Sheets Export を使う場合は、同じ Web クライアントに `http://localhost:8080/ui/settings/google/callback` も追加
 - Extension: Chrome拡張用のOAuthクライアントIDを作成（Webとは別ID）
 
 ## ローカル起動 (Docker Compose)
 ```
 docker compose up -d db
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/001_init.sql
+psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/002_google_sheets_connections.sql
 
 docker compose up --build api worker
 ```

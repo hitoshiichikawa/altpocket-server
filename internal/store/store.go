@@ -27,6 +27,26 @@ type User struct {
 	AvatarURL string `json:"avatar_url"`
 }
 
+type GoogleSheetsConnection struct {
+	UserID        string
+	RefreshToken  string
+	SpreadsheetID string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type ExportItemRow struct {
+	ID          string
+	URL         string
+	Title       string
+	Excerpt     string
+	FetchStatus string
+	FetchError  string
+	CreatedAt   time.Time
+	FetchedAt   *time.Time
+	Tags        []string
+}
+
 type Tag struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
@@ -96,6 +116,87 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (User, error) {
 		return User{}, err
 	}
 	return u, nil
+}
+
+func (s *Store) GetGoogleSheetsConnection(ctx context.Context, userID string) (GoogleSheetsConnection, error) {
+	row := s.DB.QueryRow(ctx, `
+		SELECT user_id, refresh_token, spreadsheet_id, created_at, updated_at
+		FROM user_google_sheets_connections
+		WHERE user_id=$1
+	`, userID)
+	var c GoogleSheetsConnection
+	if err := row.Scan(&c.UserID, &c.RefreshToken, &c.SpreadsheetID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		return GoogleSheetsConnection{}, err
+	}
+	return c, nil
+}
+
+func (s *Store) UpsertGoogleSheetsConnection(ctx context.Context, userID, refreshToken string) error {
+	_, err := s.DB.Exec(ctx, `
+		INSERT INTO user_google_sheets_connections (user_id, refresh_token, spreadsheet_id)
+		VALUES ($1, $2, '')
+		ON CONFLICT (user_id) DO UPDATE
+		SET refresh_token = EXCLUDED.refresh_token,
+			updated_at = NOW()
+	`, userID, refreshToken)
+	return err
+}
+
+func (s *Store) SetGoogleSheetsSpreadsheetID(ctx context.Context, userID, spreadsheetID string) error {
+	ct, err := s.DB.Exec(ctx, `
+		UPDATE user_google_sheets_connections
+		SET spreadsheet_id = $2, updated_at = NOW()
+		WHERE user_id = $1
+	`, userID, spreadsheetID)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) DeleteGoogleSheetsConnection(ctx context.Context, userID string) error {
+	_, err := s.DB.Exec(ctx, `DELETE FROM user_google_sheets_connections WHERE user_id=$1`, userID)
+	return err
+}
+
+func (s *Store) ListItemsForExport(ctx context.Context, userID string) ([]ExportItemRow, error) {
+	rows, err := s.DB.Query(ctx, `
+		SELECT i.id, i.url, i.title, i.excerpt, i.fetch_status, COALESCE(i.fetch_error, ''), i.created_at, i.fetched_at,
+			COALESCE(array_agg(DISTINCT t.normalized_name ORDER BY t.normalized_name) FILTER (WHERE t.normalized_name IS NOT NULL), '{}') AS tags
+		FROM items i
+		LEFT JOIN item_tags it ON it.item_id = i.id
+		LEFT JOIN tags t ON t.id = it.tag_id
+		WHERE i.user_id = $1
+		GROUP BY i.id
+		ORDER BY i.created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []ExportItemRow{}
+	for rows.Next() {
+		var row ExportItemRow
+		if err := rows.Scan(
+			&row.ID,
+			&row.URL,
+			&row.Title,
+			&row.Excerpt,
+			&row.FetchStatus,
+			&row.FetchError,
+			&row.CreatedAt,
+			&row.FetchedAt,
+			&row.Tags,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, row)
+	}
+	return items, rows.Err()
 }
 
 // CreateItem inserts a new item. tagNames should already be normalized for both display and key.

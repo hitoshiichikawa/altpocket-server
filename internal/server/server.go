@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,6 +25,8 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/idtoken"
+	"google.golang.org/api/option"
+	"google.golang.org/api/sheets/v4"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
@@ -36,6 +39,7 @@ type Server struct {
 	logger            *slog.Logger
 	renderer          *ui.Renderer
 	oauthCfg          *oauth2.Config
+	sheetsOAuthCfg    *oauth2.Config
 	randomStringFn    func(int) (string, error)
 	oauthExchangeFn   func(context.Context, string) (*oauth2.Token, error)
 	idTokenValidateFn func(context.Context, string, string) (*idtoken.Payload, error)
@@ -44,6 +48,8 @@ type Server struct {
 var errInvalidURL = errors.New("invalid_url")
 
 const maxCapturedContentPayloadBytes = 256 * 1024
+const googleSheetsScope = "https://www.googleapis.com/auth/spreadsheets"
+const googleDriveFileScope = "https://www.googleapis.com/auth/drive.file"
 
 func New(cfg config.Config, st *store.Store, limiter *ratelimit.Limiter, log *slog.Logger, renderer *ui.Renderer) *Server {
 	oauthCfg := &oauth2.Config{
@@ -51,6 +57,13 @@ func New(cfg config.Config, st *store.Store, limiter *ratelimit.Limiter, log *sl
 		ClientSecret: cfg.GoogleClientSecret,
 		RedirectURL:  strings.TrimRight(cfg.PublicBaseURL, "/") + "/v1/auth/google/callback",
 		Scopes:       []string{"openid", "email", "profile"},
+		Endpoint:     google.Endpoint,
+	}
+	sheetsOAuthCfg := &oauth2.Config{
+		ClientID:     cfg.GoogleWebClientID,
+		ClientSecret: cfg.GoogleClientSecret,
+		RedirectURL:  strings.TrimRight(cfg.PublicBaseURL, "/") + "/ui/settings/google/callback",
+		Scopes:       []string{googleSheetsScope, googleDriveFileScope},
 		Endpoint:     google.Endpoint,
 	}
 
@@ -61,6 +74,7 @@ func New(cfg config.Config, st *store.Store, limiter *ratelimit.Limiter, log *sl
 		logger:         log,
 		renderer:       renderer,
 		oauthCfg:       oauthCfg,
+		sheetsOAuthCfg: sheetsOAuthCfg,
 		randomStringFn: auth.RandomString,
 		oauthExchangeFn: func(ctx context.Context, code string) (*oauth2.Token, error) {
 			return oauthCfg.Exchange(ctx, code)
@@ -127,6 +141,10 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/quick-add", s.requireWeb(s.handleUIQuickAddSubmit))
 		r.Post("/quick-add/share-target", s.requireWeb(s.handleUIQuickAddShareTarget))
 		r.Get("/settings", s.requireWeb(s.handleUISettings))
+		r.Post("/settings/google/connect", s.requireWeb(s.handleUISettingsGoogleConnect))
+		r.Get("/settings/google/callback", s.requireWeb(s.handleUISettingsGoogleCallback))
+		r.Post("/settings/google/disconnect", s.requireWeb(s.handleUISettingsGoogleDisconnect))
+		r.Post("/settings/google/export", s.requireWeb(s.handleUISettingsGoogleExport))
 	})
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
@@ -617,14 +635,188 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+
+	conn, err := s.store.GetGoogleSheetsConnection(r.Context(), user.ID)
+	connected := true
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			http.Error(w, "db error", http.StatusInternalServerError)
+			return
+		}
+		connected = false
+	}
+
+	noticeMsg, noticeClass := settingsNotice(r.URL.Query().Get("status"))
+	if custom := strings.TrimSpace(r.URL.Query().Get("message")); custom != "" {
+		noticeMsg = custom
+		if noticeClass == "" {
+			noticeClass = "notice"
+		}
+	}
+	sheetURL := strings.TrimSpace(r.URL.Query().Get("sheet_url"))
+	if sheetURL == "" {
+		sheetURL = googleSheetURL(conn.SpreadsheetID)
+	}
 	data := map[string]interface{}{
-		"Title":     "Settings",
-		"User":      user,
-		"CSRFToken": s.csrfFromContext(r.Context()),
+		"Title":                 "Settings",
+		"User":                  user,
+		"CSRFToken":             s.csrfFromContext(r.Context()),
+		"GoogleSheetsConnected": connected,
+		"GoogleSheetsSheetURL":  googleSheetURL(conn.SpreadsheetID),
+		"SheetURL":              sheetURL,
+		"NoticeMessage":         noticeMsg,
+		"NoticeClass":           noticeClass,
 	}
 	if err := s.renderer.Render(w, "settings", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) handleUISettingsGoogleConnect(w http.ResponseWriter, r *http.Request) {
+	csrfExpected := s.csrfFromContext(r.Context())
+	csrfProvided := r.PostFormValue("csrf_token")
+	if csrfExpected == "" || csrfProvided == "" || csrfExpected != csrfProvided {
+		http.Redirect(w, r, "/ui/settings?status=csrf_error", http.StatusFound)
+		return
+	}
+
+	state, err := s.randomString(16)
+	if err != nil {
+		http.Redirect(w, r, "/ui/settings?status=google_connect_failed", http.StatusFound)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "google_sheets_oauth_state",
+		Value:    state,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   strings.HasPrefix(s.cfg.PublicBaseURL, "https://"),
+		MaxAge:   300,
+	})
+
+	authURL := s.sheetsOAuthCfg.AuthCodeURL(
+		state,
+		oauth2.AccessTypeOffline,
+		oauth2.SetAuthURLParam("prompt", "consent"),
+		oauth2.SetAuthURLParam("include_granted_scopes", "true"),
+	)
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+func (s *Server) handleUISettingsGoogleCallback(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/ui/settings?status=unauthorized", http.StatusFound)
+		return
+	}
+
+	stateCookie, err := r.Cookie("google_sheets_oauth_state")
+	stateParam := r.URL.Query().Get("state")
+	cookieValue := ""
+	if err == nil {
+		cookieValue = stateCookie.Value
+	}
+	if cookieValue == "" || cookieValue != stateParam {
+		http.Redirect(w, r, "/ui/settings?status=google_connect_failed&message=Invalid+oauth+state", http.StatusFound)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "google_sheets_oauth_state", Value: "", Path: "/", MaxAge: -1})
+
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Redirect(w, r, "/ui/settings?status=google_connect_failed&message=Missing+authorization+code", http.StatusFound)
+		return
+	}
+
+	token, err := s.sheetsOAuthCfg.Exchange(r.Context(), code)
+	if err != nil {
+		http.Redirect(w, r, "/ui/settings?status=google_connect_failed&message=OAuth+exchange+failed", http.StatusFound)
+		return
+	}
+
+	refreshToken := strings.TrimSpace(token.RefreshToken)
+	if refreshToken == "" {
+		existing, getErr := s.store.GetGoogleSheetsConnection(r.Context(), user.ID)
+		if getErr == nil {
+			refreshToken = existing.RefreshToken
+		}
+	}
+	if refreshToken == "" {
+		http.Redirect(w, r, "/ui/settings?status=google_connect_failed&message=Refresh+token+not+issued", http.StatusFound)
+		return
+	}
+
+	if err := s.store.UpsertGoogleSheetsConnection(r.Context(), user.ID, refreshToken); err != nil {
+		http.Redirect(w, r, "/ui/settings?status=google_connect_failed", http.StatusFound)
+		return
+	}
+
+	http.Redirect(w, r, "/ui/settings?status=google_connected", http.StatusFound)
+}
+
+func (s *Server) handleUISettingsGoogleDisconnect(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/ui/settings?status=unauthorized", http.StatusFound)
+		return
+	}
+
+	csrfExpected := s.csrfFromContext(r.Context())
+	csrfProvided := r.PostFormValue("csrf_token")
+	if csrfExpected == "" || csrfProvided == "" || csrfExpected != csrfProvided {
+		http.Redirect(w, r, "/ui/settings?status=csrf_error", http.StatusFound)
+		return
+	}
+
+	if err := s.store.DeleteGoogleSheetsConnection(r.Context(), user.ID); err != nil {
+		http.Redirect(w, r, "/ui/settings?status=google_disconnect_failed", http.StatusFound)
+		return
+	}
+
+	http.Redirect(w, r, "/ui/settings?status=google_disconnected", http.StatusFound)
+}
+
+func (s *Server) handleUISettingsGoogleExport(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		http.Redirect(w, r, "/ui/settings?status=unauthorized", http.StatusFound)
+		return
+	}
+
+	csrfExpected := s.csrfFromContext(r.Context())
+	csrfProvided := r.PostFormValue("csrf_token")
+	if csrfExpected == "" || csrfProvided == "" || csrfExpected != csrfProvided {
+		http.Redirect(w, r, "/ui/settings?status=csrf_error", http.StatusFound)
+		return
+	}
+
+	conn, err := s.store.GetGoogleSheetsConnection(r.Context(), user.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			http.Redirect(w, r, "/ui/settings?status=google_not_connected", http.StatusFound)
+			return
+		}
+		http.Redirect(w, r, "/ui/settings?status=export_failed", http.StatusFound)
+		return
+	}
+
+	sheetURL, err := s.exportItemsToGoogleSheets(r.Context(), user.ID, conn)
+	if err != nil {
+		s.logger.Warn("settings.google_sheets.export_failed",
+			slog.String("request_id", s.requestID(r.Context())),
+			slog.String("user_id", user.ID),
+			slog.String("error", err.Error()))
+		http.Redirect(w, r, "/ui/settings?status=export_failed", http.StatusFound)
+		return
+	}
+
+	target := "/ui/settings?status=export_success"
+	if sheetURL != "" {
+		target += "&sheet_url=" + url.QueryEscape(sheetURL)
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 func (s *Server) handleUIQuickAdd(w http.ResponseWriter, r *http.Request) {
@@ -984,6 +1176,106 @@ func extractHTTPURLFromText(v string) string {
 		}
 	}
 	return ""
+}
+
+func (s *Server) exportItemsToGoogleSheets(ctx context.Context, userID string, conn store.GoogleSheetsConnection) (string, error) {
+	token := &oauth2.Token{RefreshToken: conn.RefreshToken}
+	tokenSource := s.sheetsOAuthCfg.TokenSource(ctx, token)
+	client := oauth2.NewClient(ctx, tokenSource)
+	sheetsService, err := sheets.NewService(ctx, option.WithHTTPClient(client))
+	if err != nil {
+		return "", err
+	}
+
+	spreadsheetID := strings.TrimSpace(conn.SpreadsheetID)
+	if spreadsheetID == "" {
+		title := fmt.Sprintf("altpocket export %s", time.Now().Format("2006-01-02"))
+		created, err := sheetsService.Spreadsheets.Create(&sheets.Spreadsheet{
+			Properties: &sheets.SpreadsheetProperties{Title: title},
+		}).Do()
+		if err != nil {
+			return "", err
+		}
+		spreadsheetID = created.SpreadsheetId
+		if err := s.store.SetGoogleSheetsSpreadsheetID(ctx, userID, spreadsheetID); err != nil {
+			return "", err
+		}
+	}
+
+	items, err := s.store.ListItemsForExport(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+
+	values := make([][]interface{}, 0, len(items)+1)
+	values = append(values, []interface{}{
+		"item_id",
+		"url",
+		"title",
+		"excerpt",
+		"tags",
+		"fetch_status",
+		"fetch_error",
+		"created_at",
+		"fetched_at",
+	})
+	for _, item := range items {
+		fetchedAt := ""
+		if item.FetchedAt != nil {
+			fetchedAt = item.FetchedAt.UTC().Format(time.RFC3339)
+		}
+		values = append(values, []interface{}{
+			item.ID,
+			item.URL,
+			item.Title,
+			item.Excerpt,
+			strings.Join(item.Tags, ","),
+			item.FetchStatus,
+			item.FetchError,
+			item.CreatedAt.UTC().Format(time.RFC3339),
+			fetchedAt,
+		})
+	}
+
+	if _, err := sheetsService.Spreadsheets.Values.Clear(spreadsheetID, "A:Z", &sheets.ClearValuesRequest{}).Do(); err != nil {
+		return "", err
+	}
+	if _, err := sheetsService.Spreadsheets.Values.Update(spreadsheetID, "A1", &sheets.ValueRange{Values: values}).ValueInputOption("RAW").Do(); err != nil {
+		return "", err
+	}
+	return googleSheetURL(spreadsheetID), nil
+}
+
+func googleSheetURL(spreadsheetID string) string {
+	if strings.TrimSpace(spreadsheetID) == "" {
+		return ""
+	}
+	return "https://docs.google.com/spreadsheets/d/" + spreadsheetID + "/edit"
+}
+
+func settingsNotice(state string) (string, string) {
+	switch state {
+	case "google_connected":
+		return "Google account connected.", "notice"
+	case "google_disconnected":
+		return "Google account disconnected.", "notice"
+	case "export_success":
+		return "Export completed.", "notice"
+	case "google_not_connected":
+		return "Connect Google before exporting.", "error"
+	case "csrf_error":
+		return "Invalid CSRF token. Please retry.", "error"
+	case "google_connect_failed":
+		return "Google connection failed.", "error"
+	case "google_disconnect_failed":
+		return "Failed to disconnect Google account.", "error"
+	case "export_failed":
+		return "Export failed.", "error"
+	case "unauthorized":
+		return "Unauthorized.", "error"
+	default:
+		return "", ""
+	}
 }
 
 func quickAddNotice(state string) string {

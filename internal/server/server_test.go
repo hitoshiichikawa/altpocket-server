@@ -73,6 +73,30 @@ func TestQuickAddNotice(t *testing.T) {
 	}
 }
 
+func TestSettingsNotice(t *testing.T) {
+	msg, cls := settingsNotice("export_success")
+	if msg == "" || cls != "notice" {
+		t.Fatalf("expected export_success notice, got msg=%q class=%q", msg, cls)
+	}
+	msg, cls = settingsNotice("export_failed")
+	if msg == "" || cls != "error" {
+		t.Fatalf("expected export_failed error, got msg=%q class=%q", msg, cls)
+	}
+	msg, cls = settingsNotice("unknown")
+	if msg != "" || cls != "" {
+		t.Fatalf("expected empty notice for unknown status")
+	}
+}
+
+func TestGoogleSheetURL(t *testing.T) {
+	if got := googleSheetURL(""); got != "" {
+		t.Fatalf("expected empty url for blank id")
+	}
+	if got := googleSheetURL("sheet-id-123"); got != "https://docs.google.com/spreadsheets/d/sheet-id-123/edit" {
+		t.Fatalf("unexpected sheet url: %q", got)
+	}
+}
+
 func TestExtractHTTPURLFromText(t *testing.T) {
 	cases := []struct {
 		name string
