@@ -1,0 +1,25 @@
+{{define "content"}}
+<section class="settings-shell">
+  <article class="card settings-card">
+    <h1>Settings</h1>
+    <p class="muted">Manage your account preferences and external integrations.</p>
+
+    <div class="settings-group">
+      <h2>Account</h2>
+      <div class="settings-row">
+        <span>Name</span>
+        <strong>{{if .User.Name}}{{.User.Name}}{{else}}(not set){{end}}</strong>
+      </div>
+      <div class="settings-row">
+        <span>Email</span>
+        <strong>{{.User.Email}}</strong>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <h2>Integrations</h2>
+      <p class="muted">Google Sheets export settings will be added here.</p>
+    </div>
+  </article>
+</section>
+{{end}}

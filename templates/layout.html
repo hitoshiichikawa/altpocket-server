@@ -20,7 +20,15 @@
           <a href="/ui/items">Items</a>
           <a href="/ui/quick-add">Quick Add</a>
         </nav>
-        <div class="user-pill">{{.User.Name}}</div>
+        <div class="account-menu" data-account-menu>
+          <button type="button" class="account-menu-trigger" aria-haspopup="menu" aria-expanded="false">
+            <span class="account-menu-name">{{if .User.Name}}{{.User.Name}}{{else}}{{.User.Email}}{{end}}</span>
+            <span class="account-menu-caret" aria-hidden="true">▾</span>
+          </button>
+          <div class="account-menu-panel" role="menu">
+            <a href="/ui/settings" role="menuitem">Settings</a>
+          </div>
+        </div>
       {{else}}
         <a class="brand" href="/">altpocket</a>
         <nav class="topnav" aria-label="Primary">

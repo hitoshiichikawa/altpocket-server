@@ -126,6 +126,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/quick-add", s.requireWeb(s.handleUIQuickAdd))
 		r.Post("/quick-add", s.requireWeb(s.handleUIQuickAddSubmit))
 		r.Post("/quick-add/share-target", s.requireWeb(s.handleUIQuickAddShareTarget))
+		r.Get("/settings", s.requireWeb(s.handleUISettings))
 	})
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
@@ -606,6 +607,22 @@ func (s *Server) handleUIItem(w http.ResponseWriter, r *http.Request) {
 		"CSRFToken": s.csrfFromContext(r.Context()),
 	}
 	if err := s.renderer.Render(w, "detail", data); err != nil {
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	data := map[string]interface{}{
+		"Title":     "Settings",
+		"User":      user,
+		"CSRFToken": s.csrfFromContext(r.Context()),
+	}
+	if err := s.renderer.Render(w, "settings", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
 }

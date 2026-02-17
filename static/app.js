@@ -1,4 +1,38 @@
 (() => {
+  const accountMenu = document.querySelector('[data-account-menu]');
+  const accountMenuTrigger = accountMenu?.querySelector('.account-menu-trigger');
+  if (accountMenu && accountMenuTrigger) {
+    const closeAccountMenu = () => {
+      accountMenu.classList.remove('open');
+      accountMenuTrigger.setAttribute('aria-expanded', 'false');
+    };
+    const openAccountMenu = () => {
+      accountMenu.classList.add('open');
+      accountMenuTrigger.setAttribute('aria-expanded', 'true');
+    };
+
+    accountMenuTrigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (accountMenu.classList.contains('open')) {
+        closeAccountMenu();
+        return;
+      }
+      openAccountMenu();
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!accountMenu.contains(e.target)) {
+        closeAccountMenu();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeAccountMenu();
+      }
+    });
+  }
+
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
   if (!csrf) return;
 
