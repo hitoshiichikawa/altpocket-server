@@ -1,0 +1,65 @@
+{{define "content"}}
+<section class="settings-shell">
+  <article class="card settings-card">
+    <h1>Settings</h1>
+    <p class="muted">Manage your account preferences and external integrations.</p>
+
+    {{if .NoticeMessage}}
+      <div class="{{.NoticeClass}}">{{.NoticeMessage}}</div>
+    {{end}}
+
+    <div class="settings-group">
+      <h2>Account</h2>
+      <div class="settings-row">
+        <span>Name</span>
+        <strong>{{if .User.Name}}{{.User.Name}}{{else}}(not set){{end}}</strong>
+      </div>
+      <div class="settings-row">
+        <span>Email</span>
+        <strong>{{.User.Email}}</strong>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <h2>Google Sheets Export</h2>
+      {{if .GoogleSheetsConnected}}
+        <div class="settings-row">
+          <span>Status</span>
+          <strong>Connected</strong>
+        </div>
+        {{if .GoogleSheetsSheetURL}}
+        <div class="settings-row">
+          <span>Current sheet</span>
+          <a href="{{.SheetURL}}" target="_blank" rel="noopener noreferrer">Open Sheet</a>
+        </div>
+        {{else}}
+        <p class="muted">No spreadsheet created yet. Click export to create one.</p>
+        {{end}}
+      {{else}}
+        <div class="settings-row">
+          <span>Status</span>
+          <strong>Not connected</strong>
+        </div>
+      {{end}}
+
+      <div class="settings-actions">
+        {{if .GoogleSheetsConnected}}
+          <form method="post" action="/ui/settings/google/export">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="btn-primary">Export to Google Sheets</button>
+          </form>
+          <form method="post" action="/ui/settings/google/disconnect">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="btn-secondary">Disconnect Google</button>
+          </form>
+        {{else}}
+          <form method="post" action="/ui/settings/google/connect">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="btn-primary">Connect Google</button>
+          </form>
+        {{end}}
+      </div>
+    </div>
+  </article>
+</section>
+{{end}}

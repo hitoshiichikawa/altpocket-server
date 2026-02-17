@@ -27,13 +27,16 @@ CORS_ALLOW_ORIGINS=chrome-extension://your-extension-id,https://your-web-origin
 `APP_ENV=production` では `CORS_ALLOW_ORIGINS` が必須です（未設定だと起動時にpanicします）。
 
 ### Google OAuth 設定
+- Google Cloud Console の「API とサービス > ライブラリ」で `Google Sheets API` を有効化
 - Web: OAuth同意画面 + WebクライアントIDを作成し、リダイレクトURIに `http://localhost:8080/v1/auth/google/callback` を登録
+- Google Sheets Export を使う場合は、同じ Web クライアントに `http://localhost:8080/ui/settings/google/callback` も追加
 - Extension: Chrome拡張用のOAuthクライアントIDを作成（Webとは別ID）
 
 ## ローカル起動 (Docker Compose)
 ```
 docker compose up -d db
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/001_init.sql
+psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/002_google_sheets_connections.sql
 
 docker compose up --build api worker
 ```
