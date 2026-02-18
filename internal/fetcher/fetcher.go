@@ -51,6 +51,10 @@ func New(maxBytes int64, contentFullLimit, contentSearchLimit int) *Fetcher {
 }
 
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
+	return f.fetch(ctx, rawURL, 0)
+}
+
+func (f *Fetcher) fetch(ctx context.Context, rawURL string, depth int) (Result, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return Result{}, err
@@ -88,6 +92,13 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
 	if normalizeText(contentText) == "" && isXStatusURL(rawURL) {
 		if fallback, err := f.fetchXStatusOEmbedText(ctx, rawURL); err == nil {
 			contentText = fallback
+		}
+	}
+	if depth < 1 && isLikelyLinkOnlyContent(contentText) {
+		if link := extractFirstHTTPURL(contentText); link != "" && !sameNormalizedURL(rawURL, link) {
+			if linked, err := f.fetch(ctx, link, depth+1); err == nil {
+				return linked, nil
+			}
 		}
 	}
 	contentFull := truncateUTF8(contentText, f.ContentFullLimit)
@@ -349,6 +360,7 @@ func isLikelyXShellContent(content string) bool {
 	}
 	phrases := []string{
 		"something went wrong, but don't fret",
+		"something went wrong, but don’t fret",
 		"some privacy related extensions may cause issues on x.com",
 		"try again",
 	}
@@ -358,6 +370,59 @@ func isLikelyXShellContent(content string) bool {
 		}
 	}
 	return false
+}
+
+func isLikelyLinkOnlyContent(content string) bool {
+	candidate := normalizeText(content)
+	if candidate == "" {
+		return false
+	}
+	hasURL := false
+	for _, token := range strings.Fields(candidate) {
+		if isHTTPURLToken(token) {
+			hasURL = true
+			continue
+		}
+		trimmed := strings.Trim(token, "\"'()[]{}<>,.;:-|")
+		if trimmed == "" {
+			continue
+		}
+		return false
+	}
+	return hasURL
+}
+
+func extractFirstHTTPURL(content string) string {
+	for _, token := range strings.Fields(content) {
+		candidate := strings.Trim(token, "\"'()[]{}<>,.;")
+		if isHTTPURLToken(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func isHTTPURLToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	parsed, err := url.Parse(token)
+	if err != nil {
+		return false
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return false
+	}
+	return true
+}
+
+func sameNormalizedURL(a, b string) bool {
+	pa, errA := url.Parse(a)
+	pb, errB := url.Parse(b)
+	if errA != nil || errB != nil {
+		return strings.EqualFold(strings.TrimSuffix(a, "/"), strings.TrimSuffix(b, "/"))
+	}
+	return strings.EqualFold(strings.TrimSuffix(pa.String(), "/"), strings.TrimSuffix(pb.String(), "/"))
 }
 
 func textScore(text string) int {
