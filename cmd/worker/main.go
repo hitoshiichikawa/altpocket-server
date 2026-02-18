@@ -122,5 +122,8 @@ func classifyFetchError(err error) string {
 	if errors.Is(err, fetcher.ErrBadStatus) {
 		return "bad_status"
 	}
+	if errors.Is(err, fetcher.ErrNoContent) {
+		return "no_content"
+	}
 	return "fetch_failed"
 }
