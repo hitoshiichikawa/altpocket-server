@@ -134,6 +134,21 @@ func TestQuickAddContentPreviewTruncatesTo200Runes(t *testing.T) {
 	}
 }
 
+func TestSanitizeQuickAddContentNormalizesWhitespace(t *testing.T) {
+	got := sanitizeQuickAddContent("  one \n two\tthree  ")
+	if got != "one two three" {
+		t.Fatalf("unexpected sanitized content: %q", got)
+	}
+}
+
+func TestSanitizeQuickAddContentTruncatesTo200Runes(t *testing.T) {
+	input := strings.Repeat("a", 220)
+	got := sanitizeQuickAddContent(input)
+	if len([]rune(got)) != 200 {
+		t.Fatalf("expected 200 runes, got %d", len([]rune(got)))
+	}
+}
+
 func TestHandleUIQuickAddShareTargetRedirectsWithURLFallback(t *testing.T) {
 	s := newAuthTestServer()
 	form := "title=Example+Article&text=Read+https%3A%2F%2Fexample.com%2Fabc+later"
