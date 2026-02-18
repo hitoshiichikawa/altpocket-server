@@ -3,6 +3,7 @@ package fetcher
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -80,7 +81,15 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
 	}
 	title := pageTitle(doc)
 	contentText := extractReadableContent(doc)
+	if isXStatusURL(rawURL) && isLikelyXShellContent(contentText) {
+		contentText = ""
+	}
 	contentText = contentFallback(doc, rawURL, contentText)
+	if normalizeText(contentText) == "" && isXStatusURL(rawURL) {
+		if fallback, err := f.fetchXStatusOEmbedText(ctx, rawURL); err == nil {
+			contentText = fallback
+		}
+	}
 	contentFull := truncateUTF8(contentText, f.ContentFullLimit)
 	if normalizeText(contentFull) == "" {
 		return Result{}, ErrNoContent
@@ -252,6 +261,51 @@ func contentFallback(doc *goquery.Document, rawURL, extracted string) string {
 	return extracted
 }
 
+func (f *Fetcher) fetchXStatusOEmbedText(ctx context.Context, rawURL string) (string, error) {
+	oembedURL := "https://publish.twitter.com/oembed?omit_script=true&url=" + url.QueryEscape(rawURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oembedURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "altpocket/1.0")
+
+	resp, err := f.Client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", ErrBadStatus
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		HTML string `json:"html"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", err
+	}
+	if payload.HTML == "" {
+		return "", ErrNoContent
+	}
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(payload.HTML))
+	if err != nil {
+		return "", err
+	}
+	text := normalizeText(doc.Find("blockquote p").First().Text())
+	if text == "" {
+		text = normalizeText(doc.Text())
+	}
+	if text == "" {
+		return "", ErrNoContent
+	}
+	return text, nil
+}
+
 func metaDescription(doc *goquery.Document) string {
 	return firstMetaContent(doc,
 		"meta[property='og:description']",
@@ -286,6 +340,24 @@ func isXStatusURL(rawURL string) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(parsed.Path), "/status/")
+}
+
+func isLikelyXShellContent(content string) bool {
+	candidate := strings.ToLower(normalizeText(content))
+	if candidate == "" {
+		return false
+	}
+	phrases := []string{
+		"something went wrong, but don't fret",
+		"some privacy related extensions may cause issues on x.com",
+		"try again",
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(candidate, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func textScore(text string) int {

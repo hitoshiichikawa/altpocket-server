@@ -181,6 +181,48 @@ func TestFetchXStatusFallsBackToMetaDescription(t *testing.T) {
 	}
 }
 
+func TestFetchXStatusFallsBackToOEmbedWhenShellHTMLReturned(t *testing.T) {
+	xHTML := []byte(`<html><head><title>X</title></head><body>
+<div id="ScriptLoadFailure">
+  <span>Something went wrong, but don’t fret — let’s give it another shot.</span>
+  <span>Some privacy related extensions may cause issues on x.com. Please disable them and try again.</span>
+</div>
+</body></html>`)
+	oembed := []byte(`{"html":"<blockquote class=\"twitter-tweet\"><p lang=\"en\" dir=\"ltr\">Tweet text from oEmbed fallback</p></blockquote>"}`)
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host {
+			case "x.com":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewReader(xHTML)),
+					Header:     http.Header{"Content-Type": []string{"text/html"}},
+				}, nil
+			case "publish.twitter.com":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewReader(oembed)),
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+				}, nil
+			default:
+				t.Fatalf("unexpected host: %s", req.URL.Host)
+				return nil, nil
+			}
+		}),
+	}
+	f := New(1_000_000, 4096, 1024)
+	f.Client = client
+
+	parsed, err := f.Fetch(context.Background(), "https://x.com/user/status/123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parsed.ContentFull != "Tweet text from oEmbed fallback" {
+		t.Fatalf("expected oEmbed fallback text, got %q", parsed.ContentFull)
+	}
+}
+
 func TestFetchReturnsErrNoContentWhenExtractedAndMetaAreEmpty(t *testing.T) {
 	body := []byte("<html><head><title>Empty</title></head><body><div></div></body></html>")
 	client := &http.Client{
