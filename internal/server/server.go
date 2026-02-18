@@ -826,7 +826,7 @@ func (s *Server) handleUIQuickAdd(w http.ResponseWriter, r *http.Request) {
 	if urlValue == "" {
 		urlValue = extractHTTPURLFromText(textValue)
 	}
-	contentPreview := strings.TrimSpace(r.URL.Query().Get("content"))
+	contentPreview := sanitizeQuickAddContent(r.URL.Query().Get("content"))
 	if contentPreview == "" {
 		contentPreview = quickAddContentPreview(urlValue, textValue)
 	}
@@ -880,7 +880,10 @@ func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) 
 	urlValue := strings.TrimSpace(r.PostFormValue("url"))
 	titleValue := strings.TrimSpace(r.PostFormValue("title"))
 	tagsValue := strings.TrimSpace(r.PostFormValue("tags"))
-	contentPreview := truncateRunes(normalizeWhitespace(r.PostFormValue("content_preview")), quickAddContentPreviewRuneLimit)
+	contentPreview := sanitizeQuickAddContent(r.PostFormValue("content"))
+	if contentPreview == "" {
+		contentPreview = sanitizeQuickAddContent(r.PostFormValue("content_preview"))
+	}
 
 	csrfExpected := s.csrfFromContext(r.Context())
 	csrfProvided := r.PostFormValue("csrf_token")
@@ -907,27 +910,7 @@ func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if created && contentPreview != "" {
-		contentFull := truncateUTF8(contentPreview, s.cfg.ContentFullLimit)
-		searchText := normalizeWhitespace(contentFull)
-		excerpt := truncateUTF8(searchText, 200)
-		contentSearch := truncateUTF8(searchText, s.cfg.ContentSearchLimit)
-		if err := s.store.SeedCapturedContent(
-			r.Context(),
-			user.ID,
-			itemID,
-			titleValue,
-			excerpt,
-			contentFull,
-			contentSearch,
-			len([]byte(contentFull)),
-		); err != nil {
-			s.logger.Warn("ui.quick_add.capture_failed",
-				slog.String("request_id", s.requestID(r.Context())),
-				slog.String("item_id", itemID),
-				slog.String("error", err.Error()))
-		}
-	}
+	s.seedQuickAddContent(r.Context(), user.ID, itemID, titleValue, contentPreview)
 
 	if created {
 		http.Redirect(w, r, "/ui/items?quick_add=created", http.StatusFound)
@@ -958,6 +941,33 @@ func (s *Server) renderUIQuickAdd(w http.ResponseWriter, r *http.Request, status
 	}
 	if err := s.renderer.Render(w, "quick_add", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) seedQuickAddContent(ctx context.Context, userID, itemID, titleValue, contentPreview string) {
+	if s.store == nil || contentPreview == "" {
+		return
+	}
+
+	contentFull := truncateUTF8(contentPreview, s.cfg.ContentFullLimit)
+	searchText := normalizeWhitespace(contentFull)
+	excerpt := truncateUTF8(searchText, 200)
+	contentSearch := truncateUTF8(searchText, s.cfg.ContentSearchLimit)
+
+	if err := s.store.SeedCapturedContent(
+		ctx,
+		userID,
+		itemID,
+		titleValue,
+		excerpt,
+		contentFull,
+		contentSearch,
+		len([]byte(contentFull)),
+	); err != nil {
+		s.logger.Warn("ui.quick_add.capture_failed",
+			slog.String("request_id", s.requestID(ctx)),
+			slog.String("item_id", itemID),
+			slog.String("error", err.Error()))
 	}
 }
 
@@ -1317,8 +1327,11 @@ func quickAddContentPreview(urlValue, textValue string) string {
 	if urlValue != "" {
 		candidate = strings.ReplaceAll(candidate, urlValue, " ")
 	}
-	candidate = truncateRunes(normalizeWhitespace(candidate), quickAddContentPreviewRuneLimit)
-	return candidate
+	return sanitizeQuickAddContent(candidate)
+}
+
+func sanitizeQuickAddContent(v string) string {
+	return truncateRunes(normalizeWhitespace(v), quickAddContentPreviewRuneLimit)
 }
 
 func truncateRunes(v string, limit int) string {
