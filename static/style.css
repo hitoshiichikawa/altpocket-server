@@ -230,12 +230,17 @@ a {
   overflow-y: auto;
 }
 
-.panel-title {
+.panel-title,
+.tag-title {
   font-size: 12px;
   color: var(--text-secondary);
   margin-bottom: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.tag-list {
+  margin-top: 20px;
 }
 
 .tag-list ul {
@@ -528,6 +533,7 @@ button:hover {
   color: var(--text-primary);
   border-radius: var(--radius-md);
   padding: 10px 12px;
+  margin-top: 16px;
 }
 
 .error {
@@ -536,10 +542,17 @@ button:hover {
   color: var(--color-danger);
   border-radius: var(--radius-md);
   padding: 10px 12px;
+  margin-top: 16px;
 }
 
 .muted {
   color: var(--text-muted);
+  margin-bottom: 0;
+}
+
+p.muted {
+  margin-top: 4px;
+  margin-bottom: 16px;
 }
 
 .empty-state {
