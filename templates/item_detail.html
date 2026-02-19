@@ -14,17 +14,15 @@
       <div class="error">{{.Item.FetchError}}</div>
     {{end}}
 
-    <div class="tags" id="detail-tags">
-      {{range .Item.Tags}}
-        <span class="tag">{{.Name}}</span>
-      {{end}}
-    </div>
-
-    <div class="tag-editor" id="detail-tag-editor" data-item-id="{{.Item.ID}}" hidden>
-      <div id="detail-tag-chips" class="tags"></div>
-      <input id="detail-tag-input" class="input" type="text" autocomplete="off" placeholder="Type tag then press Enter, comma, or Tab">
+    <div class="tag-editor" id="detail-tag-editor" data-item-id="{{.Item.ID}}">
+      <div id="detail-tag-chips" class="tags">
+        {{range .Item.Tags}}
+          <span class="tag">{{.Name}}</span>
+        {{end}}
+      </div>
+      <input id="detail-tag-input" class="input" type="text" autocomplete="off" placeholder="Type tag then press Enter or comma" hidden>
       <ul id="detail-tag-suggestions" class="tag-editor-dropdown" hidden></ul>
-      <div class="actions tag-editor-actions">
+      <div class="tag-editor-actions" id="detail-tag-actions" hidden>
         <button type="button" id="detail-tag-save" class="btn-primary">Save tags</button>
         <button type="button" id="detail-tag-cancel" class="btn-secondary">Cancel</button>
       </div>

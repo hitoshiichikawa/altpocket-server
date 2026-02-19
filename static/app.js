@@ -84,44 +84,30 @@
   }
 
   const detailEditTagsBtn = document.querySelector('button.edit-tags');
-  const detailTagsDisplay = document.getElementById('detail-tags');
   const detailTagEditor = document.getElementById('detail-tag-editor');
   const detailTagChips = document.getElementById('detail-tag-chips');
   const detailTagInput = document.getElementById('detail-tag-input');
   const detailTagSuggestions = document.getElementById('detail-tag-suggestions');
+  const detailTagActions = document.getElementById('detail-tag-actions');
   const detailTagSaveBtn = document.getElementById('detail-tag-save');
   const detailTagCancelBtn = document.getElementById('detail-tag-cancel');
 
   if (
     detailEditTagsBtn &&
-    detailTagsDisplay &&
     detailTagEditor &&
     detailTagChips &&
     detailTagInput &&
     detailTagSuggestions &&
+    detailTagActions &&
     detailTagSaveBtn &&
     detailTagCancelBtn
   ) {
     const itemID = detailTagEditor.dataset.itemId || detailEditTagsBtn.dataset.itemId;
     const draftTags = [];
     const draftTagSet = new Set();
+    let originalTags = []; // 編集開始前のタグ（Cancel用）
     let suggestions = [];
     let activeSuggestion = -1;
-
-    const readDisplayTags = () =>
-      Array.from(detailTagsDisplay.querySelectorAll('.tag, .chip'))
-        .map((chip) => normalizeTagName(chip.textContent))
-        .filter((tag) => tag.length > 0);
-
-    const renderDisplayTags = (tags) => {
-      detailTagsDisplay.innerHTML = '';
-      tags.forEach((tag) => {
-        const chip = document.createElement('span');
-        chip.className = 'tag';
-        chip.textContent = tag;
-        detailTagsDisplay.appendChild(chip);
-      });
-    };
 
     const clearSuggestions = () => {
       suggestions = [];
@@ -136,7 +122,6 @@
         detailTagSuggestions.hidden = true;
         return;
       }
-
       suggestions.forEach((name, idx) => {
         const option = document.createElement('li');
         option.textContent = name;
@@ -154,36 +139,27 @@
       detailTagSuggestions.hidden = false;
     };
 
-    const renderDraftTags = () => {
+    // チップエリアを再描画する。editing=trueなら×ボタン付き、falseなら×なし
+    const renderChips = (tags, editing) => {
       detailTagChips.innerHTML = '';
-      draftTags.forEach((tag, idx) => {
+      tags.forEach((tag, idx) => {
         const chip = document.createElement('span');
-        chip.className = 'tag-chip';
+        chip.className = editing ? 'tag-chip' : 'tag';
         chip.textContent = tag;
-        const remove = document.createElement('button');
-        remove.type = 'button';
-        remove.textContent = '×';
-        remove.addEventListener('click', () => {
-          draftTagSet.delete(tag);
-          draftTags.splice(idx, 1);
-          renderDraftTags();
-          renderSuggestions();
-        });
-        chip.appendChild(remove);
+        if (editing) {
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.textContent = '×';
+          remove.addEventListener('click', () => {
+            draftTagSet.delete(tag);
+            draftTags.splice(idx, 1);
+            renderChips(draftTags, true);
+            renderSuggestions();
+          });
+          chip.appendChild(remove);
+        }
         detailTagChips.appendChild(chip);
       });
-    };
-
-    const resetDraftTags = (values) => {
-      draftTags.length = 0;
-      draftTagSet.clear();
-      values.forEach((value) => {
-        const normalized = normalizeTagName(value);
-        if (!normalized || draftTagSet.has(normalized)) return;
-        draftTagSet.add(normalized);
-        draftTags.push(normalized);
-      });
-      renderDraftTags();
     };
 
     const addDraftTag = (value) => {
@@ -191,24 +167,16 @@
       if (!normalized || draftTagSet.has(normalized)) return false;
       draftTagSet.add(normalized);
       draftTags.push(normalized);
-      renderDraftTags();
+      renderChips(draftTags, true);
       return true;
     };
 
     const loadSuggestions = async () => {
       const q = detailTagInput.value.trim();
-      if (!q) {
-        clearSuggestions();
-        return;
-      }
-
+      if (!q) { clearSuggestions(); return; }
       try {
         const res = await fetch(`/v1/tags?q=${encodeURIComponent(q)}`);
-        if (!res.ok) {
-          clearSuggestions();
-          return;
-        }
-
+        if (!res.ok) { clearSuggestions(); return; }
         const data = await res.json();
         const next = [];
         const seen = new Set();
@@ -228,22 +196,37 @@
       }
     };
 
+    // 編集モード開始：チップに×を付け、テキストボックスとボタンを表示
     const openEditor = () => {
-      resetDraftTags(readDisplayTags());
+      // 現在表示中の×なしチップからタグ名を読み取る
+      draftTags.length = 0;
+      draftTagSet.clear();
+      Array.from(detailTagChips.querySelectorAll('.tag')).forEach((el) => {
+        const normalized = normalizeTagName(el.textContent);
+        if (!normalized || draftTagSet.has(normalized)) return;
+        draftTagSet.add(normalized);
+        draftTags.push(normalized);
+      });
+      originalTags = draftTags.slice(); // Cancel用に保存
+      renderChips(draftTags, true);
       detailTagInput.value = '';
       clearSuggestions();
-      detailTagsDisplay.hidden = true;
-      detailTagEditor.hidden = false;
+      detailTagInput.hidden = false;
+      detailTagActions.hidden = false;
       detailEditTagsBtn.hidden = true;
+      isEditing = true;
       detailTagInput.focus();
     };
 
-    const closeEditor = () => {
-      detailTagInput.value = '';
+    // 編集モード終了：×なしチップに戻し、テキストボックスとボタンを隠す
+    const closeEditor = (savedTags) => {
+      isEditing = false;
+      detailTagInput.hidden = true;
+      detailTagActions.hidden = true;
       clearSuggestions();
-      detailTagEditor.hidden = true;
-      detailTagsDisplay.hidden = false;
+      detailTagInput.value = '';
       detailEditTagsBtn.hidden = false;
+      renderChips(savedTags, false);
     };
 
     detailEditTagsBtn.addEventListener('click', () => {
@@ -252,11 +235,13 @@
     });
 
     detailTagCancelBtn.addEventListener('click', () => {
-      closeEditor();
+      // キャンセル：編集開始前のタグに戻す
+      closeEditor(originalTags);
     });
 
     detailTagSaveBtn.addEventListener('click', async () => {
       if (!itemID) return;
+      // 入力中のテキストがあれば追加
       addDraftTag(detailTagInput.value);
       detailTagInput.value = '';
       clearSuggestions();
@@ -265,17 +250,13 @@
       try {
         const res = await fetch(`/v1/items/${encodeURIComponent(itemID)}/tags`, {
           method: 'PUT',
-          headers: {
-            ...headers,
-            'Content-Type': 'application/json',
-          },
+          headers: { ...headers, 'Content-Type': 'application/json' },
           body: JSON.stringify({ tags: draftTags }),
         });
         if (!res.ok) {
           alert('Failed to update tags');
           return;
         }
-
         const data = await res.json().catch(() => null);
         const updatedTags = [];
         const seen = new Set();
@@ -287,16 +268,9 @@
             updatedTags.push(normalized);
           });
         }
-        if (updatedTags.length === 0 && draftTags.length > 0) {
-          draftTags.forEach((tag) => {
-            if (seen.has(tag)) return;
-            seen.add(tag);
-            updatedTags.push(tag);
-          });
-        }
-
-        renderDisplayTags(updatedTags);
-        closeEditor();
+        // APIレスポンスにタグがなければドラフトをそのまま使う
+        const finalTags = updatedTags.length > 0 ? updatedTags : draftTags.slice();
+        closeEditor(finalTags);
       } finally {
         detailTagSaveBtn.disabled = false;
       }
@@ -314,7 +288,6 @@
         clearSuggestions();
         return;
       }
-
       if (e.key === 'Tab' && suggestions.length > 0) {
         e.preventDefault();
         if (suggestions.length === 1) {
@@ -328,7 +301,6 @@
         renderSuggestions();
         return;
       }
-
       if (e.key === 'ArrowDown' && suggestions.length > 0) {
         e.preventDefault();
         activeSuggestion = (activeSuggestion + 1 + suggestions.length) % suggestions.length;
@@ -336,7 +308,6 @@
         renderSuggestions();
         return;
       }
-
       if (e.key === 'ArrowUp' && suggestions.length > 0) {
         e.preventDefault();
         activeSuggestion = (activeSuggestion - 1 + suggestions.length) % suggestions.length;
@@ -344,20 +315,15 @@
         renderSuggestions();
         return;
       }
-
       if (e.key === 'Escape') {
         clearSuggestions();
       }
     });
 
-    detailTagInput.addEventListener('input', () => {
-      loadSuggestions();
-    });
+    detailTagInput.addEventListener('input', () => { loadSuggestions(); });
 
     detailTagInput.addEventListener('blur', () => {
-      window.setTimeout(() => {
-        clearSuggestions();
-      }, 100);
+      window.setTimeout(() => { clearSuggestions(); }, 100);
     });
   }
 
