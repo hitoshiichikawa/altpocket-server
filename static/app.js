@@ -214,6 +214,8 @@
       detailTagInput.hidden = false;
       detailTagActions.hidden = false;
       detailEditTagsBtn.disabled = true; // 編集中は再クリック不可
+      // Refetch/Deleteも編集中は無効化
+      document.querySelectorAll('.item-actions button.refetch, .item-actions button.delete').forEach((btn) => { btn.disabled = true; });
       detailTagInput.focus();
     };
 
@@ -224,6 +226,8 @@
       clearSuggestions();
       detailTagInput.value = '';
       detailEditTagsBtn.disabled = false; // 編集終了後に再び押せるように
+      // Refetch/Deleteも再有効化
+      document.querySelectorAll('.item-actions button.refetch, .item-actions button.delete').forEach((btn) => { btn.disabled = false; });
       renderChips(savedTags, false);
     };
 
