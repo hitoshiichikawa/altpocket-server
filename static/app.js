@@ -427,10 +427,6 @@
     });
 
     quickAddTagInput.addEventListener('blur', () => {
-      if (quickAddTagInput.value.trim()) {
-        addTag(quickAddTagInput.value);
-        quickAddTagInput.value = '';
-      }
       quickAddSuggestionsEl.innerHTML = '';
     });
   }
