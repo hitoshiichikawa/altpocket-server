@@ -880,7 +880,7 @@ func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) 
 	urlValue := strings.TrimSpace(r.PostFormValue("url"))
 	titleValue := strings.TrimSpace(r.PostFormValue("title"))
 	tagsValue := strings.TrimSpace(r.PostFormValue("tags"))
-	contentPreview := sanitizeQuickAddContent(r.PostFormValue("content"))
+	contentPreview := sanitizeQuickAddContentInput(r.PostFormValue("content"), s.cfg.ContentFullLimit)
 	if contentPreview == "" {
 		contentPreview = sanitizeQuickAddContent(r.PostFormValue("content_preview"))
 	}
@@ -1332,6 +1332,10 @@ func quickAddContentPreview(urlValue, textValue string) string {
 
 func sanitizeQuickAddContent(v string) string {
 	return truncateRunes(normalizeWhitespace(v), quickAddContentPreviewRuneLimit)
+}
+
+func sanitizeQuickAddContentInput(v string, limit int) string {
+	return truncateUTF8(normalizeWhitespace(v), limit)
 }
 
 func truncateRunes(v string, limit int) string {

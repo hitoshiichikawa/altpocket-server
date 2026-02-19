@@ -149,6 +149,17 @@ func TestSanitizeQuickAddContentTruncatesTo200Runes(t *testing.T) {
 	}
 }
 
+func TestSanitizeQuickAddContentInputUsesByteLimit(t *testing.T) {
+	got := sanitizeQuickAddContentInput("  abc\n def  ", 7)
+	if got != "abc def" {
+		t.Fatalf("unexpected sanitized content input: %q", got)
+	}
+	got = sanitizeQuickAddContentInput("123456789", 4)
+	if got != "1234" {
+		t.Fatalf("expected byte-limited content, got %q", got)
+	}
+}
+
 func TestHandleUIQuickAddShareTargetRedirectsWithURLFallback(t *testing.T) {
 	s := newAuthTestServer()
 	form := "title=Example+Article&text=Read+https%3A%2F%2Fexample.com%2Fabc+later"

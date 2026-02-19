@@ -3,11 +3,9 @@ package fetcher
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -51,10 +49,6 @@ func New(maxBytes int64, contentFullLimit, contentSearchLimit int) *Fetcher {
 }
 
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
-	return f.fetch(ctx, rawURL, 0)
-}
-
-func (f *Fetcher) fetch(ctx context.Context, rawURL string, depth int) (Result, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return Result{}, err
@@ -85,24 +79,9 @@ func (f *Fetcher) fetch(ctx context.Context, rawURL string, depth int) (Result, 
 	}
 	title := pageTitle(doc)
 	contentText := extractReadableContent(doc)
-	if isXStatusURL(rawURL) && isLikelyXShellContent(contentText) {
-		contentText = ""
-	}
-	contentText = contentFallback(doc, rawURL, contentText)
-	if normalizeText(contentText) == "" && isXStatusURL(rawURL) {
-		if fallback, err := f.fetchXStatusOEmbedText(ctx, rawURL); err == nil {
-			contentText = fallback
-		}
-	}
-	if depth < 1 && isLikelyLinkOnlyContent(contentText) {
-		if link := extractFirstHTTPURL(contentText); link != "" && !sameNormalizedURL(rawURL, link) {
-			if linked, err := f.fetch(ctx, link, depth+1); err == nil {
-				return linked, nil
-			}
-		}
-	}
+	contentText = contentFallback(doc, contentText)
 	contentFull := truncateUTF8(contentText, f.ContentFullLimit)
-	if normalizeText(contentFull) == "" {
+	if title == "" || normalizeText(contentFull) == "" {
 		return Result{}, ErrNoContent
 	}
 	searchText := normalizeText(contentFull)
@@ -255,66 +234,15 @@ func pageTitle(doc *goquery.Document) string {
 	)
 }
 
-func contentFallback(doc *goquery.Document, rawURL, extracted string) string {
+func contentFallback(doc *goquery.Document, extracted string) string {
 	if normalizeText(extracted) != "" {
 		return extracted
-	}
-
-	if isXStatusURL(rawURL) {
-		if desc := metaDescription(doc); desc != "" {
-			return desc
-		}
 	}
 
 	if desc := metaDescription(doc); desc != "" {
 		return desc
 	}
 	return extracted
-}
-
-func (f *Fetcher) fetchXStatusOEmbedText(ctx context.Context, rawURL string) (string, error) {
-	oembedURL := "https://publish.twitter.com/oembed?omit_script=true&url=" + url.QueryEscape(rawURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, oembedURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", "altpocket/1.0")
-
-	resp, err := f.Client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return "", ErrBadStatus
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-	if err != nil {
-		return "", err
-	}
-	var payload struct {
-		HTML string `json:"html"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", err
-	}
-	if payload.HTML == "" {
-		return "", ErrNoContent
-	}
-
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(payload.HTML))
-	if err != nil {
-		return "", err
-	}
-	text := normalizeText(doc.Find("blockquote p").First().Text())
-	if text == "" {
-		text = normalizeText(doc.Text())
-	}
-	if text == "" {
-		return "", ErrNoContent
-	}
-	return text, nil
 }
 
 func metaDescription(doc *goquery.Document) string {
@@ -334,95 +262,6 @@ func firstMetaContent(doc *goquery.Document, selectors ...string) string {
 		}
 	}
 	return ""
-}
-
-func isXStatusURL(rawURL string) bool {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "" {
-		return false
-	}
-	isXHost := host == "x.com" || strings.HasSuffix(host, ".x.com")
-	isTwitterHost := host == "twitter.com" || strings.HasSuffix(host, ".twitter.com")
-	if !isXHost && !isTwitterHost {
-		return false
-	}
-	return strings.Contains(strings.ToLower(parsed.Path), "/status/")
-}
-
-func isLikelyXShellContent(content string) bool {
-	candidate := strings.ToLower(normalizeText(content))
-	if candidate == "" {
-		return false
-	}
-	phrases := []string{
-		"something went wrong, but don't fret",
-		"something went wrong, but don’t fret",
-		"some privacy related extensions may cause issues on x.com",
-		"try again",
-	}
-	for _, phrase := range phrases {
-		if strings.Contains(candidate, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-func isLikelyLinkOnlyContent(content string) bool {
-	candidate := normalizeText(content)
-	if candidate == "" {
-		return false
-	}
-	hasURL := false
-	for _, token := range strings.Fields(candidate) {
-		if isHTTPURLToken(token) {
-			hasURL = true
-			continue
-		}
-		trimmed := strings.Trim(token, "\"'()[]{}<>,.;:-|")
-		if trimmed == "" {
-			continue
-		}
-		return false
-	}
-	return hasURL
-}
-
-func extractFirstHTTPURL(content string) string {
-	for _, token := range strings.Fields(content) {
-		candidate := strings.Trim(token, "\"'()[]{}<>,.;")
-		if isHTTPURLToken(candidate) {
-			return candidate
-		}
-	}
-	return ""
-}
-
-func isHTTPURLToken(token string) bool {
-	if token == "" {
-		return false
-	}
-	parsed, err := url.Parse(token)
-	if err != nil {
-		return false
-	}
-	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return false
-	}
-	return true
-}
-
-func sameNormalizedURL(a, b string) bool {
-	pa, errA := url.Parse(a)
-	pb, errB := url.Parse(b)
-	if errA != nil || errB != nil {
-		return strings.EqualFold(strings.TrimSuffix(a, "/"), strings.TrimSuffix(b, "/"))
-	}
-	return strings.EqualFold(strings.TrimSuffix(pa.String(), "/"), strings.TrimSuffix(pb.String(), "/"))
 }
 
 func textScore(text string) int {
