@@ -1,29 +1,29 @@
 :root {
-  --bg-base: #0b0d12;
-  --bg-surface: #111522;
-  --bg-elevated: #161b2e;
+  --bg-base: #0a0a0a;
+  --bg-surface: #141414;
+  --bg-elevated: #1e1e1e;
 
-  --text-primary: #e6eaf2;
-  --text-secondary: #9aa4b2;
-  --text-muted: #6b7482;
+  --text-primary: #e8e8e8;
+  --text-secondary: #888888;
+  --text-muted: #555555;
 
-  --border-default: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-default: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
 
-  --color-primary: #4d6dff;
-  --color-primary-hover: #3e5af0;
-  --color-primary-soft: rgba(77, 109, 255, 0.15);
+  --color-primary: #d4a574;
+  --color-primary-hover: #c4956a;
+  --color-primary-soft: rgba(212, 165, 116, 0.10);
 
-  --color-success: #4cd7a2;
-  --color-warning: #ffb020;
-  --color-danger: #ff5b6e;
-  --color-info: #5bc0ff;
+  --color-success: #6bc490;
+  --color-warning: #e0a830;
+  --color-danger: #d45c5c;
+  --color-info: #7ab0d4;
 
-  --radius-sm: 10px;
-  --radius-md: 12px;
-  --radius-lg: 14px;
-  --shadow-soft: 0 10px 30px rgba(0, 0, 0, 0.16);
-  --shadow-card: 0 1px 1px rgba(0, 0, 0, 0.08), 0 14px 28px rgba(0, 0, 0, 0.14);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --shadow-soft: none;
+  --shadow-card: none;
 }
 
 :root[data-theme="light"] {
@@ -38,9 +38,9 @@
   --border-default: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.16);
 
-  --color-primary: #4d6dff;
-  --color-primary-hover: #3e5af0;
-  --color-primary-soft: #e8edff;
+  --color-primary: #b8895a;
+  --color-primary-hover: #a67a4e;
+  --color-primary-soft: rgba(184, 137, 90, 0.12);
 
   --color-success: #16a34a;
   --color-warning: #d97706;
@@ -56,8 +56,8 @@ body {
   margin: 0;
   font-family: "Inter", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif;
   color: var(--text-primary);
-  background: radial-gradient(circle at top right, rgba(91, 192, 255, 0.08), transparent 36%), var(--bg-base);
-  line-height: 1.5;
+  background: var(--bg-base);
+  line-height: 1.6;
 }
 
 a {
@@ -69,8 +69,9 @@ a {
   top: 0;
   z-index: 20;
   backdrop-filter: blur(12px);
-  background: color-mix(in srgb, var(--bg-base) 78%, transparent);
-  border-bottom: 1px solid var(--border-default);
+  background: color-mix(in srgb, var(--bg-base) 85%, transparent);
+  border-bottom: none;
+  box-shadow: 0 1px 0 var(--border-default);
 }
 
 .topbar-inner {
@@ -84,7 +85,7 @@ a {
 
 .brand {
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 600;
   text-decoration: none;
   letter-spacing: 0.2px;
 }
@@ -118,7 +119,7 @@ a {
   font-size: 13px;
   color: var(--text-secondary);
   border: 1px solid var(--border-default);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   padding: 6px 10px;
   background: var(--bg-surface);
   display: inline-flex;
@@ -164,7 +165,7 @@ a {
   font-size: 14px;
   text-decoration: none;
   color: var(--text-secondary);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   padding: 8px 10px;
 }
 
@@ -204,21 +205,21 @@ a {
 }
 
 .card {
-  border: 1px solid var(--border-default);
+  border: none;
   background: var(--bg-surface);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  padding: 16px;
+  box-shadow: none;
+  padding: 20px 24px;
 }
 
 .sidebar,
 .detail,
 .quick-add {
-  border: 1px solid var(--border-default);
+  border: none;
   background: var(--bg-surface);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  padding: 16px;
+  box-shadow: none;
+  padding: 20px 24px;
 }
 
 .sidebar,
@@ -230,9 +231,11 @@ a {
 }
 
 .panel-title {
-  font-size: 14px;
+  font-size: 11px;
   color: var(--text-secondary);
   margin-bottom: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .tag-list ul {
@@ -262,7 +265,7 @@ a {
 .search-form select {
   width: 100%;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: var(--bg-elevated);
   color: var(--text-primary);
   padding: 10px 12px;
@@ -282,14 +285,16 @@ a {
 }
 
 .field-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .input {
   width: 100%;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: var(--bg-elevated);
   color: var(--text-primary);
   padding: 10px 12px;
@@ -310,7 +315,7 @@ button {
   font-size: 14px;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
   text-decoration: none;
   display: inline-flex;
   align-items: center;
@@ -322,7 +327,7 @@ button {
   background: var(--color-primary);
   color: #fff;
   border-color: var(--color-primary);
-  box-shadow: 0 8px 18px rgba(77, 109, 255, 0.28);
+  box-shadow: none;
 }
 
 .btn-primary:hover {
@@ -362,21 +367,25 @@ button:hover {
 .item-card h3 {
   margin: 0;
   font-size: 18px;
+  font-weight: 500;
   line-height: 1.35;
+  letter-spacing: -0.03em;
 }
 
 .tile {
-  border: 1px solid var(--border-default);
+  border: none;
   background: var(--bg-surface);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card);
-  padding: 16px;
+  box-shadow: none;
+  padding: 20px 24px;
 }
 
 .tile h3 {
   margin: 0;
   font-size: 18px;
+  font-weight: 500;
   line-height: 1.35;
+  letter-spacing: -0.03em;
 }
 
 .tile p {
@@ -430,8 +439,10 @@ button:hover {
   align-items: center;
   justify-content: center;
   padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
   color: var(--color-info);
   border: 1px solid color-mix(in srgb, var(--color-info) 45%, var(--border-default));
   background: color-mix(in srgb, var(--color-info) 14%, transparent);
@@ -443,8 +454,10 @@ button:hover {
   align-items: center;
   justify-content: center;
   padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
   color: var(--color-info);
   border: 1px solid color-mix(in srgb, var(--color-info) 45%, var(--border-default));
   background: color-mix(in srgb, var(--color-info) 14%, transparent);
@@ -466,8 +479,8 @@ button:hover {
   gap: 6px;
   background: var(--color-primary-soft);
   color: var(--text-primary);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, var(--border-default));
-  border-radius: 999px;
+  border: none;
+  border-radius: var(--radius-sm);
   padding: 4px 10px;
   font-size: 12px;
   line-height: 1.2;
@@ -502,11 +515,11 @@ button:hover {
 }
 
 .item-card.failed {
-  border-color: color-mix(in srgb, var(--color-danger) 40%, var(--border-default));
+  border-left: 3px solid color-mix(in srgb, var(--color-danger) 40%, var(--border-default));
 }
 
 .tile.failed {
-  border-color: color-mix(in srgb, var(--color-danger) 40%, var(--border-default));
+  border-left: 3px solid color-mix(in srgb, var(--color-danger) 40%, var(--border-default));
 }
 
 .notice {
@@ -560,23 +573,27 @@ button:hover {
 .detail-header h2 {
   margin: 0;
   font-size: clamp(22px, 2.8vw, 30px);
+  font-weight: 500;
   line-height: 1.2;
+  letter-spacing: -0.03em;
 }
 
 .content pre {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: "IBM Plex Sans", "Noto Sans JP", sans-serif;
+  font-family: "Inter", "Noto Sans JP", sans-serif;
   font-size: 15px;
-  line-height: 1.8;
+  line-height: 1.7;
   color: var(--text-primary);
 }
 
 .detail-card h1 {
   margin: 0;
   font-size: clamp(24px, 3vw, 32px);
+  font-weight: 500;
   line-height: 1.2;
+  letter-spacing: -0.03em;
 }
 
 .detail-meta {
@@ -593,9 +610,9 @@ button:hover {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: "IBM Plex Sans", "Noto Sans JP", sans-serif;
+  font-family: "Inter", "Noto Sans JP", sans-serif;
   font-size: 15px;
-  line-height: 1.8;
+  line-height: 1.7;
   color: var(--text-primary);
 }
 
@@ -622,7 +639,7 @@ button:hover {
 
 .tag-editor-dropdown li {
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   cursor: pointer;
 }
@@ -658,7 +675,9 @@ button:hover {
 .settings-card h1 {
   margin: 0;
   font-size: 28px;
+  font-weight: 500;
   line-height: 1.2;
+  letter-spacing: -0.03em;
 }
 
 .settings-group {
@@ -673,6 +692,7 @@ button:hover {
 .settings-group h2 {
   margin: 0;
   font-size: 16px;
+  font-weight: 500;
 }
 
 .settings-row {
@@ -715,16 +735,17 @@ button:hover {
 .auth-card h1 {
   margin: 0;
   font-size: clamp(30px, 4vw, 44px);
+  font-weight: 500;
   line-height: 1.15;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 
 .auth-eyebrow {
   margin: 0;
-  color: var(--color-info);
-  font-size: 13px;
+  color: var(--color-primary);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -744,7 +765,9 @@ button:hover {
 .quick-add-card h1 {
   margin: 0;
   font-size: 28px;
+  font-weight: 500;
   line-height: 1.2;
+  letter-spacing: -0.03em;
 }
 
 .quick-add-form {
@@ -760,7 +783,7 @@ button:hover {
 }
 
 .tag-editor-suggestions button {
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   padding: 6px 10px;
   font-size: 12px;
 }
@@ -784,7 +807,7 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-primary) 80%, #fff);
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
