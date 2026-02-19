@@ -5,7 +5,7 @@
 
   --text-primary: #e8e8e8;
   --text-secondary: #888888;
-  --text-muted: #555555;
+  --text-muted: #6a6a6a;
 
   --border-default: rgba(255, 255, 255, 0.06);
   --border-strong: rgba(255, 255, 255, 0.12);
@@ -196,12 +196,12 @@ a {
 
 .content-column {
   display: grid;
-  gap: 14px;
+  gap: 18px;
 }
 
 .items {
   display: grid;
-  gap: 14px;
+  gap: 18px;
 }
 
 .card {
@@ -232,10 +232,26 @@ a {
 
 .panel-title {
   font-size: 11px;
-  color: var(--text-secondary);
+  font-weight: 600;
+  color: var(--text-primary);
   margin-bottom: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
+}
+
+.tag-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-default);
+}
+
+.tag-list {
+  margin-top: 12px;
 }
 
 .tag-list ul {
@@ -243,7 +259,7 @@ a {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .tag-list a {
@@ -285,7 +301,7 @@ a {
 }
 
 .field-label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -361,13 +377,13 @@ button:hover {
 
 .items-grid {
   display: grid;
-  gap: 14px;
+  gap: 18px;
 }
 
 .item-card h3 {
   margin: 0;
   font-size: 18px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.35;
   letter-spacing: -0.03em;
 }
@@ -377,13 +393,13 @@ button:hover {
   background: var(--bg-surface);
   border-radius: var(--radius-lg);
   box-shadow: none;
-  padding: 20px 24px;
+  padding: 22px 24px;
 }
 
 .tile h3 {
   margin: 0;
   font-size: 18px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.35;
   letter-spacing: -0.03em;
 }
@@ -417,19 +433,19 @@ button:hover {
 }
 
 .item-meta {
-  margin-top: 10px;
+  margin-top: 12px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font-size: 13px;
   color: var(--text-secondary);
 }
 
 .meta {
-  margin-top: 10px;
+  margin-top: 12px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font-size: 13px;
   color: var(--text-secondary);
 }
@@ -438,9 +454,9 @@ button:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 9px;
+  padding: 3px 10px;
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.04em;
   color: var(--color-info);
@@ -453,9 +469,9 @@ button:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 2px 9px;
+  padding: 3px 10px;
   border-radius: var(--radius-sm);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.04em;
   color: var(--color-info);
@@ -528,6 +544,7 @@ button:hover {
   color: var(--text-primary);
   border-radius: var(--radius-md);
   padding: 10px 12px;
+  margin-top: 16px;
 }
 
 .error {
@@ -536,10 +553,17 @@ button:hover {
   color: var(--color-danger);
   border-radius: var(--radius-md);
   padding: 10px 12px;
+  margin-top: 16px;
 }
 
 .muted {
   color: var(--text-muted);
+  margin-bottom: 0;
+}
+
+p.muted {
+  margin-top: 4px;
+  margin-bottom: 16px;
 }
 
 .empty-state {
@@ -600,8 +624,8 @@ button:hover {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 10px;
+  margin-top: 16px;
   font-size: 13px;
   color: var(--text-secondary);
 }
