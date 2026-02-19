@@ -533,10 +533,8 @@ tagInput.addEventListener('input', async () => {
 });
 
 tagInput.addEventListener('blur', () => {
-  if (tagInput.value.trim()) {
-    addTag(tagInput.value);
-    tagInput.value = '';
-  }
+  // Only clear suggestions on blur; tags are confirmed by Enter or comma only
+  suggestionsEl.innerHTML = '';
 });
 
 (async () => {
