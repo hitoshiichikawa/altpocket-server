@@ -213,19 +213,17 @@
       clearSuggestions();
       detailTagInput.hidden = false;
       detailTagActions.hidden = false;
-      detailEditTagsBtn.hidden = true;
-      isEditing = true;
+      detailEditTagsBtn.disabled = true; // 編集中は再クリック不可
       detailTagInput.focus();
     };
 
     // 編集モード終了：×なしチップに戻し、テキストボックスとボタンを隠す
     const closeEditor = (savedTags) => {
-      isEditing = false;
       detailTagInput.hidden = true;
       detailTagActions.hidden = true;
       clearSuggestions();
       detailTagInput.value = '';
-      detailEditTagsBtn.hidden = false;
+      detailEditTagsBtn.disabled = false; // 編集終了後に再び押せるように
       renderChips(savedTags, false);
     };
 
