@@ -1,23 +1,23 @@
 :root[data-theme="dark"] {
-  --bg-base: #0b0d12;
-  --bg-surface: #111522;
-  --bg-elevated: #161b2e;
+  --bg-base: #0a0a0a;
+  --bg-surface: #141414;
+  --bg-elevated: #1e1e1e;
 
-  --text-primary: #e6eaf2;
-  --text-secondary: #9aa4b2;
-  --text-muted: #6b7482;
+  --text-primary: #e8e8e8;
+  --text-secondary: #888888;
+  --text-muted: #555555;
 
-  --border-default: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  --border-default: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
 
-  --color-primary: #4d6dff;
-  --color-primary-hover: #3e5af0;
-  --color-primary-soft: rgba(77, 109, 255, 0.15);
+  --color-primary: #d4a574;
+  --color-primary-hover: #c4956a;
+  --color-primary-soft: rgba(212, 165, 116, 0.10);
 
-  --color-success: #4cd7a2;
-  --color-warning: #ffb020;
-  --color-danger: #ff5b6e;
-  --color-info: #5bc0ff;
+  --color-success: #6bc490;
+  --color-warning: #e0a830;
+  --color-danger: #d45c5c;
+  --color-info: #7ab0d4;
 }
 
 :root[data-theme="light"] {
@@ -32,9 +32,9 @@
   --border-default: rgba(0, 0, 0, 0.08);
   --border-strong: rgba(0, 0, 0, 0.16);
 
-  --color-primary: #4d6dff;
-  --color-primary-hover: #3e5af0;
-  --color-primary-soft: #e8edff;
+  --color-primary: #b8895a;
+  --color-primary-hover: #a67a4e;
+  --color-primary-soft: rgba(184, 137, 90, 0.12);
 
   --color-success: #16a34a;
   --color-warning: #d97706;
@@ -53,7 +53,7 @@ body {
   min-height: 540px;
   font-family: "Inter", "Noto Sans JP", "Hiragino Kaku Gothic ProN", sans-serif;
   color: var(--text-primary);
-  background: radial-gradient(circle at top right, rgba(91, 192, 255, 0.12), transparent 42%), var(--bg-base);
+  background: var(--bg-base);
 }
 
 body {
@@ -90,8 +90,8 @@ body {
 .brand-logo {
   width: 28px;
   height: 28px;
-  border-radius: 9px;
-  background: linear-gradient(140deg, var(--color-primary), color-mix(in srgb, var(--color-info) 35%, var(--color-primary)));
+  border-radius: 6px;
+  background: var(--color-primary);
   display: grid;
   place-items: center;
   color: white;
@@ -106,7 +106,7 @@ body {
 
 .brand-title {
   font-size: 14px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .brand-subtitle {
@@ -116,8 +116,10 @@ body {
 
 .status {
   min-height: 24px;
-  border-radius: 999px;
+  border-radius: 6px;
   font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
   padding: 4px 10px;
   display: inline-flex;
   align-items: center;
@@ -147,10 +149,10 @@ body {
 
 .section,
 .settings {
-  border: 1px solid var(--border-default);
-  border-radius: 14px;
+  border: none;
+  border-radius: 10px;
   background: var(--bg-surface);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.2);
+  box-shadow: none;
 }
 
 .section {
@@ -165,14 +167,16 @@ body {
 }
 
 .label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .input {
   width: 100%;
   border: 1px solid var(--border-default);
-  border-radius: 12px;
+  border-radius: 6px;
   background: var(--bg-elevated);
   color: var(--text-primary);
   padding: 10px 12px;
@@ -185,25 +189,25 @@ body {
 
 .btn {
   width: 100%;
-  border-radius: 12px;
+  border-radius: 8px;
   border: 1px solid transparent;
   padding: 10px 12px;
   cursor: pointer;
   font: inherit;
   font-size: 13px;
   font-weight: 600;
-  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
 .btn:hover {
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .btn-primary {
   background: var(--color-primary);
   border-color: var(--color-primary);
   color: #fff;
-  box-shadow: 0 12px 22px rgba(77, 109, 255, 0.34);
+  box-shadow: none;
 }
 
 .btn-primary:hover {
@@ -246,8 +250,8 @@ body {
   align-items: center;
   gap: 6px;
   background: var(--color-primary-soft);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 36%, var(--border-default));
-  border-radius: 999px;
+  border: none;
+  border-radius: 6px;
   padding: 3px 10px;
   font-size: 12px;
 }
@@ -270,7 +274,7 @@ body {
 .suggestions button {
   width: 100%;
   text-align: left;
-  border-radius: 10px;
+  border-radius: 6px;
   border: 1px solid var(--border-default);
   background: var(--bg-elevated);
   color: var(--text-primary);
@@ -322,6 +326,6 @@ body {
 button:focus-visible,
 input:focus-visible,
 summary:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-primary) 80%, #fff);
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
