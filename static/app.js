@@ -109,7 +109,7 @@
     let activeSuggestion = -1;
 
     const readDisplayTags = () =>
-      Array.from(detailTagsDisplay.querySelectorAll('.chip'))
+      Array.from(detailTagsDisplay.querySelectorAll('.tag, .chip'))
         .map((chip) => normalizeTagName(chip.textContent))
         .filter((tag) => tag.length > 0);
 
@@ -117,7 +117,7 @@
       detailTagsDisplay.innerHTML = '';
       tags.forEach((tag) => {
         const chip = document.createElement('span');
-        chip.className = 'chip';
+        chip.className = 'tag';
         chip.textContent = tag;
         detailTagsDisplay.appendChild(chip);
       });
