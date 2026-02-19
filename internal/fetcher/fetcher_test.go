@@ -151,6 +151,76 @@ func TestFetchTruncatesOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestFetchFallsBackToMetaTitleAndDescription(t *testing.T) {
+	body := []byte(`<html><head>
+<title></title>
+<meta property="og:title" content="Meta title">
+<meta name="description" content="Meta description fallback">
+</head><body><div id="root"></div></body></html>`)
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+			}, nil
+		}),
+	}
+	f := New(1_000_000, 1024, 512)
+	f.Client = client
+
+	parsed, err := f.Fetch(context.Background(), "https://example.com/meta")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if parsed.Title != "Meta title" {
+		t.Fatalf("expected title from meta, got %q", parsed.Title)
+	}
+	if parsed.ContentFull != "Meta description fallback" {
+		t.Fatalf("expected content from meta description, got %q", parsed.ContentFull)
+	}
+}
+
+func TestFetchReturnsErrNoContentWhenExtractedAndMetaAreEmpty(t *testing.T) {
+	body := []byte("<html><head><title>Empty</title></head><body><div></div></body></html>")
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+			}, nil
+		}),
+	}
+	f := New(1_000_000, 1024, 512)
+	f.Client = client
+
+	_, err := f.Fetch(context.Background(), "https://example.com/empty")
+	if err != ErrNoContent {
+		t.Fatalf("expected ErrNoContent, got %v", err)
+	}
+}
+
+func TestFetchReturnsErrNoContentWhenTitleIsMissing(t *testing.T) {
+	body := []byte(`<html><head><title></title></head><body><article><p>Body exists.</p></article></body></html>`)
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+			}, nil
+		}),
+	}
+	f := New(1_000_000, 1024, 512)
+	f.Client = client
+
+	_, err := f.Fetch(context.Background(), "https://example.com/title-missing")
+	if err != ErrNoContent {
+		t.Fatalf("expected ErrNoContent, got %v", err)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {

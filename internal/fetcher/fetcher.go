@@ -17,6 +17,7 @@ var (
 	ErrTooLarge     = errors.New("response_too_large")
 	ErrTooManyRedir = errors.New("too_many_redirects")
 	ErrBadStatus    = errors.New("bad_status")
+	ErrNoContent    = errors.New("no_content")
 )
 
 type Result struct {
@@ -47,8 +48,8 @@ func New(maxBytes int64, contentFullLimit, contentSearchLimit int) *Fetcher {
 	return &Fetcher{Client: client, MaxBytes: maxBytes, ContentFullLimit: contentFullLimit, ContentSearchLimit: contentSearchLimit}
 }
 
-func (f *Fetcher) Fetch(ctx context.Context, url string) (Result, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return Result{}, err
 	}
@@ -76,9 +77,13 @@ func (f *Fetcher) Fetch(ctx context.Context, url string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	title := strings.TrimSpace(doc.Find("title").First().Text())
+	title := pageTitle(doc)
 	contentText := extractReadableContent(doc)
+	contentText = contentFallback(doc, contentText)
 	contentFull := truncateUTF8(contentText, f.ContentFullLimit)
+	if title == "" || normalizeText(contentFull) == "" {
+		return Result{}, ErrNoContent
+	}
 	searchText := normalizeText(contentFull)
 	contentSearch := truncateUTF8(searchText, f.ContentSearchLimit)
 	excerpt := truncateUTF8(searchText, 200)
@@ -216,6 +221,47 @@ func extractBlocks(root *goquery.Selection) []string {
 
 func normalizeText(text string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+}
+
+func pageTitle(doc *goquery.Document) string {
+	title := normalizeText(doc.Find("title").First().Text())
+	if title != "" {
+		return title
+	}
+	return firstMetaContent(doc,
+		"meta[property='og:title']",
+		"meta[name='twitter:title']",
+	)
+}
+
+func contentFallback(doc *goquery.Document, extracted string) string {
+	if normalizeText(extracted) != "" {
+		return extracted
+	}
+
+	if desc := metaDescription(doc); desc != "" {
+		return desc
+	}
+	return extracted
+}
+
+func metaDescription(doc *goquery.Document) string {
+	return firstMetaContent(doc,
+		"meta[property='og:description']",
+		"meta[name='twitter:description']",
+		"meta[name='description']",
+	)
+}
+
+func firstMetaContent(doc *goquery.Document, selectors ...string) string {
+	for _, selector := range selectors {
+		if v, ok := doc.Find(selector).First().Attr("content"); ok {
+			if normalized := normalizeText(v); normalized != "" {
+				return normalized
+			}
+		}
+	}
+	return ""
 }
 
 func textScore(text string) int {

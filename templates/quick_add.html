@@ -21,12 +21,10 @@
         <input id="quick-add-title" class="input" type="text" name="title" value="{{.SourceTitle}}" placeholder="Page title">
       </label>
 
-      {{if .ContentPreview}}
       <label class="field" for="quick-add-content-preview">
-        <span class="field-label">Captured text (read-only, up to 200 chars)</span>
-        <textarea id="quick-add-content-preview" class="input" name="content" rows="5" readonly>{{.ContentPreview}}</textarea>
+        <span class="field-label">Content (optional)</span>
+        <textarea id="quick-add-content-preview" class="input" name="content" rows="5" placeholder="Add notes or captured content">{{.ContentPreview}}</textarea>
       </label>
-      {{end}}
 
       <div class="field">
         <span class="field-label">Tags</span>
