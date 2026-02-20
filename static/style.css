@@ -266,6 +266,11 @@ a {
   gap: 10px;
 }
 
+.tag-clear-btn {
+  display: inline-flex;
+  margin-top: 12px;
+}
+
 .tag-list a {
   text-decoration: none;
   color: var(--text-secondary);
