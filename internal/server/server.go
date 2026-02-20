@@ -583,7 +583,7 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	tags, _ := s.store.ListTagsWithCount(r.Context(), user.ID)
+	tags, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
 
 	data := map[string]interface{}{
 		"Title":          "Items",

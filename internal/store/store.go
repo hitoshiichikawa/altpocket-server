@@ -562,15 +562,51 @@ func (s *Store) SuggestTags(ctx context.Context, q string) ([]Tag, error) {
 }
 
 func (s *Store) ListTagsWithCount(ctx context.Context, userID string) ([]Tag, error) {
-	rows, err := s.DB.Query(ctx, `
-		SELECT t.id, t.name, t.normalized_name, COUNT(it.item_id) AS count
-		FROM tags t
-		JOIN item_tags it ON it.tag_id=t.id
-		JOIN items i ON i.id=it.item_id
-		WHERE i.user_id=$1
+	return s.ListTagsWithCountFiltered(ctx, userID, "", nil)
+}
+
+func (s *Store) ListTagsWithCountFiltered(ctx context.Context, userID, q string, selectedTags []string) ([]Tag, error) {
+	where := []string{"i.user_id = $1"}
+	args := []interface{}{userID}
+	argPos := 2
+
+	if q != "" {
+		where = append(where, fmt.Sprintf("(i.title ILIKE $%d OR i.excerpt ILIKE $%d OR c.content_search ILIKE $%d OR i.canonical_url ILIKE $%d OR t.normalized_name ILIKE $%d)", argPos, argPos, argPos, argPos, argPos))
+		args = append(args, "%"+q+"%")
+		argPos++
+	}
+	for _, selectedTag := range selectedTags {
+		where = append(where, fmt.Sprintf(`
+			EXISTS (
+				SELECT 1
+				FROM item_tags itf
+				JOIN tags tf ON tf.id = itf.tag_id
+				WHERE itf.item_id = i.id AND tf.normalized_name = $%d
+			)
+		`, argPos))
+		args = append(args, selectedTag)
+		argPos++
+	}
+
+	whereSQL := strings.Join(where, " AND ")
+	query := fmt.Sprintf(`
+		WITH filtered_items AS (
+			SELECT DISTINCT i.id
+			FROM items i
+			LEFT JOIN item_contents c ON c.item_id=i.id
+			LEFT JOIN item_tags it ON it.item_id=i.id
+			LEFT JOIN tags t ON t.id=it.tag_id
+			WHERE %s
+		)
+		SELECT t.id, t.name, t.normalized_name, COUNT(DISTINCT it.item_id) AS count
+		FROM filtered_items fi
+		JOIN item_tags it ON it.item_id = fi.id
+		JOIN tags t ON t.id = it.tag_id
 		GROUP BY t.id
 		ORDER BY t.normalized_name
-	`, userID)
+	`, whereSQL)
+
+	rows, err := s.DB.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
