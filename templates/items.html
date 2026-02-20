@@ -25,18 +25,23 @@
         </select>
       </label>
 
-      <button type="submit" class="btn-primary">Apply</button>
-    </form>
-
-    <div class="tag-list">
+      <div class="tag-list">
       <div class="tag-title">Tags</div>
       <ul>
-        <li><a href="/ui/items">All items</a></li>
         {{range .Tags}}
-          <li><a href="/ui/items?tag={{.NormalizedName}}">{{.Name}} <span class="muted">({{.Count}})</span></a></li>
+          <li>
+            <label class="tag-filter-option">
+              <input type="checkbox" name="tag" value="{{.NormalizedName}}" {{if index $.SelectedTags .NormalizedName}}checked{{end}}>
+              <span>{{.Name}} <span class="muted">({{.Count}})</span></span>
+            </label>
+          </li>
         {{end}}
       </ul>
-    </div>
+      <a class="btn-secondary tag-clear-btn" href="/ui/items">Clear filters</a>
+      </div>
+
+      <button type="submit" class="btn-primary">Apply</button>
+    </form>
   </aside>
 
   <section class="items">

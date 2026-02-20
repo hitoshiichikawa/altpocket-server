@@ -266,6 +266,11 @@ a {
   gap: 10px;
 }
 
+.tag-clear-btn {
+  display: inline-flex;
+  margin-top: 12px;
+}
+
 .tag-list a {
   text-decoration: none;
   color: var(--text-secondary);
@@ -281,7 +286,10 @@ a {
   gap: 12px;
 }
 
-.search-form input,
+.search-form input[type="text"],
+.search-form input[type="search"],
+.search-form input[type="url"],
+.search-form input[type="number"],
 .search-form select {
   width: 100%;
   border: 1px solid var(--border-default);
@@ -290,6 +298,30 @@ a {
   color: var(--text-primary);
   padding: 10px 12px;
   font: inherit;
+}
+
+.tag-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.tag-filter-option:hover {
+  color: var(--text-primary);
+}
+
+.tag-filter-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--color-primary);
+}
+
+.tag-filter-option span {
+  line-height: 1.3;
 }
 
 .search-form-row {

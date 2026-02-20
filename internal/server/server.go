@@ -414,12 +414,12 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query().Get("q")
-	tagFilter := tag.Normalize(r.URL.Query().Get("tag"))
+	tagFilters := parseTagFilters(r.URL.Query())
 	sort := defaultSort(r.URL.Query().Get("sort"))
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	perPage := perPageValue(r.URL.Query().Get("per_page"))
 
-	items, pag, err := s.store.ListItems(r.Context(), user.ID, page, perPage, q, tagFilter, sort)
+	items, pag, err := s.store.ListItems(r.Context(), user.ID, page, perPage, q, tagFilters, sort)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
@@ -573,23 +573,24 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query().Get("q")
-	tagFilter := tag.Normalize(r.URL.Query().Get("tag"))
+	tagFilters := parseTagFilters(r.URL.Query())
 	sort := defaultSort(r.URL.Query().Get("sort"))
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	perPage := perPageValue(r.URL.Query().Get("per_page"))
 
-	items, pag, err := s.store.ListItems(r.Context(), user.ID, page, perPage, q, tagFilter, sort)
+	items, pag, err := s.store.ListItems(r.Context(), user.ID, page, perPage, q, tagFilters, sort)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	tags, _ := s.store.ListTagsWithCount(r.Context(), user.ID)
+	tags, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
 
 	data := map[string]interface{}{
 		"Title":          "Items",
 		"User":           user,
 		"Items":          items,
 		"Tags":           tags,
+		"SelectedTags":   selectedTagSet(tagFilters),
 		"Page":           pag.Page,
 		"PerPage":        pag.PerPage,
 		"TotalPages":     max(1, (pag.Total+pag.PerPage-1)/pag.PerPage),
@@ -1181,6 +1182,23 @@ func parseTagInput(v string) []string {
 		return r == ',' || r == ';' || r == '\n' || r == '\r'
 	})
 	return normalizeTagNames(parts)
+}
+
+func parseTagFilters(q url.Values) []string {
+	raw := make([]string, 0, len(q["tag"])+1)
+	raw = append(raw, q["tag"]...)
+	if csv := strings.TrimSpace(q.Get("tags")); csv != "" {
+		raw = append(raw, strings.Split(csv, ",")...)
+	}
+	return normalizeTagNames(raw)
+}
+
+func selectedTagSet(tags []string) map[string]bool {
+	selected := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		selected[t] = true
+	}
+	return selected
 }
 
 func normalizeWhitespace(v string) string {

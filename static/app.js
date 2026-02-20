@@ -81,6 +81,41 @@
     form.querySelectorAll('select').forEach((sel) => {
       sel.addEventListener('change', () => form.submit());
     });
+
+    const tagCheckboxes = form.querySelectorAll('input[type="checkbox"][name="tag"]');
+    if (tagCheckboxes.length > 0) {
+      let autoSubmitTimer = null;
+      let submitting = false;
+
+      const submitForm = () => {
+        if (submitting) return;
+        submitting = true;
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+          return;
+        }
+        form.submit();
+      };
+
+      const scheduleSubmit = () => {
+        if (submitting) return;
+        if (autoSubmitTimer) {
+          clearTimeout(autoSubmitTimer);
+        }
+        autoSubmitTimer = setTimeout(() => {
+          autoSubmitTimer = null;
+          submitForm();
+        }, 350);
+      };
+
+      form.addEventListener('submit', () => {
+        submitting = true;
+      });
+
+      tagCheckboxes.forEach((checkbox) => {
+        checkbox.addEventListener('change', scheduleSubmit);
+      });
+    }
   }
 
   const detailEditTagsBtn = document.querySelector('button.edit-tags');
