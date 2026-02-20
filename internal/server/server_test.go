@@ -47,6 +47,30 @@ func TestParseTagInput(t *testing.T) {
 	}
 }
 
+func TestParseTagFilters(t *testing.T) {
+	values := url.Values{}
+	values.Add("tag", "Go")
+	values.Add("tag", "news")
+	values.Set("tags", "web,go")
+	got := parseTagFilters(values)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 tags, got %d", len(got))
+	}
+	if got[0] != "go" || got[1] != "news" || got[2] != "web" {
+		t.Fatalf("unexpected tags: %#v", got)
+	}
+}
+
+func TestSelectedTagSet(t *testing.T) {
+	set := selectedTagSet([]string{"go", "news"})
+	if !set["go"] || !set["news"] {
+		t.Fatalf("expected selected tags to be true: %#v", set)
+	}
+	if set["web"] {
+		t.Fatalf("unexpected selected tag: %#v", set)
+	}
+}
+
 func TestNormalizeWhitespace(t *testing.T) {
 	got := normalizeWhitespace("  hello \n  world\tgo  ")
 	if got != "hello world go" {

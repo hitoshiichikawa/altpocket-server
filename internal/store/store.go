@@ -264,7 +264,7 @@ func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canon
 	return itemID, created, nil
 }
 
-func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int, q, tag, sort string) ([]ItemListRow, Pagination, error) {
+func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int, q string, tags []string, sort string) ([]ItemListRow, Pagination, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -282,9 +282,16 @@ func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int,
 		args = append(args, "%"+q+"%")
 		argPos++
 	}
-	if tag != "" {
-		where = append(where, fmt.Sprintf("t.normalized_name = $%d", argPos))
-		args = append(args, tag)
+	for _, selectedTag := range tags {
+		where = append(where, fmt.Sprintf(`
+			EXISTS (
+				SELECT 1
+				FROM item_tags itf
+				JOIN tags tf ON tf.id = itf.tag_id
+				WHERE itf.item_id = i.id AND tf.normalized_name = $%d
+			)
+		`, argPos))
+		args = append(args, selectedTag)
 		argPos++
 	}
 
