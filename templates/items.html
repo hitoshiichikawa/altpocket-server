@@ -30,7 +30,7 @@
       <ul>
         {{range .Tags}}
           <li>
-            <label>
+            <label class="tag-filter-option">
               <input type="checkbox" name="tag" value="{{.NormalizedName}}" {{if index $.SelectedTags .NormalizedName}}checked{{end}}>
               <span>{{.Name}} <span class="muted">({{.Count}})</span></span>
             </label>
