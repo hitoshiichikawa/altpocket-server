@@ -91,7 +91,11 @@ go test ./...
 ```
 
 ## Extensionテスト
-現状、Side Panel向けの自動テストは未整備です。`go test ./...` と手動E2Eで確認してください。
+```bash
+node --test extension/sidepanel.test.mjs
+```
+
+加えて、実機の手動E2E（login/save/search/logout）を実施してください。
 
 ## APIスモークテスト
 ```
