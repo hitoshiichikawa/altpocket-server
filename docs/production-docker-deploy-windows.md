@@ -111,6 +111,7 @@ Copy-Item .\deploy\.env.production.example .\deploy\.env.production
 - `DATABASE_URL`
 - `SESSION_SECRET` / `JWT_SECRET`
 - `GOOGLE_WEB_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_EXT_CLIENT_ID`
+- `CORS_ALLOW_ORIGINS`（例: `chrome-extension://<拡張機能ID>,https://<WWWドメイン>`）
 
 シークレット生成（PowerShell 7+）:
 

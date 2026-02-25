@@ -20,6 +20,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable}
       HTTP_ADDR: ${HTTP_ADDR:-:8080}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8080,chrome-extension://your-extension-id}
       SESSION_SECRET: ${SESSION_SECRET:-change-me}
       JWT_SECRET: ${JWT_SECRET:-change-me}
       GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID:-your-web-client-id}
@@ -38,6 +39,7 @@ services:
       dockerfile: deploy/worker.Dockerfile
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgres://altpocket:altpocket@db:5432/altpocket?sslmode=disable}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8080,chrome-extension://your-extension-id}
       SESSION_SECRET: ${SESSION_SECRET:-change-me}
       JWT_SECRET: ${JWT_SECRET:-change-me}
       GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID:-your-web-client-id}

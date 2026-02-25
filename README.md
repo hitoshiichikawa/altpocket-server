@@ -21,7 +21,7 @@ JWT_SECRET=change-me
 GOOGLE_WEB_CLIENT_ID=your-web-client-id
 GOOGLE_CLIENT_SECRET=your-web-client-secret
 GOOGLE_EXT_CLIENT_ID=your-extension-client-id
-CORS_ALLOW_ORIGINS=chrome-extension://your-extension-id,https://your-web-origin
+CORS_ALLOW_ORIGINS=chrome-extension://your-extension-id,http://localhost:8080
 ```
 
 `APP_ENV=production` では `CORS_ALLOW_ORIGINS` が必須です（未設定だと起動時にpanicします）。
@@ -48,9 +48,10 @@ Web UI: http://localhost:8080/ui/items
 ## 拡張機能のロード
 1. `extension/sidepanel.js` の `CLIENT_ID` を自分のExtension用OAuthクライアントIDに置換
 2. `extension/sidepanel.js` の `API_BASE` を固定のAPIオリジンに設定
-3. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
-4. 拡張機能アイコンをクリックしてSide Panelを開き、Login → Save Current Tab
-5. Save時はまずURL/タグだけを保存し、その後拡張機能が抽出した本文を非同期で `POST /v1/items/:id/capture` に送信します（保存操作は待たない）。この本文はworker fetch失敗時のフォールバックとして扱われ、worker fetch成功時はworker側の本文が優先されます。
+3. Chromeの拡張機能管理画面で拡張機能IDを確認し、`CORS_ALLOW_ORIGINS` に `chrome-extension://<拡張機能ID>` を設定して API を再起動
+4. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
+5. 拡張機能アイコンをクリックしてSide Panelを開き、Login → Save Current Tab
+6. Save時はまずURL/タグだけを保存し、その後拡張機能が抽出した本文を非同期で `POST /v1/items/:id/capture` に送信します（保存操作は待たない）。この本文はworker fetch失敗時のフォールバックとして扱われ、worker fetch成功時はworker側の本文が優先されます。
 
 ## モバイル登録導線
 
