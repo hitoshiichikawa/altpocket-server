@@ -1,42 +1,54 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="ja" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="stylesheet" href="style.css">
-  <link rel="stylesheet" href="popup.css">
   <link rel="stylesheet" href="sidepanel.css">
   <title>altpocket</title>
 </head>
-<body class="sidepanel-body">
-  <main class="popup">
-    <header class="popup-header">
-      <div class="brand-wrap">
-        <div class="brand-logo" aria-hidden="true">a</div>
-        <div class="brand-copy">
-          <div class="brand-title">altpocket</div>
-          <div class="brand-subtitle">Save, tag, revisit</div>
-        </div>
-      </div>
-      <div id="status" class="status status-info" role="alert" aria-live="polite">Not logged in</div>
-    </header>
-
-    <button id="login" class="btn btn-secondary" type="button">Sign in with Google</button>
-
-    <section id="authControls" class="auth-controls" hidden>
-      <button id="save" class="btn btn-primary" type="button">Save current tab</button>
-
-      <section class="section" aria-labelledby="tag-label">
-        <div id="tag-label" class="label">Tags</div>
-        <input id="tagInput" class="input" type="text" placeholder="Type tag and press Enter">
-        <div id="suggestions" class="suggestions"></div>
-        <div id="tags" class="chips"></div>
-      </section>
+<body class="reader-body">
+  <main class="reader-shell">
+    <section id="loginScreen" class="login-screen">
+      <button id="login" class="login-btn" type="button">Sign in with Google</button>
     </section>
 
-    <button id="openWebUI" class="btn btn-ghost" type="button">Open Web App</button>
-    <button id="signOut" class="btn btn-danger" type="button" hidden>Sign out</button>
+    <section id="readerScreen" class="reader-screen" hidden>
+      <div class="utility-bar" aria-label="utility actions">
+        <div class="utility-left">altpocket</div>
+        <div class="utility-right">
+          <button id="openWebUI" class="utility-btn" type="button">Go to website</button>
+          <button id="signOut" class="utility-btn" type="button">Log out</button>
+          <span id="utilityStatus" class="utility-status" aria-live="polite"></span>
+        </div>
+      </div>
+
+      <section class="save-panel" aria-label="保存セクション">
+        <button id="save" class="save-btn" type="button">Save current tab</button>
+        <div class="tag-field">
+          <label class="save-label" for="tagInput">Tags</label>
+          <input id="tagInput" class="tag-input" type="text" placeholder="Type tag and press Enter" autocomplete="off">
+          <div id="suggestions" class="suggestions"></div>
+          <div id="tags" class="chips"></div>
+        </div>
+      </section>
+
+      <div class="section-divider" aria-hidden="true"></div>
+
+      <section class="search-panel" aria-label="検索セクション">
+        <label class="search-label" for="searchInput">Search</label>
+        <input id="searchInput" class="search-input" type="text" placeholder="件名・本文・タグで検索（部分一致）" autocomplete="off">
+        <p class="search-hint">件名・本文・タグを横断検索。Esc でクリア。</p>
+      </section>
+
+      <section class="list-panel" aria-label="記事一覧">
+        <div class="list-head">
+          <h2 class="list-title">記事一覧</h2>
+          <span id="resultMeta" class="list-meta">0件</span>
+        </div>
+        <ul id="itemList" class="item-list"></ul>
+      </section>
+    </section>
   </main>
-  <script src="popup.js"></script>
+  <script src="sidepanel.js"></script>
 </body>
 </html>

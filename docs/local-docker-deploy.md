@@ -56,7 +56,8 @@ docker compose down -v
 ```
 
 ## 7. （任意）Chrome拡張で動作確認
-1. `extension/popup.js` の `CLIENT_ID` をChrome拡張用のOAuthクライアントIDに置換
-2. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
-3. PopupでAPI Base URLに `http://localhost:8080` を入力
-4. Login → Save Current Tab
+1. `extension/sidepanel.js` の `CLIENT_ID` をChrome拡張用のOAuthクライアントIDに置換
+2. `extension/sidepanel.js` の `API_BASE` を `http://localhost:8080` に設定
+3. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
+4. 拡張機能アイコンをクリックして Side Panel を開く
+5. Login → Save Current Tab

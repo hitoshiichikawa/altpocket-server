@@ -27,7 +27,7 @@ API/Worker/Extension/UI は入口が異なっても、保存・認証・取得�
 ### External Client Surface
 **Location**: `/extension/`  
 **Purpose**: Chrome Extension (MV3) の UI/認証/保存クライアント実装  
-**Example**: `extension/popup.js`, `extension/manifest.json`
+**Example**: `extension/sidepanel.js`, `extension/manifest.json`
 
 ### Data & Operations
 **Location**: `/migrations/`, `/deploy/`, `/scripts/`, `/docs/`  

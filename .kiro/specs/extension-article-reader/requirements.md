@@ -9,52 +9,52 @@ extensionに記事を閲覧できる機能
 
 ## Requirements
 
-### Requirement 1: 拡張機能内の記事一覧表示
-**Objective:** As a 認証済みユーザー, I want 拡張機能内で保存記事の一覧を確認したい, so that Webアプリへ移動せずに読む記事を選択できる
+### Requirement 1: 認証状態に応じた初期画面
+**Objective:** As a 未認証ユーザー, I want 迷わずログイン操作に進みたい, so that 記事閲覧機能へ最短で到達できる
 
 #### Acceptance Criteria
-1. When 認証済みユーザーが拡張機能の閲覧画面を開いたとき, the Extension Article Reader shall ユーザー自身の保存済み記事一覧を表示する.
-2. The Extension Article Reader shall 一覧内の各記事に、記事を識別できる基本情報（少なくともタイトル）を表示する.
-3. While 記事一覧を取得中, the Extension Article Reader shall 一覧領域に読み込み中状態を表示する.
-4. If 記事一覧取得が失敗した場合, then the Extension Article Reader shall 失敗理由が分かるエラー状態と再試行手段を表示する.
-5. The Extension Article Reader shall 初期一覧を新しい保存順で表示する.
+1. If ユーザーが未認証状態でSide Panelを開いた場合, then the Extension Article Reader shall ログインボタンのみを表示する.
+2. The Extension Article Reader shall 未認証画面で記事一覧、検索欄、運用リンクを表示しない.
+3. When ユーザーがログインに成功したとき, the Extension Article Reader shall 閲覧画面へ遷移する.
+4. If ログイン処理が失敗した場合, then the Extension Article Reader shall 閲覧画面へ遷移しない.
+5. While 未認証状態, the Extension Article Reader shall 認証が必要な記事APIを呼び出さない.
 
-### Requirement 2: 記事詳細の閲覧
-**Objective:** As a 認証済みユーザー, I want 拡張機能内で記事本文を読みたい, so that 保存した内容をその場で確認できる
-
-#### Acceptance Criteria
-1. When ユーザーが記事一覧から1件を選択したとき, the Extension Article Reader shall 選択した記事の詳細表示へ遷移する.
-2. The Extension Article Reader shall 記事詳細にタイトルと閲覧可能な本文テキストを表示する.
-3. While 記事詳細を取得中, the Extension Article Reader shall 詳細領域に読み込み中状態を表示する.
-4. If 本文が未取得または取得失敗状態の場合, then the Extension Article Reader shall その状態を明示し、本文が読めないことをユーザーに伝える.
-5. When ユーザーが元ページ閲覧を選択したとき, the Extension Article Reader shall 記事の元URLをブラウザタブで開く.
-
-### Requirement 3: 記事の絞り込みと発見
-**Objective:** As a 認証済みユーザー, I want 記事を条件で絞り込みたい, so that 読みたい記事へ素早く到達できる
+### Requirement 2: 閲覧画面の固定ユーティリティ導線
+**Objective:** As a 認証済みユーザー, I want 主要導線をスクロール不要で使いたい, so that 閲覧中でも即座に遷移とログアウトができる
 
 #### Acceptance Criteria
-1. When ユーザーが検索語を入力したとき, the Extension Article Reader shall 検索語に一致する記事へ一覧を更新する.
-2. When ユーザーがタグ絞り込みを指定したとき, the Extension Article Reader shall 指定タグを持つ記事のみを表示する.
-3. When 検索語とタグ絞り込みが同時に指定されたとき, the Extension Article Reader shall 両条件を満たす記事のみを表示する.
-4. If 条件に一致する記事が存在しない場合, then the Extension Article Reader shall 空結果状態を明示する.
-5. The Extension Article Reader shall ユーザーが現在の検索・絞り込み条件を解除して全件表示に戻せる手段を提供する.
+1. When 認証済み画面が表示されたとき, the Extension Article Reader shall 画面上部に `altpocket` ラベルを表示する.
+2. The Extension Article Reader shall 画面上部に `Go to website` と `Log out` の導線を表示する.
+3. When ユーザーが `Go to website` を選択したとき, the Extension Article Reader shall Webサイトのアイテム一覧ページをブラウザタブで開く.
+4. When ユーザーが `Log out` を選択したとき, the Extension Article Reader shall 拡張機能の認証トークンを破棄して未認証画面へ遷移する.
+5. The Extension Article Reader shall これらユーティリティ導線を記事一覧スクロール領域の外側に表示する.
 
-### Requirement 4: 認証状態とアクセス制御
-**Objective:** As a サービス運用者, I want 認証境界を維持したい, so that 他ユーザー情報の露出や不正利用を防げる
-
-#### Acceptance Criteria
-1. If ユーザーが未認証状態で閲覧画面を開いた場合, then the Extension Article Reader shall 記事データの表示を行わずログイン導線を表示する.
-2. When 記事一覧または詳細取得中に認証エラーが返されたとき, the Extension Article Reader shall セッション失効状態へ遷移し再ログインを要求する.
-3. While 未認証状態, the Extension Article Reader shall 認証が必要な記事APIを呼び出さない.
-4. Where APIオリジンへの権限許可が必要な環境, the Extension Article Reader shall データ取得前に必要な許可を確認し、拒否時は許可が必要であることを通知する.
-5. The Extension Article Reader shall 記事一覧・詳細の取得を認証済みユーザーの資格情報に基づいて実行する.
-
-### Requirement 5: 障害時の閲覧継続性
-**Objective:** As a 認証済みユーザー, I want 通信や取得失敗時でも状況を把握したい, so that 迷わず再試行や代替行動を取れる
+### Requirement 3: 保存セクションと非同期取得連携
+**Objective:** As a 認証済みユーザー, I want 閲覧画面から現在タブを保存したい, so that 閲覧と収集を同一画面で連続実行できる
 
 #### Acceptance Criteria
-1. If ネットワーク障害で記事データを取得できない場合, then the Extension Article Reader shall 通信障害として識別可能なエラー状態を表示する.
-2. When ユーザーが失敗後に再試行したとき, the Extension Article Reader shall 最新の取得結果で一覧または詳細を更新する.
-3. While 記事の取得状態が pending または failed, the Extension Article Reader shall 一覧と詳細の両方で当該状態を明示する.
-4. Where 再フェッチ要求機能が提供される場合, the Extension Article Reader shall ユーザーが対象記事の再フェッチを要求できる操作を提供する.
-5. If 再フェッチ要求が受理された場合, then the Extension Article Reader shall 本文更新が非同期で行われることをユーザーに通知する.
+1. The Extension Article Reader shall ユーティリティ導線の下に保存セクションを表示する.
+2. The Extension Article Reader shall 保存セクションに `Save current tab` 操作を提供する.
+3. The Extension Article Reader shall 保存セクションにタグ入力、タグ候補、選択済みタグ表示を提供する.
+4. When ユーザーが `Save current tab` を実行したとき, the Extension Article Reader shall URLとタグを保存APIへ送信する.
+5. If 新規保存が成立した場合, then the Extension Article Reader shall 本文候補を抽出して非同期キャプチャAPIへ送信する.
+
+### Requirement 4: 区切り線配下の検索とコンテンツ一覧
+**Objective:** As a 認証済みユーザー, I want 保存操作と閲覧操作を視覚的に分離したい, so that 情報が混在せず一覧確認に集中できる
+
+#### Acceptance Criteria
+1. The Extension Article Reader shall 保存セクションの下に視覚的なセクション区切りを表示する.
+2. The Extension Article Reader shall セクション区切りの下に検索入力とコンテンツ一覧を表示する.
+3. The Extension Article Reader shall 検索対象として件名、本文検索用テキスト、タグを含める.
+4. The Extension Article Reader shall 各記事行に件名、タグ一覧、行内 `Show original` 操作を表示する.
+5. The Extension Article Reader shall 記事本文テキストと記事ステータス表示（例: ready/pending/failed）を一覧上に表示しない.
+
+### Requirement 5: 責務境界と障害時挙動
+**Objective:** As a サービス運用者, I want 拡張機能責務とエラー時挙動を明確にしたい, so that 運用の一貫性と復帰性を維持できる
+
+#### Acceptance Criteria
+1. The Extension Article Reader shall 記事編集、記事削除、再フェッチ要求機能を提供しない.
+2. Where 追加操作（編集・削除・再フェッチ）が必要な場合, the Extension Article Reader shall Webサイト導線を通じて実施できるようにする.
+3. If 一覧取得または保存処理で認証エラーが返された場合, then the Extension Article Reader shall セッション失効として未認証画面へ遷移する.
+4. If APIオリジンへのアクセス権限が不足している場合, then the Extension Article Reader shall 権限不足を通知し対象操作を中断する.
+5. If ネットワーク障害で一覧取得または保存が失敗した場合, then the Extension Article Reader shall 通信失敗を識別可能な形で通知する.

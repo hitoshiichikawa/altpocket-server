@@ -38,7 +38,7 @@ HTTP API / SSR UI は同期リクエスト処理、本文抽出は非同期ワ�
 ### Testing
 
 - Go テストは `go test ./...` を基本とし、正規化ロジックはテーブル駆動テストを優先する
-- 拡張機能は `node --test extension/popup.test.mjs` で回帰確認する
+- 拡張機能は Side Panel の手動E2E（login/save/search）を回帰確認の基本とする
 - CI は `go test`・`golangci-lint`・Docker build で最小品質ゲートを構成する
 
 ## Development Environment
@@ -60,7 +60,7 @@ docker compose up --build api worker
 go test ./...
 
 # Test (Extension)
-node --test extension/popup.test.mjs
+# Side Panel は現在手動E2Eで確認
 ```
 
 ## Key Technical Decisions
