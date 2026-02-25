@@ -33,6 +33,21 @@ function setUtilityStatus(message = '', level = 'default') {
   if (level === 'error') utilityStatusEl.classList.add('is-error');
 }
 
+function setScreenMode(mode) {
+  const readerMode = mode === 'reader';
+  if (document.body) {
+    document.body.dataset.screen = readerMode ? 'reader' : 'login';
+  }
+  if (loginScreenEl) {
+    loginScreenEl.hidden = readerMode;
+    loginScreenEl.setAttribute('aria-hidden', readerMode ? 'true' : 'false');
+  }
+  if (readerScreenEl) {
+    readerScreenEl.hidden = !readerMode;
+    readerScreenEl.setAttribute('aria-hidden', readerMode ? 'false' : 'true');
+  }
+}
+
 function showLoginScreen() {
   token = '';
   tags = [];
@@ -42,14 +57,12 @@ function showLoginScreen() {
   if (searchInputEl) searchInputEl.value = '';
   if (itemListEl) itemListEl.innerHTML = '';
   if (resultMetaEl) resultMetaEl.textContent = '0件';
-  if (readerScreenEl) readerScreenEl.hidden = true;
-  if (loginScreenEl) loginScreenEl.hidden = false;
+  setScreenMode('login');
   setUtilityStatus('');
 }
 
 function showReaderScreen() {
-  if (loginScreenEl) loginScreenEl.hidden = true;
-  if (readerScreenEl) readerScreenEl.hidden = false;
+  setScreenMode('reader');
 }
 
 function getConfiguredAPIBase() {
@@ -151,12 +164,25 @@ async function clearStoredToken() {
   token = '';
   try {
     if (!chrome.storage || !chrome.storage.local) return;
+    const tokenKeys = new Set(['token']);
+    if (typeof chrome.storage.local.get === 'function') {
+      const stored = await chrome.storage.local.get(null);
+      if (stored && typeof stored === 'object') {
+        for (const key of Object.keys(stored)) {
+          if (/token/i.test(key)) tokenKeys.add(key);
+        }
+      }
+    }
     if (typeof chrome.storage.local.remove === 'function') {
-      await chrome.storage.local.remove('token');
+      await chrome.storage.local.remove(Array.from(tokenKeys));
       return;
     }
     if (typeof chrome.storage.local.set === 'function') {
-      await chrome.storage.local.set({ token: '' });
+      const patch = {};
+      for (const key of tokenKeys) {
+        patch[key] = '';
+      }
+      await chrome.storage.local.set(patch);
     }
   } catch {
     // Keep UI transition even if storage cleanup fails.
@@ -677,16 +703,16 @@ if (searchInputEl) {
 }
 
 (async () => {
-  showLoginScreen();
   try {
     const data = await chrome.storage.local.get(['token']);
-    if (typeof data?.token !== 'string' || data.token.trim() === '') {
+    if (typeof data?.token === 'string' && data.token.trim() !== '') {
+      token = data.token;
+      showReaderScreen();
+      await fetchItems('');
       return;
     }
-    token = data.token;
-    showReaderScreen();
-    await fetchItems('');
   } catch {
-    showLoginScreen();
+    // Fall back to login screen.
   }
+  showLoginScreen();
 })();

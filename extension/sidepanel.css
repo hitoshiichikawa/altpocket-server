@@ -32,29 +32,40 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body.reader-body {
-  width: auto;
-  min-height: 100%;
+  width: 100%;
+  height: 100%;
   margin: 0;
+  overflow: hidden;
 }
 
 body.reader-body {
-  padding: 12px;
+  padding: 10px;
   font-family: "Inter", "Noto Sans JP", "Hiragino Kaku Gothic ProN", sans-serif;
   color: var(--text-primary);
   background: var(--bg-base);
 }
 
+body.reader-body[data-screen="login"] .reader-shell {
+  display: block;
+}
+
 .reader-shell {
+  height: 100%;
   max-width: 620px;
   margin: 0 auto;
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  min-height: 0;
 }
 
 .login-screen {
-  min-height: calc(100vh - 24px);
+  min-height: 100%;
   display: grid;
   place-items: center;
 }
@@ -83,14 +94,18 @@ body.reader-body {
 
 .reader-screen {
   display: grid;
-  gap: 10px;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .utility-bar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   min-height: 20px;
   padding: 2px 2px 0;
 }
@@ -153,9 +168,9 @@ body.reader-body {
   border: 1px solid var(--border-default);
   background: var(--bg-surface);
   border-radius: 12px;
-  padding: 12px;
+  padding: 10px;
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .save-btn {
@@ -165,9 +180,9 @@ body.reader-body {
   background: var(--accent);
   color: #fff;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  padding: 10px 12px;
+  padding: 9px 10px;
   cursor: pointer;
 }
 
@@ -182,11 +197,11 @@ body.reader-body {
 
 .tag-field {
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
 .save-label {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -198,8 +213,9 @@ body.reader-body {
   border: 1px solid var(--border-default);
   background: var(--bg-elevated);
   color: var(--text-primary);
-  padding: 10px 12px;
+  padding: 8px 10px;
   font: inherit;
+  font-size: 12px;
   outline: none;
 }
 
@@ -210,7 +226,9 @@ body.reader-body {
 
 .suggestions {
   display: grid;
-  gap: 6px;
+  gap: 5px;
+  max-height: 92px;
+  overflow: auto;
 }
 
 .suggestions button {
@@ -235,6 +253,8 @@ body.reader-body {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  max-height: 56px;
+  overflow: auto;
 }
 
 .chip {
@@ -269,13 +289,13 @@ body.reader-body {
   border: 1px solid var(--border-default);
   background: var(--bg-surface);
   border-radius: 12px;
-  padding: 12px;
+  padding: 10px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .search-label {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -287,8 +307,9 @@ body.reader-body {
   border: 1px solid var(--border-default);
   background: var(--bg-elevated);
   color: var(--text-primary);
-  padding: 10px 12px;
+  padding: 8px 10px;
   font: inherit;
+  font-size: 12px;
   outline: none;
 }
 
@@ -299,7 +320,7 @@ body.reader-body {
 
 .search-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 
@@ -310,15 +331,16 @@ body.reader-body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .list-head {
-  padding: 12px;
+  padding: 10px;
   border-bottom: 1px solid var(--border-default);
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
 }
 
 .list-title {
@@ -338,7 +360,8 @@ body.reader-body {
   list-style: none;
   display: grid;
   gap: 6px;
-  max-height: 52vh;
+  min-height: 0;
+  flex: 1;
   overflow: auto;
 }
 
