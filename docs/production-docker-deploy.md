@@ -37,6 +37,7 @@ cp deploy/.env.production.example deploy/.env.production
 - `DATABASE_URL`
 - `SESSION_SECRET` / `JWT_SECRET`
 - `GOOGLE_WEB_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_EXT_CLIENT_ID`
+- `CORS_ALLOW_ORIGINS`（例: `chrome-extension://<拡張機能ID>,https://<WWWドメイン>`）
 
 シークレットは以下で生成できます。
 
@@ -102,8 +103,8 @@ COMPOSE_CMD='docker compose --env-file deploy/.env.production -f docker-compose.
 
 ### 5.3 Extension E2E
 1. Web で `https://<WWWドメイン>/v1/auth/google/login` にアクセスして一度ログイン（ユーザー登録）
-2. `extension/popup.js` の `CLIENT_ID` を本番用 extension client id にする
-3. 拡張機能の API Base URL を `https://<APIドメイン>` にしてログイン
+2. `extension/sidepanel.js` の `CLIENT_ID` を本番用 extension client id にする
+3. `extension/sidepanel.js` の `API_BASE` を `https://<APIドメイン>` に設定してログイン
 4. 任意ページで Save し、`https://<WWWドメイン>/ui/items` に反映されることを確認
 
 ## 6. 更新デプロイ

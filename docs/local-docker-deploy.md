@@ -12,6 +12,7 @@
 - `GOOGLE_WEB_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_EXT_CLIENT_ID`
+- `CORS_ALLOW_ORIGINS`（`chrome-extension://<拡張機能ID>,http://localhost:8080`）
 - `PUBLIC_BASE_URL`
 - `SESSION_SECRET` / `JWT_SECRET`
 
@@ -56,7 +57,9 @@ docker compose down -v
 ```
 
 ## 7. （任意）Chrome拡張で動作確認
-1. `extension/popup.js` の `CLIENT_ID` をChrome拡張用のOAuthクライアントIDに置換
-2. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
-3. PopupでAPI Base URLに `http://localhost:8080` を入力
-4. Login → Save Current Tab
+1. `extension/sidepanel.js` の `CLIENT_ID` をChrome拡張用のOAuthクライアントIDに置換
+2. `extension/sidepanel.js` の `API_BASE` を `http://localhost:8080` に設定
+3. Chromeの拡張機能管理画面で拡張機能IDを確認し、`CORS_ALLOW_ORIGINS` に `chrome-extension://<拡張機能ID>` を含めて API を再起動
+4. Chromeの拡張機能管理画面で「パッケージ化されていない拡張機能を読み込む」→ `extension/` を選択
+5. 拡張機能アイコンをクリックして Side Panel を開く
+6. Login → Save Current Tab

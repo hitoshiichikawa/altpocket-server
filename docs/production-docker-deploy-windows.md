@@ -90,7 +90,7 @@ New-NetFirewallRule -DisplayName "altpocket-https" -Direction Inbound -Protocol 
 11. 表示された `Client ID` を控える
 
 ### 2.5 リポジトリ反映
-1. `extension/popup.js` の `CLIENT_ID` を 2.4 で作成した Extension クライアントIDに変更
+1. `extension/sidepanel.js` の `CLIENT_ID` を 2.4 で作成した Extension クライアントIDに変更
 2. `deploy/.env.production` に以下を設定
    - `GOOGLE_WEB_CLIENT_ID`（2.3）
    - `GOOGLE_CLIENT_SECRET`（2.3）
@@ -111,6 +111,7 @@ Copy-Item .\deploy\.env.production.example .\deploy\.env.production
 - `DATABASE_URL`
 - `SESSION_SECRET` / `JWT_SECRET`
 - `GOOGLE_WEB_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_EXT_CLIENT_ID`
+- `CORS_ALLOW_ORIGINS`（例: `chrome-extension://<拡張機能ID>,https://<WWWドメイン>`）
 
 シークレット生成（PowerShell 7+）:
 
@@ -164,8 +165,8 @@ pwsh -ExecutionPolicy Bypass -File .\scripts\test-api.ps1
 ### 5.3 Extension E2E
 1. `https://<WWWドメイン>/v1/auth/google/login` を開き、Web 側で1回ログイン
 2. `chrome://extensions` で拡張をリロード
-3. 拡張 popup の `API Base URL` に `https://<APIドメイン>` を入力
-4. `Login with Google` を実行
+3. `extension/sidepanel.js` の `API_BASE` を `https://<APIドメイン>` に設定
+4. 拡張機能アイコンをクリックして Side Panel を開き、`Login with Google` を実行
 5. 任意のページで `Save Current Tab`
 6. `https://<WWWドメイン>/ui/items` に保存されたことを確認
 
