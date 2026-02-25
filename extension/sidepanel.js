@@ -17,13 +17,24 @@ const searchInputEl = document.getElementById('searchInput');
 const resultMetaEl = document.getElementById('resultMeta');
 const itemListEl = document.getElementById('itemList');
 
-let token = '';
-let tags = [];
-let searchTimer = null;
-let lastFetchID = 0;
-let lastSuggestionFetchID = 0;
+const appState = {
+  token: '',
+  tags: [],
+  searchTimer: null,
+  lastFetchID: 0,
+  lastSuggestionFetchID: 0,
+};
 
 const CONTENT_CAPTURE_LIMIT = 200_000;
+
+function getSessionToken() {
+  if (typeof appState.token !== 'string') return '';
+  return appState.token.trim();
+}
+
+function hasSessionToken() {
+  return getSessionToken() !== '';
+}
 
 function setUtilityStatus(message = '', level = 'default') {
   if (!utilityStatusEl) return;
@@ -33,36 +44,56 @@ function setUtilityStatus(message = '', level = 'default') {
   if (level === 'error') utilityStatusEl.classList.add('is-error');
 }
 
-function setScreenMode(mode) {
-  const readerMode = mode === 'reader';
-  if (document.body) {
-    document.body.dataset.screen = readerMode ? 'reader' : 'login';
+function createScreenStateManager() {
+  function setMode(mode) {
+    const readerMode = mode === 'reader';
+    if (document.body) {
+      document.body.dataset.screen = readerMode ? 'reader' : 'login';
+    }
+    if (loginScreenEl) {
+      loginScreenEl.hidden = readerMode;
+      loginScreenEl.setAttribute('aria-hidden', readerMode ? 'true' : 'false');
+    }
+    if (readerScreenEl) {
+      readerScreenEl.hidden = !readerMode;
+      readerScreenEl.setAttribute('aria-hidden', readerMode ? 'false' : 'true');
+    }
   }
-  if (loginScreenEl) {
-    loginScreenEl.hidden = readerMode;
-    loginScreenEl.setAttribute('aria-hidden', readerMode ? 'true' : 'false');
+
+  function showLogin() {
+    appState.token = '';
+    appState.tags = [];
+    renderTags();
+
+    if (tagInputEl) tagInputEl.value = '';
+    if (suggestionsEl) suggestionsEl.innerHTML = '';
+    if (searchInputEl) searchInputEl.value = '';
+    if (itemListEl) itemListEl.innerHTML = '';
+    if (resultMetaEl) resultMetaEl.textContent = '0件';
+
+    setMode('login');
+    setUtilityStatus('');
   }
-  if (readerScreenEl) {
-    readerScreenEl.hidden = !readerMode;
-    readerScreenEl.setAttribute('aria-hidden', readerMode ? 'false' : 'true');
+
+  function showReader() {
+    setMode('reader');
   }
+
+  return {
+    setMode,
+    showLogin,
+    showReader,
+  };
 }
 
+const screenState = createScreenStateManager();
+
 function showLoginScreen() {
-  token = '';
-  tags = [];
-  renderTags();
-  if (tagInputEl) tagInputEl.value = '';
-  if (suggestionsEl) suggestionsEl.innerHTML = '';
-  if (searchInputEl) searchInputEl.value = '';
-  if (itemListEl) itemListEl.innerHTML = '';
-  if (resultMetaEl) resultMetaEl.textContent = '0件';
-  setScreenMode('login');
-  setUtilityStatus('');
+  screenState.showLogin();
 }
 
 function showReaderScreen() {
-  setScreenMode('reader');
+  screenState.showReader();
 }
 
 function getConfiguredAPIBase() {
@@ -161,7 +192,7 @@ function parseFragment(fragment) {
 }
 
 async function clearStoredToken() {
-  token = '';
+  appState.token = '';
   try {
     if (!chrome.storage || !chrome.storage.local) return;
     const tokenKeys = new Set(['token']);
@@ -189,6 +220,83 @@ async function clearStoredToken() {
   }
 }
 
+function createExtensionAPIClient({ getToken, onAuthFailure }) {
+  async function requestJSON(url, options = {}, requestOptions = {}) {
+    const { auth = true, authFailure = true } = requestOptions;
+    const headers = options.headers ? { ...options.headers } : {};
+
+    if (auth) {
+      const token = getToken();
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+    }
+
+    let res;
+    try {
+      res = await fetch(url, { ...options, headers });
+    } catch (networkError) {
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        networkError,
+      };
+    }
+
+    const { data } = await readResponseBody(res);
+
+    if (!res.ok && authFailure && isAuthFailureStatus(res.status)) {
+      await onAuthFailure();
+    }
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      data,
+      networkError: null,
+    };
+  }
+
+  return {
+    exchangeToken(apiBase, idToken) {
+      return requestJSON(
+        `${apiBase}/v1/auth/extension/exchange`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id_token: idToken }),
+        },
+        { auth: false, authFailure: false },
+      );
+    },
+
+    listItems(apiBase, params) {
+      return requestJSON(`${apiBase}/v1/items?${params.toString()}`);
+    },
+
+    suggestTags(apiBase, query) {
+      return requestJSON(`${apiBase}/v1/tags?q=${encodeURIComponent(query)}`);
+    },
+
+    createItem(apiBase, payload) {
+      return requestJSON(`${apiBase}/v1/items`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    },
+
+    captureItem(apiBase, itemID, capture) {
+      return requestJSON(`${apiBase}/v1/items/${encodeURIComponent(itemID)}/capture`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(capture),
+      });
+    },
+  };
+}
+
 function escapeHTML(text) {
   return String(text)
     .replaceAll('&', '&amp;')
@@ -205,7 +313,7 @@ function normalizeTag(value) {
 function renderTags() {
   if (!tagsEl) return;
   tagsEl.innerHTML = '';
-  for (const [idx, tag] of tags.entries()) {
+  for (const [idx, tag] of appState.tags.entries()) {
     const chip = document.createElement('span');
     chip.className = 'chip';
     chip.textContent = tag;
@@ -213,7 +321,7 @@ function renderTags() {
     removeBtn.type = 'button';
     removeBtn.textContent = '×';
     removeBtn.addEventListener('click', () => {
-      tags.splice(idx, 1);
+      appState.tags.splice(idx, 1);
       renderTags();
     });
     chip.appendChild(removeBtn);
@@ -224,8 +332,8 @@ function renderTags() {
 function addTag(value) {
   const tag = normalizeTag(value);
   if (!tag) return;
-  if (tags.includes(tag)) return;
-  tags.push(tag);
+  if (appState.tags.includes(tag)) return;
+  appState.tags.push(tag);
   renderTags();
 }
 
@@ -249,7 +357,7 @@ function renderSuggestions(list) {
 }
 
 async function fetchTagSuggestions() {
-  if (!tagInputEl || !token) return;
+  if (!tagInputEl || !hasSessionToken()) return;
   const query = tagInputEl.value.trim();
   if (query.length < 1) {
     renderSuggestions([]);
@@ -264,30 +372,20 @@ async function fetchTagSuggestions() {
     return;
   }
 
-  const fetchID = ++lastSuggestionFetchID;
-  let res;
-  try {
-    res = await fetch(`${apiBase}/v1/tags?q=${encodeURIComponent(query)}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-  } catch {
-    if (fetchID !== lastSuggestionFetchID) return;
+  const fetchID = ++appState.lastSuggestionFetchID;
+  const result = await apiClient.suggestTags(apiBase, query);
+
+  if (fetchID !== appState.lastSuggestionFetchID) return;
+  if (result.networkError) {
+    renderSuggestions([]);
+    return;
+  }
+  if (!result.ok) {
     renderSuggestions([]);
     return;
   }
 
-  if (fetchID !== lastSuggestionFetchID) return;
-  if (!res.ok) {
-    if (isAuthFailureStatus(res.status)) {
-      await logout({ silent: true });
-      showLoginScreen();
-    }
-    renderSuggestions([]);
-    return;
-  }
-
-  const { data } = await readResponseBody(res);
-  renderSuggestions(Array.isArray(data) ? data : []);
+  renderSuggestions(Array.isArray(result.data) ? result.data : []);
 }
 
 function renderTagList(tagsValue) {
@@ -336,7 +434,7 @@ function renderItems(items) {
 }
 
 async function fetchItems(query) {
-  if (!token) return;
+  if (!hasSessionToken()) return;
 
   const apiBase = getConfiguredAPIBase();
   if (!apiBase) {
@@ -347,7 +445,7 @@ async function fetchItems(query) {
   const granted = await ensureAPIAccessPermission(apiBase, { interactive: false });
   if (!granted) return;
 
-  const fetchID = ++lastFetchID;
+  const fetchID = ++appState.lastFetchID;
   setUtilityStatus('Loading...');
 
   const params = new URLSearchParams();
@@ -360,37 +458,28 @@ async function fetchItems(query) {
     params.set('sort', 'newest');
   }
 
-  let res;
-  try {
-    res = await fetch(`${apiBase}/v1/items?${params.toString()}`, {
-      headers: { 'Authorization': `Bearer ${token}` },
-    });
-  } catch {
-    if (fetchID !== lastFetchID) return;
+  const result = await apiClient.listItems(apiBase, params);
+
+  if (fetchID !== appState.lastFetchID) return;
+  if (result.networkError) {
     setUtilityStatus('Network error', 'error');
     return;
   }
-
-  if (fetchID !== lastFetchID) return;
-
-  const { data } = await readResponseBody(res);
-  if (!res.ok) {
-    if (isAuthFailureStatus(res.status)) {
-      await logout({ silent: true });
-      showLoginScreen();
+  if (!result.ok) {
+    if (isAuthFailureStatus(result.status)) {
       return;
     }
-    setUtilityStatus(apiErrorMessage(res.status, data, 'Failed to load items'), 'error');
+    setUtilityStatus(apiErrorMessage(result.status, result.data, 'Failed to load items'), 'error');
     return;
   }
 
-  renderItems(Array.isArray(data?.items) ? data.items : []);
+  renderItems(Array.isArray(result.data?.items) ? result.data.items : []);
   setUtilityStatus('');
 }
 
 function requestItems(query) {
-  if (searchTimer) clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
+  if (appState.searchTimer) clearTimeout(appState.searchTimer);
+  appState.searchTimer = setTimeout(() => {
     void fetchItems(query);
   }, 180);
 }
@@ -458,26 +547,10 @@ async function extractPageCapture(tabID) {
 }
 
 async function sendCapturedContent(apiBase, itemID, capture) {
-  if (!capture || !capture.content_full || !token) return;
+  if (!capture || !capture.content_full || !hasSessionToken()) return;
 
-  let res;
-  try {
-    res = await fetch(`${apiBase}/v1/items/${encodeURIComponent(itemID)}/capture`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
-      body: JSON.stringify(capture),
-    });
-  } catch {
-    return;
-  }
-
-  if (isAuthFailureStatus(res.status)) {
-    await logout({ silent: true });
-    showLoginScreen();
-  }
+  const result = await apiClient.captureItem(apiBase, itemID, capture);
+  if (result.networkError) return;
 }
 
 async function saveCurrentTab() {
@@ -486,7 +559,7 @@ async function saveCurrentTab() {
     setUtilityStatus('API base is not configured', 'error');
     return;
   }
-  if (!token) {
+  if (!hasSessionToken()) {
     showLoginScreen();
     return;
   }
@@ -503,34 +576,26 @@ async function saveCurrentTab() {
       return;
     }
 
-    let res;
-    try {
-      res = await fetch(`${apiBase}/v1/items`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({ url: tab.url, tags }),
-      });
-    } catch (err) {
-      setUtilityStatus(`Save request failed: ${errorMessage(err, 'network error')}`, 'error');
+    const result = await apiClient.createItem(apiBase, {
+      url: tab.url,
+      tags: appState.tags,
+    });
+
+    if (result.networkError) {
+      setUtilityStatus(`Save request failed: ${errorMessage(result.networkError, 'network error')}`, 'error');
       return;
     }
 
-    const { data } = await readResponseBody(res);
-    if (!res.ok) {
-      if (isAuthFailureStatus(res.status)) {
-        await logout({ silent: true });
-        showLoginScreen();
+    if (!result.ok) {
+      if (isAuthFailureStatus(result.status)) {
         return;
       }
-      setUtilityStatus(apiErrorMessage(res.status, data, 'Save failed'), 'error');
+      setUtilityStatus(apiErrorMessage(result.status, result.data, 'Save failed'), 'error');
       return;
     }
 
-    const itemID = typeof data?.item_id === 'string' ? data.item_id : '';
-    const created = data?.created === true;
+    const itemID = typeof result.data?.item_id === 'string' ? result.data.item_id : '';
+    const created = result.data?.created === true;
     setUtilityStatus('Saved', 'success');
     requestItems(searchInputEl?.value || '');
 
@@ -599,23 +664,23 @@ async function login() {
       return;
     }
 
-    const res = await fetch(`${apiBase}/v1/auth/extension/exchange`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id_token: idToken }),
-    });
-    const { data } = await readResponseBody(res);
-    if (!res.ok) {
-      alert(apiErrorMessage(res.status, data, 'Exchange failed'));
+    const exchange = await apiClient.exchangeToken(apiBase, idToken);
+    if (exchange.networkError) {
+      alert('Login error');
       return;
     }
-    if (!data || typeof data.token !== 'string' || data.token === '') {
+    if (!exchange.ok) {
+      alert(apiErrorMessage(exchange.status, exchange.data, 'Exchange failed'));
+      return;
+    }
+    const exchangedToken = typeof exchange.data?.token === 'string' ? exchange.data.token.trim() : '';
+    if (!exchange.data || exchangedToken === '') {
       alert('Exchange failed: token missing');
       return;
     }
 
-    token = data.token;
-    await chrome.storage.local.set({ token });
+    appState.token = exchangedToken;
+    await chrome.storage.local.set({ token: appState.token });
     showReaderScreen();
     await fetchItems('');
   } catch {
@@ -645,6 +710,16 @@ async function logout(options = {}) {
     if (signOutBtn) signOutBtn.disabled = false;
   }
 }
+
+async function handleAuthFailure() {
+  await logout({ silent: true });
+  showLoginScreen();
+}
+
+const apiClient = createExtensionAPIClient({
+  getToken: () => getSessionToken(),
+  onAuthFailure: handleAuthFailure,
+});
 
 if (loginBtn) {
   loginBtn.addEventListener('click', () => {
@@ -705,8 +780,9 @@ if (searchInputEl) {
 (async () => {
   try {
     const data = await chrome.storage.local.get(['token']);
-    if (typeof data?.token === 'string' && data.token.trim() !== '') {
-      token = data.token;
+    const storedToken = typeof data?.token === 'string' ? data.token.trim() : '';
+    if (storedToken !== '') {
+      appState.token = storedToken;
       showReaderScreen();
       await fetchItems('');
       return;
