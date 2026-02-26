@@ -128,6 +128,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/", s.requireAuth(s.handleListItems))
 			r.Post("/", s.requireAuth(s.handleCreateItem))
 			r.Get("/{id}", s.requireAuth(s.handleGetItem))
+			r.Patch("/{id}", s.requireAuth(s.handlePatchItem))
 			r.Put("/{id}/tags", s.requireAuth(s.handleUpdateItemTags))
 			r.Post("/{id}/capture", s.requireAuth(s.handleCaptureItemContent))
 			r.Delete("/{id}", s.requireAuth(s.handleDeleteItem))
@@ -550,6 +551,57 @@ func (s *Server) handleUpdateItemTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"tags": tags})
+}
+
+func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if !s.limiter.Allow(user.ID) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "rate_limited"})
+		return
+	}
+
+	var req struct {
+		Title *string  `json:"title"`
+		Tags  *[]string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+
+	// Trim and validate title if provided
+	if req.Title != nil {
+		trimmed := strings.TrimSpace(*req.Title)
+		if trimmed == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+			return
+		}
+		req.Title = &trimmed
+	}
+
+	// Normalize tags if provided
+	var normalizedTags *[]string
+	if req.Tags != nil {
+		nt := normalizeTagNames(*req.Tags)
+		normalizedTags = &nt
+	}
+
+	itemID := chi.URLParam(r, "id")
+	title, tags, err := s.store.PatchItem(r.Context(), user.ID, itemID, req.Title, normalizedTags)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"title": title, "tags": tags})
 }
 
 func (s *Server) handleRefetchItem(w http.ResponseWriter, r *http.Request) {

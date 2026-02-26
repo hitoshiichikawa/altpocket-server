@@ -2,7 +2,8 @@
 <section class="detail-layout">
   <article class="card detail-card">
     <header class="detail-header">
-      <h1>{{.Item.Title}}</h1>
+      <h1 id="detail-title">{{.Item.Title}}</h1>
+      <input id="detail-title-input" class="input detail-title-input" type="text" value="{{.Item.Title}}" hidden>
       <div class="detail-meta">
         <a class="btn-secondary" href="{{.Item.URL}}" target="_blank" rel="noopener noreferrer">Open original</a>
         <span class="status-pill">{{.Item.FetchStatus}}</span>

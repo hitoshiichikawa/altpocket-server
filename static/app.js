@@ -126,6 +126,8 @@
   const detailTagActions = document.getElementById('detail-tag-actions');
   const detailTagSaveBtn = document.getElementById('detail-tag-save');
   const detailTagCancelBtn = document.getElementById('detail-tag-cancel');
+  const detailTitle = document.getElementById('detail-title');
+  const detailTitleInput = document.getElementById('detail-title-input');
 
   if (
     detailEditTagsBtn &&
@@ -135,12 +137,15 @@
     detailTagSuggestions &&
     detailTagActions &&
     detailTagSaveBtn &&
-    detailTagCancelBtn
+    detailTagCancelBtn &&
+    detailTitle &&
+    detailTitleInput
   ) {
     const itemID = detailTagEditor.dataset.itemId || detailEditTagsBtn.dataset.itemId;
     const draftTags = [];
     const draftTagSet = new Set();
     let originalTags = []; // 編集開始前のタグ（Cancel用）
+    let originalTitle = ''; // 編集開始前のタイトル（Cancel用）
     let suggestions = [];
     let activeSuggestion = -1;
 
@@ -231,8 +236,14 @@
       }
     };
 
-    // 編集モード開始：チップに×を付け、テキストボックスとボタンを表示
+    // 編集モード開始：タイトルとタグの両方を編集可能にする
     const openEditor = () => {
+      // タイトルの元の値を保存し、入力フィールドに切替
+      originalTitle = detailTitle.textContent;
+      detailTitleInput.value = originalTitle;
+      detailTitle.hidden = true;
+      detailTitleInput.hidden = false;
+
       // 現在表示中の×なしチップからタグ名を読み取る
       draftTags.length = 0;
       draftTagSet.clear();
@@ -251,11 +262,16 @@
       detailEditTagsBtn.disabled = true; // 編集中は再クリック不可
       // Refetch/Deleteも編集中は無効化
       document.querySelectorAll('.item-actions button.refetch, .item-actions button.delete').forEach((btn) => { btn.disabled = true; });
-      detailTagInput.focus();
+      detailTitleInput.focus();
     };
 
-    // 編集モード終了：×なしチップに戻し、テキストボックスとボタンを隠す
-    const closeEditor = (savedTags) => {
+    // 編集モード終了：タイトルとタグの両方を表示モードに戻す
+    const closeEditor = (savedTags, savedTitle) => {
+      // タイトルを表示モードに復帰
+      detailTitle.textContent = savedTitle;
+      detailTitle.hidden = false;
+      detailTitleInput.hidden = true;
+
       detailTagInput.hidden = true;
       detailTagActions.hidden = true;
       clearSuggestions();
@@ -272,8 +288,8 @@
     });
 
     detailTagCancelBtn.addEventListener('click', () => {
-      // キャンセル：編集開始前のタグに戻す
-      closeEditor(originalTags);
+      // キャンセル：編集開始前のタイトルとタグに戻す
+      closeEditor(originalTags, originalTitle);
     });
 
     detailTagSaveBtn.addEventListener('click', async () => {
@@ -283,18 +299,28 @@
       detailTagInput.value = '';
       clearSuggestions();
 
+      // タイトルの空文字チェック
+      const titleValue = detailTitleInput.value.trim();
+      if (!titleValue) {
+        alert('Title cannot be empty');
+        detailTitleInput.focus();
+        return;
+      }
+
       detailTagSaveBtn.disabled = true;
       try {
-        const res = await fetch(`/v1/items/${encodeURIComponent(itemID)}/tags`, {
-          method: 'PUT',
+        const res = await fetch(`/v1/items/${encodeURIComponent(itemID)}`, {
+          method: 'PATCH',
           headers: { ...headers, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tags: draftTags }),
+          body: JSON.stringify({ title: titleValue, tags: draftTags }),
         });
         if (!res.ok) {
-          alert('Failed to update tags');
+          alert('Failed to update');
           return;
         }
         const data = await res.json().catch(() => null);
+
+        // タグの更新
         const updatedTags = [];
         const seen = new Set();
         if (Array.isArray(data?.tags)) {
@@ -305,9 +331,14 @@
             updatedTags.push(normalized);
           });
         }
-        // APIレスポンスにタグがなければドラフトをそのまま使う
         const finalTags = updatedTags.length > 0 ? updatedTags : draftTags.slice();
-        closeEditor(finalTags);
+
+        // タイトルの更新
+        const finalTitle = data?.title || titleValue;
+        closeEditor(finalTags, finalTitle);
+
+        // ページタイトル同期
+        document.title = finalTitle + ' | altpocket';
       } finally {
         detailTagSaveBtn.disabled = false;
       }

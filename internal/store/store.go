@@ -458,10 +458,13 @@ func (s *Store) RequestRefetch(ctx context.Context, userID, itemID string) error
 	return nil
 }
 
-func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagNames []string) ([]Tag, error) {
+// PatchItem updates an item's title and/or tags atomically within a transaction.
+// Pass nil for title or tags to skip updating that field.
+// Returns the current title and tags after the update.
+func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *string, tags *[]string) (string, []Tag, error) {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	defer func() {
 		if err != nil {
@@ -469,46 +472,61 @@ func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagN
 		}
 	}()
 
-	var existingItemID string
-	if err = tx.QueryRow(ctx, `SELECT id FROM items WHERE id=$1 AND user_id=$2`, itemID, userID).Scan(&existingItemID); err != nil {
+	// Ownership check
+	var currentTitle string
+	if err = tx.QueryRow(ctx, `SELECT id, title FROM items WHERE id=$1 AND user_id=$2`, itemID, userID).Scan(&itemID, &currentTitle); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, pgx.ErrNoRows
+			return "", nil, pgx.ErrNoRows
 		}
-		return nil, err
+		return "", nil, err
 	}
 
-	_, err = tx.Exec(ctx, `DELETE FROM item_tags WHERE item_id=$1`, itemID)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, name := range tagNames {
-		var tagID string
-		if err = tx.QueryRow(ctx, `
-			INSERT INTO tags (name, normalized_name)
-			VALUES ($1, $2)
-			ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
-			RETURNING id
-		`, name, name).Scan(&tagID); err != nil {
-			return nil, err
+	// Update title if specified
+	updatedTitle := currentTitle
+	if title != nil {
+		_, err = tx.Exec(ctx, `UPDATE items SET title=$1 WHERE id=$2 AND user_id=$3`, *title, itemID, userID)
+		if err != nil {
+			return "", nil, err
 		}
-		if _, err = tx.Exec(ctx, `
-			INSERT INTO item_tags (item_id, tag_id)
-			VALUES ($1, $2)
-			ON CONFLICT DO NOTHING
-		`, itemID, tagID); err != nil {
-			return nil, err
+		updatedTitle = *title
+	}
+
+	// Replace tags if specified
+	if tags != nil {
+		_, err = tx.Exec(ctx, `DELETE FROM item_tags WHERE item_id=$1`, itemID)
+		if err != nil {
+			return "", nil, err
+		}
+
+		for _, name := range *tags {
+			var tagID string
+			if err = tx.QueryRow(ctx, `
+				INSERT INTO tags (name, normalized_name)
+				VALUES ($1, $2)
+				ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
+				RETURNING id
+			`, name, name).Scan(&tagID); err != nil {
+				return "", nil, err
+			}
+			if _, err = tx.Exec(ctx, `
+				INSERT INTO item_tags (item_id, tag_id)
+				VALUES ($1, $2)
+				ON CONFLICT DO NOTHING
+			`, itemID, tagID); err != nil {
+				return "", nil, err
+			}
+		}
+
+		_, err = tx.Exec(ctx, `
+			DELETE FROM tags t
+			WHERE NOT EXISTS (SELECT 1 FROM item_tags it WHERE it.tag_id=t.id)
+		`)
+		if err != nil {
+			return "", nil, err
 		}
 	}
 
-	_, err = tx.Exec(ctx, `
-		DELETE FROM tags t
-		WHERE NOT EXISTS (SELECT 1 FROM item_tags it WHERE it.tag_id=t.id)
-	`)
-	if err != nil {
-		return nil, err
-	}
-
+	// Fetch current tags
 	rows, err := tx.Query(ctx, `
 		SELECT t.id, t.name, t.normalized_name
 		FROM tags t
@@ -517,26 +535,33 @@ func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagN
 		ORDER BY t.normalized_name
 	`, itemID)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	defer rows.Close()
 
-	tags := []Tag{}
+	updatedTags := []Tag{}
 	for rows.Next() {
 		var t Tag
 		if err = rows.Scan(&t.ID, &t.Name, &t.NormalizedName); err != nil {
-			return nil, err
+			return "", nil, err
 		}
-		tags = append(tags, t)
+		updatedTags = append(updatedTags, t)
 	}
 	if err = rows.Err(); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	if err = tx.Commit(ctx); err != nil {
-		return nil, err
+		return "", nil, err
 	}
-	return tags, nil
+	return updatedTitle, updatedTags, nil
+}
+
+// ReplaceItemTags replaces all tags for an item. This is a wrapper around PatchItem
+// that only updates tags, maintaining backward compatibility.
+func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagNames []string) ([]Tag, error) {
+	_, tags, err := s.PatchItem(ctx, userID, itemID, nil, &tagNames)
+	return tags, err
 }
 
 func (s *Store) SuggestTags(ctx context.Context, q string) ([]Tag, error) {
