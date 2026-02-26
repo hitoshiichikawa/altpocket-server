@@ -2,7 +2,7 @@
 
 ## Overview
 
-**Purpose**: 既存のタグ編集UIにタイトル編集を統合し、ユーザーが「Edit tags」ボタン1つでタイトルとタグを同時に編集・保存できるようにする。新規 `PATCH /v1/items/{id}` エンドポイントで一括更新し、既存の `PUT /v1/items/{id}/tags` は拡張機能互換のために維持する。
+**Purpose**: 既存のタグ編集UIにタイトル編集を統合し、ユーザーが「Edit」ボタン1つでタイトルとタグを同時に編集・保存できるようにする。新規 `PATCH /v1/items/{id}` エンドポイントで一括更新し、既存の `PUT /v1/items/{id}/tags` は拡張機能互換のために維持する。
 
 **Users**: altpocketのWeb UIユーザーが、保存済みアイテムのタイトルとタグを一括で修正する際に利用する。
 
@@ -40,7 +40,7 @@ sequenceDiagram
     participant API as API Server
     participant DB as PostgreSQL
 
-    User->>Browser: Edit tags ボタンクリック
+    User->>Browser: Edit ボタンクリック
     Browser->>Browser: タイトルをinputに切替 + タグ編集モード開始
     User->>Browser: タイトル変更 + タグ編集
     User->>Browser: Save ボタンクリック
@@ -75,7 +75,7 @@ sequenceDiagram
 
 | Requirement | Summary | Components | Interfaces | Flows |
 |-------------|---------|------------|------------|-------|
-| 1.1 | Edit tagsでタイトルも編集モードに | item_detail.html, app.js openEditor | — | 編集開始 |
+| 1.1 | Editでタイトルも編集モードに | item_detail.html, app.js openEditor | — | 編集開始 |
 | 1.2 | タイトルとタグの同時編集、ボタン共有 | item_detail.html, app.js | — | 編集モード |
 | 1.3 | キャンセルで両方復帰 | app.js closeEditor | — | キャンセル |
 | 1.4 | 保存で1リクエスト送信 | app.js saveHandler | PATCH /v1/items/{id} | 保存フロー |
@@ -311,5 +311,5 @@ func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagN
 - 拡張機能契約テスト: 既存リクエスト形式のレスポンスが変わらないことを確認
 
 ### E2E Tests
-- 手動確認: Edit tags → タイトル変更+タグ編集 → Save → 両方の表示更新 → ページタイトル同期
-- 手動確認: Edit tags → タイトル変更+タグ編集 → Cancel → 両方が元に戻る
+- 手動確認: Edit → タイトル変更+タグ編集 → Save → 両方の表示更新 → ページタイトル同期
+- 手動確認: Edit → タイトル変更+タグ編集 → Cancel → 両方が元に戻る
