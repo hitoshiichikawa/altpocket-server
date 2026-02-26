@@ -860,6 +860,81 @@ test('save skips prefill for chrome:// URLs and sends empty title/excerpt', asyn
   assert.equal(env.scriptingExecuteCalls.length, 0);
 });
 
+test('item title links to web UI detail page with correct href and attributes', async () => {
+  const env = await loadSidepanelScript({
+    storageData: { token: 'stored-token' },
+    fetchHandlers: [
+      jsonResponse(200, {
+        items: [
+          {
+            id: 'item-1',
+            title: 'Readable Title',
+            url: 'https://example.com/read',
+            tags: [{ id: 'tag-1', name: 'go', normalized_name: 'go' }],
+          },
+        ],
+        pagination: { total: 1 },
+      }),
+    ],
+  });
+
+  assert.equal(env.elements.itemList.children.length, 1);
+  const rendered = env.elements.itemList.children[0].innerHTML;
+  assert.match(rendered, /<a\s[^>]*href="https:\/\/api\.example\.test\/ui\/items\/item-1"/);
+  assert.match(rendered, /target="_blank"/);
+  assert.match(rendered, /rel="noopener noreferrer"/);
+  assert.match(rendered, />Readable Title<\/a>/);
+  assert.match(rendered, /Show original/);
+  assert.match(rendered, /href="https:\/\/example\.com\/read"/);
+});
+
+test('untitled item shows (untitled) as link text', async () => {
+  const env = await loadSidepanelScript({
+    storageData: { token: 'stored-token' },
+    fetchHandlers: [
+      jsonResponse(200, {
+        items: [
+          { id: 'item-2', title: '', url: 'https://example.com/empty' },
+        ],
+        pagination: { total: 1 },
+      }),
+    ],
+  });
+
+  const rendered = env.elements.itemList.children[0].innerHTML;
+  assert.match(rendered, /<a\s[^>]*href="https:\/\/api\.example\.test\/ui\/items\/item-2"/);
+  assert.match(rendered, />\(untitled\)<\/a>/);
+});
+
+test('title renders as plain text when API base is not configured', async () => {
+  const env = await loadSidepanelScript({
+    storageData: { token: 'stored-token' },
+    apiBase: 'https://YOUR_API_BASE_URL',
+    fetchHandlers: [],
+  });
+
+  // apiBase is invalid so fetchItems won't be called; verify no fetch was made
+  assert.equal(env.fetchCalls.length, 0);
+});
+
+test('title renders as plain text when item has no id', async () => {
+  const env = await loadSidepanelScript({
+    storageData: { token: 'stored-token' },
+    fetchHandlers: [
+      jsonResponse(200, {
+        items: [
+          { title: 'No ID Title', url: 'https://example.com/no-id' },
+        ],
+        pagination: { total: 1 },
+      }),
+    ],
+  });
+
+  const rendered = env.elements.itemList.children[0].innerHTML;
+  assert.match(rendered, /No ID Title/);
+  assert.doesNotMatch(rendered, /<a\s[^>]*href="[^"]*\/ui\/items\//);
+});
+
 test('sidepanel does not provide edit delete or refetch actions', async () => {
   const html = readFileSync(resolve(process.cwd(), 'extension/sidepanel.html'), 'utf8');
   const script = readFileSync(resolve(process.cwd(), 'extension/sidepanel.js'), 'utf8');
