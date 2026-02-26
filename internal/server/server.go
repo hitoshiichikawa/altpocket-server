@@ -175,7 +175,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]interface{}{
-		"Title": "Sign In",
+		"Title": "ログイン",
 	}
 	if err := s.renderer.Render(w, "home", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
@@ -188,7 +188,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := map[string]interface{}{
-		"Title": "Register",
+		"Title": "アカウント登録",
 	}
 	if err := s.renderer.Render(w, "register", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
@@ -591,7 +591,7 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 	tags, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
 
 	data := map[string]interface{}{
-		"Title":          "Items",
+		"Title":          "記事一覧",
 		"User":           user,
 		"Items":          items,
 		"Tags":           tags,
@@ -625,8 +625,12 @@ func (s *Server) handleUIItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
+	pageTitle := item.Title
+	if pageTitle == "" {
+		pageTitle = "(無題)"
+	}
 	data := map[string]interface{}{
-		"Title":     "Item",
+		"Title":     pageTitle,
 		"User":      user,
 		"Item":      item,
 		"CSRFToken": s.csrfFromContext(r.Context()),
@@ -665,7 +669,7 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 		sheetURL = googleSheetURL(conn.SpreadsheetID)
 	}
 	data := map[string]interface{}{
-		"Title":                 "Settings",
+		"Title":                 "設定",
 		"User":                  user,
 		"CSRFToken":             s.csrfFromContext(r.Context()),
 		"GoogleSheetsConnected": connected,
@@ -932,7 +936,7 @@ func (s *Server) renderUIQuickAdd(w http.ResponseWriter, r *http.Request, status
 		return
 	}
 	data := map[string]interface{}{
-		"Title":          "Quick Add",
+		"Title":          "クイック追加",
 		"User":           user,
 		"CSRFToken":      s.csrfFromContext(r.Context()),
 		"URL":            urlValue,
