@@ -1,6 +1,6 @@
 # Project Structure
 
-_updated_at: 2026-02-24_
+_updated_at: 2026-02-26_
 
 ## Organization Philosophy
 
@@ -25,9 +25,10 @@ API/Worker/Extension/UI は入口が異なっても、保存・認証・取得�
 **Example**: `templates/items.html`, `static/app.js`
 
 ### External Client Surface
-**Location**: `/extension/`  
-**Purpose**: Chrome Extension (MV3) の UI/認証/保存クライアント実装  
-**Example**: `extension/sidepanel.js`, `extension/manifest.json`
+**Location**: `/extension/`
+**Purpose**: Chrome Extension (MV3) のサイドパネル UI・認証・保存・記事キャプチャのクライアント実装
+**Pattern**: サイドパネル統一（popup 不使用）、`background.js` が Service Worker として拡張イベントを仲介
+**Example**: `extension/sidepanel.js`, `extension/background.js`, `extension/manifest.json`
 
 ### Data & Operations
 **Location**: `/migrations/`, `/deploy/`, `/scripts/`, `/docs/`  

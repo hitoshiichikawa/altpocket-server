@@ -1,6 +1,6 @@
 # Technology Stack
 
-_updated_at: 2026-02-24_
+_updated_at: 2026-02-26_
 
 ## Architecture
 
@@ -39,6 +39,7 @@ HTTP API / SSR UI は同期リクエスト処理、本文抽出は非同期ワ�
 
 - Go テストは `go test ./...` を基本とし、正規化ロジックはテーブル駆動テストを優先する
 - 拡張機能は `node --test extension/sidepanel.test.mjs` を基本とし、必要に応じて手動E2E（login/save/search/logout）を補完する
+- 拡張機能 API の契約テスト（`extension_contract_test.go`）でサーバー側レスポンス形式の互換性を保証する
 - CI は `go test`・`golangci-lint`・Docker build で最小品質ゲートを構成する
 
 ## Development Environment
@@ -68,6 +69,7 @@ node --test extension/sidepanel.test.mjs
 - 保存処理と本文取得処理を分離し、UX と取得安定性を両立する
 - SSR + Vanilla JS を採用し、依存を増やさず配布・運用コストを抑える
 - 認証は Web セッション（DB）と拡張機能トークンの二系統を用途別に使い分ける
+- CORS 許可リスト（`CORS_ALLOW_ORIGINS`）でオリジン制御し、拡張機能と Web UI の安全な通信を実現する
 - 検索体験は PostgreSQL の trigram index と正規化データで実現する
 
 ---

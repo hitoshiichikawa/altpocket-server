@@ -85,6 +85,54 @@ func TestTruncateUTF8(t *testing.T) {
 	}
 }
 
+func TestCreateItemPrefillTitleTruncation(t *testing.T) {
+	input := strings.Repeat("a", 600)
+	got := truncateUTF8(strings.TrimSpace(input), 500)
+	if len(got) != 500 {
+		t.Fatalf("expected title truncated to 500 bytes, got %d", len(got))
+	}
+}
+
+func TestCreateItemPrefillExcerptTruncation(t *testing.T) {
+	input := strings.Repeat("b", 300)
+	got := truncateUTF8(strings.TrimSpace(input), 200)
+	if len(got) != 200 {
+		t.Fatalf("expected excerpt truncated to 200 bytes, got %d", len(got))
+	}
+}
+
+func TestCreateItemPrefillTrimSpace(t *testing.T) {
+	got := truncateUTF8(strings.TrimSpace("  hello world  "), 500)
+	if got != "hello world" {
+		t.Fatalf("expected trimmed title, got %q", got)
+	}
+}
+
+func TestCreateItemPrefillUTF8TitleTruncation(t *testing.T) {
+	// 500 bytes should safely truncate multi-byte characters
+	input := strings.Repeat("日", 200) // 200 chars × 3 bytes = 600 bytes
+	got := truncateUTF8(strings.TrimSpace(input), 500)
+	if len(got) > 500 {
+		t.Fatalf("expected title ≤ 500 bytes, got %d", len(got))
+	}
+	// Should be valid UTF-8 (no broken runes)
+	runes := []rune(got)
+	if len(runes) != 166 { // 498 bytes / 3 bytes per rune = 166 full runes
+		t.Fatalf("expected 166 runes (valid UTF-8), got %d", len(runes))
+	}
+}
+
+func TestCreateItemPrefillEmptyValuesArePassthrough(t *testing.T) {
+	title := truncateUTF8(strings.TrimSpace(""), 500)
+	excerpt := truncateUTF8(strings.TrimSpace(""), 200)
+	if title != "" {
+		t.Fatalf("expected empty title, got %q", title)
+	}
+	if excerpt != "" {
+		t.Fatalf("expected empty excerpt, got %q", excerpt)
+	}
+}
+
 func TestQuickAddNotice(t *testing.T) {
 	if quickAddNotice("created") == "" {
 		t.Fatalf("created state should return notice")

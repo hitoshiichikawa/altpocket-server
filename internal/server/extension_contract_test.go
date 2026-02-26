@@ -55,6 +55,40 @@ func TestHandleCreateItemInvalidURLReturnsErrorCode(t *testing.T) {
 	}
 }
 
+func TestHandleCreateItemWithTitleExcerptAndInvalidURLReturnsInvalidURL(t *testing.T) {
+	s := newAuthTestServer()
+	body := `{"url":"http://[::1","tags":["go"],"title":"Test Title","excerpt":"Test Excerpt"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/items", strings.NewReader(body))
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "user-1"}))
+	rr := httptest.NewRecorder()
+
+	s.handleCreateItem(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_url") {
+		t.Fatalf("expected invalid_url (not invalid_request), got %q", rr.Body.String())
+	}
+}
+
+func TestHandleCreateItemWithoutTitleExcerptBackwardCompatible(t *testing.T) {
+	s := newAuthTestServer()
+	body := `{"url":"http://[::1","tags":["go"]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/items", strings.NewReader(body))
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "user-1"}))
+	rr := httptest.NewRecorder()
+
+	s.handleCreateItem(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_url") {
+		t.Fatalf("expected invalid_url (backward compatible), got %q", rr.Body.String())
+	}
+}
+
 func TestHandleCaptureItemContentUnauthorizedReturnsJSONError(t *testing.T) {
 	s := newAuthTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/v1/items/item-1/capture", strings.NewReader(`{"title":"t","content_full":"body"}`))
