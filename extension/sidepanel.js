@@ -416,13 +416,19 @@ function renderItems(items) {
   if (resultMetaEl) resultMetaEl.textContent = `${items.length}件`;
   itemListEl.innerHTML = '';
 
+  const apiBase = getConfiguredAPIBase();
+
   for (const item of items) {
     const title = typeof item?.title === 'string' && item.title.trim() !== '' ? item.title : '(untitled)';
     const url = typeof item?.url === 'string' ? item.url : '#';
+    const hasDetailLink = apiBase !== '' && typeof item?.id === 'string' && item.id !== '';
+    const titleHTML = hasDetailLink
+      ? `<a href="${escapeHTML(`${apiBase}/ui/items/${item.id}`)}" target="_blank" rel="noopener noreferrer">${escapeHTML(title)}</a>`
+      : escapeHTML(title);
     const li = document.createElement('li');
     li.innerHTML = `
       <article class="item-card">
-        <h3 class="item-title">${escapeHTML(title)}</h3>
+        <h3 class="item-title">${titleHTML}</h3>
         <div class="item-tags">${renderTagList(item?.tags)}</div>
         <div class="item-actions">
           <a class="show-original" href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">Show original</a>
