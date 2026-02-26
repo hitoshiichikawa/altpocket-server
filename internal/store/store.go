@@ -200,7 +200,8 @@ func (s *Store) ListItemsForExport(ctx context.Context, userID string) ([]Export
 }
 
 // CreateItem inserts a new item. tagNames should already be normalized for both display and key.
-func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canonicalHash string, tagNames []string) (string, bool, error) {
+// title and excerpt are optional prefill values from the extension; empty strings are valid.
+func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canonicalHash string, tagNames []string, title, excerpt string) (string, bool, error) {
 	var itemID string
 	created := false
 
@@ -215,11 +216,11 @@ func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canon
 	}()
 
 	row := tx.QueryRow(ctx, `
-		INSERT INTO items (user_id, url, canonical_url, canonical_hash, fetch_status, refetch_requested)
-		VALUES ($1, $2, $3, $4, 'pending', false)
+		INSERT INTO items (user_id, url, canonical_url, canonical_hash, title, excerpt, fetch_status, refetch_requested)
+		VALUES ($1, $2, $3, $4, $5, $6, 'pending', false)
 		ON CONFLICT (user_id, canonical_hash) DO NOTHING
 		RETURNING id
-	`, userID, url, canonicalURL, canonicalHash)
+	`, userID, url, canonicalURL, canonicalHash, title, excerpt)
 	if err = row.Scan(&itemID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			row = tx.QueryRow(ctx, `SELECT id FROM items WHERE user_id=$1 AND canonical_hash=$2`, userID, canonicalHash)

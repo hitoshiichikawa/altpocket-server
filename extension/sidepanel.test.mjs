@@ -175,6 +175,7 @@ function createChromeMock({
   permissionsRequestResult = true,
   enableScripting = false,
   scriptingExecuteResult = null,
+  scriptingExecuteResults = null,
   scriptingExecuteError = null,
 } = {}) {
   const data = { ...storageData };
@@ -255,16 +256,26 @@ function createChromeMock({
   };
 
   if (enableScripting) {
+    let scriptingCallIndex = 0;
     chrome.scripting = {
       async executeScript(args) {
         scriptingExecuteCalls.push(args);
         if (scriptingExecuteError) {
           throw scriptingExecuteError;
         }
-        if (scriptingExecuteResult == null) {
+        let result;
+        if (Array.isArray(scriptingExecuteResults)) {
+          result = scriptingCallIndex < scriptingExecuteResults.length
+            ? scriptingExecuteResults[scriptingCallIndex]
+            : null;
+          scriptingCallIndex++;
+        } else {
+          result = scriptingExecuteResult;
+        }
+        if (result == null) {
           return [{ result: null }];
         }
-        return [{ result: scriptingExecuteResult }];
+        return [{ result }];
       },
     };
   }
@@ -488,14 +499,14 @@ test('search input triggers relevance query and uses API ordering as-is', async 
   assert.equal(env.elements.resultMeta.textContent, '2件');
 });
 
-test('save current tab posts item with tags and sends async capture for newly created item', async () => {
+test('save current tab posts item with prefill and sends async capture for newly created item', async () => {
   const env = await loadSidepanelScript({
     storageData: { token: 'stored-token' },
     enableScripting: true,
-    scriptingExecuteResult: {
-      title: 'Captured title',
-      content_full: 'Captured body text',
-    },
+    scriptingExecuteResults: [
+      { title: 'Page Title', excerpt: 'Preview text from article' },
+      { title: 'Captured title', content_full: 'Captured body text' },
+    ],
     fetchHandlers: [
       jsonResponse(200, { items: [], pagination: { total: 0 } }),
       jsonResponse(200, { item_id: 'item-123', created: true }),
@@ -515,12 +526,14 @@ test('save current tab posts item with tags and sends async capture for newly cr
   const savePayload = JSON.parse(env.fetchCalls[1].options.body);
   assert.equal(savePayload.url, 'https://news.example/item');
   assert.deepEqual(savePayload.tags, ['go']);
+  assert.equal(savePayload.title, 'Page Title');
+  assert.equal(savePayload.excerpt, 'Preview text from article');
 
   assert.equal(env.fetchCalls[2].url, 'https://api.example.test/v1/items/item-123/capture');
   const capturePayload = JSON.parse(env.fetchCalls[2].options.body);
   assert.equal(capturePayload.title, 'Captured title');
   assert.equal(capturePayload.content_full, 'Captured body text');
-  assert.equal(env.scriptingExecuteCalls.length, 1);
+  assert.equal(env.scriptingExecuteCalls.length, 2);
   assert.equal(env.elements.utilityStatus.textContent, 'Saved');
   assert.equal(env.elements.utilityStatus.classList.contains('is-success'), true);
 });
@@ -629,10 +642,9 @@ test('save current tab skips capture request when item already exists', async ()
   const env = await loadSidepanelScript({
     storageData: { token: 'stored-token' },
     enableScripting: true,
-    scriptingExecuteResult: {
-      title: 'Captured title',
-      content_full: 'Captured body text',
-    },
+    scriptingExecuteResults: [
+      { title: 'Page Title', excerpt: 'Preview text' },
+    ],
     fetchHandlers: [
       jsonResponse(200, { items: [], pagination: { total: 0 } }),
       jsonResponse(200, { item_id: 'item-123', created: false }),
@@ -645,7 +657,7 @@ test('save current tab skips capture request when item already exists', async ()
 
   assert.equal(env.fetchCalls.length, 2);
   assert.equal(env.fetchCalls[1].url, 'https://api.example.test/v1/items');
-  assert.equal(env.scriptingExecuteCalls.length, 0);
+  assert.equal(env.scriptingExecuteCalls.length, 1);
   assert.equal(env.elements.utilityStatus.textContent, 'Saved');
   assert.equal(env.elements.utilityStatus.classList.contains('is-success'), true);
 });
@@ -654,7 +666,7 @@ test('save keeps success state when capture extraction returns no content', asyn
   const env = await loadSidepanelScript({
     storageData: { token: 'stored-token' },
     enableScripting: true,
-    scriptingExecuteResult: null,
+    scriptingExecuteResults: [null, null],
     fetchHandlers: [
       jsonResponse(200, { items: [], pagination: { total: 0 } }),
       jsonResponse(200, { item_id: 'item-123', created: true }),
@@ -666,7 +678,7 @@ test('save keeps success state when capture extraction returns no content', asyn
   await flushMicrotasks();
 
   assert.equal(env.fetchCalls.length, 2);
-  assert.equal(env.scriptingExecuteCalls.length, 1);
+  assert.equal(env.scriptingExecuteCalls.length, 2);
   assert.equal(env.elements.utilityStatus.textContent, 'Saved');
   assert.equal(env.elements.utilityStatus.classList.contains('is-success'), true);
 });
@@ -801,6 +813,51 @@ test('sidepanel layout keeps utility, save, divider, and search/list sections in
   assert.equal(saveAt < dividerAt, true);
   assert.equal(dividerAt < searchAt, true);
   assert.equal(searchAt < listAt, true);
+});
+
+test('save without scripting sends empty title and excerpt in payload', async () => {
+  const env = await loadSidepanelScript({
+    storageData: { token: 'stored-token' },
+    enableScripting: false,
+    fetchHandlers: [
+      jsonResponse(200, { items: [], pagination: { total: 0 } }),
+      jsonResponse(200, { item_id: 'item-456', created: true }),
+    ],
+    tabURL: 'https://news.example/article',
+  });
+
+  await env.elements.save.click();
+  await flushMicrotasks();
+
+  assert.equal(env.fetchCalls.length, 2);
+  const savePayload = JSON.parse(env.fetchCalls[1].options.body);
+  assert.equal(savePayload.url, 'https://news.example/article');
+  assert.equal(savePayload.title, '');
+  assert.equal(savePayload.excerpt, '');
+});
+
+test('save skips prefill for chrome:// URLs and sends empty title/excerpt', async () => {
+  const env = await loadSidepanelScript({
+    storageData: { token: 'stored-token' },
+    enableScripting: true,
+    scriptingExecuteResults: [
+      { title: 'Should not appear', excerpt: 'Should not appear' },
+    ],
+    fetchHandlers: [
+      jsonResponse(200, { items: [], pagination: { total: 0 } }),
+      jsonResponse(200, { item_id: 'item-789', created: false }),
+    ],
+    tabURL: 'chrome://extensions/',
+  });
+
+  await env.elements.save.click();
+  await flushMicrotasks();
+
+  assert.equal(env.fetchCalls.length, 2);
+  const savePayload = JSON.parse(env.fetchCalls[1].options.body);
+  assert.equal(savePayload.title, '');
+  assert.equal(savePayload.excerpt, '');
+  assert.equal(env.scriptingExecuteCalls.length, 0);
 });
 
 test('sidepanel does not provide edit delete or refetch actions', async () => {

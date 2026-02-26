@@ -386,15 +386,20 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		URL  string   `json:"url"`
-		Tags []string `json:"tags"`
+		URL     string   `json:"url"`
+		Tags    []string `json:"tags"`
+		Title   string   `json:"title"`
+		Excerpt string   `json:"excerpt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 		return
 	}
 
-	itemID, created, err := s.createItem(r.Context(), user.ID, req.URL, req.Tags)
+	title := truncateUTF8(strings.TrimSpace(req.Title), 500)
+	excerpt := truncateUTF8(strings.TrimSpace(req.Excerpt), 200)
+
+	itemID, created, err := s.createItem(r.Context(), user.ID, req.URL, req.Tags, title, excerpt)
 	if err != nil {
 		if errors.Is(err, errInvalidURL) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_url"})
@@ -901,7 +906,7 @@ func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	itemID, created, err := s.createItem(r.Context(), user.ID, urlValue, parseTagInput(tagsValue))
+	itemID, created, err := s.createItem(r.Context(), user.ID, urlValue, parseTagInput(tagsValue), "", "")
 	if err != nil {
 		if errors.Is(err, errInvalidURL) {
 			s.renderUIQuickAdd(w, r, http.StatusBadRequest, urlValue, titleValue, tagsValue, contentPreview, "Invalid URL.")
@@ -1139,14 +1144,14 @@ func (s *Server) checkCSRF(r *http.Request) error {
 	return nil
 }
 
-func (s *Server) createItem(ctx context.Context, userID, rawURL string, rawTags []string) (string, bool, error) {
+func (s *Server) createItem(ctx context.Context, userID, rawURL string, rawTags []string, title, excerpt string) (string, bool, error) {
 	canonicalURL, canonicalHash, err := urlnorm.Canonicalize(rawURL)
 	if err != nil {
 		return "", false, errInvalidURL
 	}
 
 	normTags := normalizeTagNames(rawTags)
-	itemID, created, err := s.store.CreateItem(ctx, userID, rawURL, canonicalURL, canonicalHash, normTags)
+	itemID, created, err := s.store.CreateItem(ctx, userID, rawURL, canonicalURL, canonicalHash, normTags, title, excerpt)
 	if err != nil {
 		return "", false, err
 	}

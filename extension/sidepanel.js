@@ -484,6 +484,66 @@ function requestItems(query) {
   }, 180);
 }
 
+async function extractPagePrefill(tabID, tabURL) {
+  const empty = { title: '', excerpt: '' };
+
+  if (!chrome.scripting || typeof chrome.scripting.executeScript !== 'function') {
+    return empty;
+  }
+  if (typeof tabID !== 'number') {
+    return empty;
+  }
+  if (typeof tabURL === 'string') {
+    const lower = tabURL.toLowerCase();
+    if (lower.startsWith('chrome://') || lower.startsWith('chrome-extension://') || lower.startsWith('about:')) {
+      return empty;
+    }
+  }
+
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tabID },
+      func: () => {
+        const normalize = (v) => v.trim().replace(/\s+/g, ' ');
+        const selectorsToDrop = [
+          'script', 'style', 'noscript', 'nav', 'aside', 'footer', 'form',
+          '[hidden]', '[aria-hidden="true"]',
+        ];
+
+        const title = normalize(document.title || '');
+
+        const source = document.querySelector('article')
+          || document.querySelector('main')
+          || document.querySelector('[role="main"]')
+          || document.body;
+        if (!source) return { title, excerpt: '' };
+
+        const clone = source.cloneNode(true);
+        for (const selector of selectorsToDrop) {
+          clone.querySelectorAll(selector).forEach((node) => node.remove());
+        }
+
+        const rawText = clone.innerText || clone.textContent || '';
+        const normalized = normalize(rawText);
+        const excerpt = normalized.length > 200 ? normalized.slice(0, 200) : normalized;
+
+        return { title, excerpt };
+      },
+    });
+
+    if (!Array.isArray(results) || results.length === 0) return empty;
+    const value = results[0]?.result;
+    if (!value) return empty;
+
+    return {
+      title: typeof value.title === 'string' ? value.title : '',
+      excerpt: typeof value.excerpt === 'string' ? value.excerpt : '',
+    };
+  } catch {
+    return empty;
+  }
+}
+
 async function extractPageCapture(tabID) {
   if (!chrome.scripting || typeof chrome.scripting.executeScript !== 'function') {
     return null;
@@ -576,9 +636,13 @@ async function saveCurrentTab() {
       return;
     }
 
+    const prefill = await extractPagePrefill(tab.id, tab.url);
+
     const result = await apiClient.createItem(apiBase, {
       url: tab.url,
       tags: appState.tags,
+      title: prefill.title,
+      excerpt: prefill.excerpt,
     });
 
     if (result.networkError) {
