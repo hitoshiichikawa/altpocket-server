@@ -104,6 +104,69 @@ func TestHandleCaptureItemContentUnauthorizedReturnsJSONError(t *testing.T) {
 	}
 }
 
+func TestHandlePatchItemUnauthorizedReturnsJSONError(t *testing.T) {
+	s := newAuthTestServer()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/items/item-1", strings.NewReader(`{"title":"New Title"}`))
+	rr := httptest.NewRecorder()
+
+	s.handlePatchItem(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "unauthorized") {
+		t.Fatalf("expected unauthorized body, got %q", rr.Body.String())
+	}
+}
+
+func TestHandlePatchItemInvalidJSONReturns400(t *testing.T) {
+	s := newAuthTestServer()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/items/item-1", strings.NewReader("{"))
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "user-1"}))
+	rr := httptest.NewRecorder()
+
+	s.handlePatchItem(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_request") {
+		t.Fatalf("expected invalid_request body, got %q", rr.Body.String())
+	}
+}
+
+func TestHandlePatchItemEmptyTitleReturns400(t *testing.T) {
+	s := newAuthTestServer()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/items/item-1", strings.NewReader(`{"title":""}`))
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "user-1"}))
+	rr := httptest.NewRecorder()
+
+	s.handlePatchItem(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_request") {
+		t.Fatalf("expected invalid_request body, got %q", rr.Body.String())
+	}
+}
+
+func TestHandlePatchItemWhitespaceOnlyTitleReturns400(t *testing.T) {
+	s := newAuthTestServer()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/items/item-1", strings.NewReader(`{"title":"   "}`))
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "user-1"}))
+	rr := httptest.NewRecorder()
+
+	s.handlePatchItem(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_request") {
+		t.Fatalf("expected invalid_request body, got %q", rr.Body.String())
+	}
+}
+
 func TestHandleCaptureItemContentRejectsBlankContent(t *testing.T) {
 	s := newAuthTestServer()
 	req := httptest.NewRequest(http.MethodPost, "/v1/items/item-1/capture", strings.NewReader(`{"title":"t","content_full":"   "}`))
