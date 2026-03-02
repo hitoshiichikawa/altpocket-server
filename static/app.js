@@ -1,4 +1,122 @@
 (() => {
+  /* =============================================
+     Utility: Toast Notification System
+     ============================================= */
+  const toast = {
+    _container: null,
+    _getContainer() {
+      if (!this._container) {
+        this._container = document.getElementById('toast-container');
+      }
+      return this._container;
+    },
+    show(message, type = 'info', duration = 4000) {
+      const container = this._getContainer();
+      if (!container) return;
+
+      const icons = {
+        success: '\u2713',
+        danger: '\u2717',
+        info: '\u2139',
+      };
+
+      const el = document.createElement('div');
+      el.className = `toast toast-${type}`;
+      el.setAttribute('role', 'alert');
+      el.innerHTML = `
+        <span class="toast-icon">${icons[type] || icons.info}</span>
+        <span class="toast-message">${this._escape(message)}</span>
+        <button type="button" class="toast-dismiss" aria-label="Dismiss">&times;</button>
+      `;
+
+      const dismiss = () => {
+        el.classList.add('toast-exit');
+        el.addEventListener('animationend', () => el.remove(), { once: true });
+      };
+
+      el.querySelector('.toast-dismiss').addEventListener('click', dismiss);
+
+      container.appendChild(el);
+
+      if (duration > 0) {
+        setTimeout(dismiss, duration);
+      }
+    },
+    success(msg, dur) { this.show(msg, 'success', dur); },
+    error(msg, dur) { this.show(msg, 'danger', dur); },
+    info(msg, dur) { this.show(msg, 'info', dur); },
+    _escape(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    },
+  };
+
+  /* =============================================
+     Utility: Confirmation Dialog (replaces confirm())
+     ============================================= */
+  const confirm = (() => {
+    const overlay = document.getElementById('confirm-overlay');
+    const titleEl = document.getElementById('confirm-title');
+    const descEl = document.getElementById('confirm-desc');
+    const actionBtn = document.getElementById('confirm-action');
+    const cancelBtn = document.getElementById('confirm-cancel');
+
+    if (!overlay || !titleEl || !descEl || !actionBtn || !cancelBtn) {
+      return { show: (_, __, cb) => { if (cb) cb(); } };
+    }
+
+    let currentResolve = null;
+
+    const close = () => {
+      overlay.classList.remove('open');
+      overlay.setAttribute('aria-hidden', 'true');
+      currentResolve = null;
+    };
+
+    cancelBtn.addEventListener('click', () => {
+      close();
+    });
+
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && overlay.classList.contains('open')) {
+        close();
+      }
+    });
+
+    return {
+      show(title, description, onConfirm, actionLabel = 'Delete', actionClass = 'btn-danger') {
+        titleEl.textContent = title;
+        descEl.textContent = description;
+        actionBtn.textContent = actionLabel;
+        actionBtn.className = actionClass;
+
+        // Remove old listener
+        const newBtn = actionBtn.cloneNode(true);
+        actionBtn.parentNode.replaceChild(newBtn, actionBtn);
+
+        newBtn.addEventListener('click', () => {
+          close();
+          if (onConfirm) onConfirm();
+        });
+
+        // Reassign for future calls
+        Object.defineProperty(confirm, '_actionBtn', { value: newBtn, writable: true });
+
+        overlay.classList.add('open');
+        overlay.setAttribute('aria-hidden', 'false');
+        newBtn.focus();
+      },
+    };
+  })();
+
+  /* =============================================
+     Account Menu
+     ============================================= */
   const accountMenu = document.querySelector('[data-account-menu]');
   const accountMenuTrigger = accountMenu?.querySelector('.account-menu-trigger');
   if (accountMenu && accountMenuTrigger) {
@@ -33,6 +151,184 @@
     });
   }
 
+  /* =============================================
+     Action Menu (More ... on detail page)
+     ============================================= */
+  document.querySelectorAll('[data-action-menu]').forEach((menu) => {
+    const trigger = menu.querySelector('[data-action-menu-trigger]');
+    if (!trigger) return;
+
+    const close = () => {
+      menu.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+    };
+
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (menu.classList.contains('open')) {
+        close();
+      } else {
+        menu.classList.add('open');
+        trigger.setAttribute('aria-expanded', 'true');
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!menu.contains(e.target)) close();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close();
+    });
+  });
+
+  /* =============================================
+     Mobile Slide-over Navigation
+     ============================================= */
+  const navOverlay = document.querySelector('[data-nav-overlay]');
+  const navToggle = document.querySelector('[data-nav-toggle]');
+
+  if (navOverlay && navToggle) {
+    const openNav = () => {
+      navOverlay.classList.add('open');
+      navOverlay.setAttribute('aria-hidden', 'false');
+      // Focus first link
+      const firstLink = navOverlay.querySelector('.nav-drawer-links a');
+      if (firstLink) firstLink.focus();
+    };
+
+    const closeNav = () => {
+      navOverlay.classList.remove('open');
+      navOverlay.setAttribute('aria-hidden', 'true');
+      navToggle.focus();
+    };
+
+    navToggle.addEventListener('click', () => {
+      if (navOverlay.classList.contains('open')) {
+        closeNav();
+      } else {
+        openNav();
+      }
+    });
+
+    // Close on overlay click (outside drawer)
+    navOverlay.addEventListener('click', (e) => {
+      if (e.target === navOverlay) closeNav();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && navOverlay.classList.contains('open')) {
+        closeNav();
+      }
+    });
+
+    // Swipe to close
+    let touchStartX = 0;
+    navOverlay.addEventListener('touchstart', (e) => {
+      touchStartX = e.touches[0].clientX;
+    }, { passive: true });
+
+    navOverlay.addEventListener('touchend', (e) => {
+      const touchEndX = e.changedTouches[0].clientX;
+      if (touchStartX - touchEndX > 60) {
+        closeNav();
+      }
+    }, { passive: true });
+  }
+
+  /* =============================================
+     Bottom Sheet (Mobile Filters)
+     ============================================= */
+  document.querySelectorAll('[data-sheet-toggle]').forEach((btn) => {
+    const sheetId = btn.dataset.sheetToggle;
+    const sheetOverlay = document.getElementById(sheetId);
+    if (!sheetOverlay) return;
+
+    const openSheet = () => {
+      sheetOverlay.classList.add('open');
+      sheetOverlay.setAttribute('aria-hidden', 'false');
+    };
+
+    const closeSheet = () => {
+      sheetOverlay.classList.remove('open');
+      sheetOverlay.setAttribute('aria-hidden', 'true');
+    };
+
+    btn.addEventListener('click', openSheet);
+
+    sheetOverlay.addEventListener('click', (e) => {
+      if (e.target === sheetOverlay) closeSheet();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && sheetOverlay.classList.contains('open')) {
+        closeSheet();
+      }
+    });
+
+    // Drag handle - swipe down to close
+    const handle = sheetOverlay.querySelector('.sheet-handle');
+    if (handle) {
+      let startY = 0;
+      handle.addEventListener('touchstart', (e) => {
+        startY = e.touches[0].clientY;
+      }, { passive: true });
+
+      handle.addEventListener('touchend', (e) => {
+        const endY = e.changedTouches[0].clientY;
+        if (endY - startY > 50) closeSheet();
+      }, { passive: true });
+    }
+  });
+
+  /* =============================================
+     Theme Toggle
+     ============================================= */
+  const themeToggle = document.querySelector('[data-theme-toggle]');
+  if (themeToggle) {
+    themeToggle.querySelectorAll('input[name="theme"]').forEach((radio) => {
+      radio.addEventListener('change', () => {
+        const theme = radio.value;
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('altpocket-theme', theme);
+        // Update theme-color meta
+        const metaDark = document.querySelector('meta[name="theme-color"][media*="dark"]');
+        const metaLight = document.querySelector('meta[name="theme-color"][media*="light"]');
+        if (metaDark) metaDark.content = theme === 'dark' ? '#0a0a0a' : '#f5f5f7';
+        if (metaLight) metaLight.content = theme === 'light' ? '#f5f5f7' : '#0a0a0a';
+      });
+    });
+  }
+
+  // Restore theme from localStorage + sync settings radio
+  const savedTheme = localStorage.getItem('altpocket-theme');
+  if (savedTheme) {
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    const radio = document.getElementById(`theme-${savedTheme}`);
+    if (radio) radio.checked = true;
+  }
+
+  /* =============================================
+     Shortcuts Dialog (Settings page)
+     ============================================= */
+  const shortcutsBtn = document.querySelector('[data-shortcuts-toggle]');
+  const shortcutsOverlay = document.getElementById('shortcuts-overlay');
+  if (shortcutsBtn && shortcutsOverlay) {
+    shortcutsBtn.addEventListener('click', () => {
+      shortcutsOverlay.classList.add('open');
+      shortcutsOverlay.setAttribute('aria-hidden', 'false');
+    });
+    shortcutsOverlay.addEventListener('click', (e) => {
+      if (e.target === shortcutsOverlay) {
+        shortcutsOverlay.classList.remove('open');
+        shortcutsOverlay.setAttribute('aria-hidden', 'true');
+      }
+    });
+  }
+
+  /* =============================================
+     CSRF & API helpers
+     ============================================= */
   const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
   if (!csrf) return;
 
@@ -49,33 +345,62 @@
     return trimmed.toLowerCase();
   };
 
+  /* =============================================
+     Refetch Buttons (with toast)
+     ============================================= */
   document.querySelectorAll('button.refetch').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset.itemId;
       if (!id) return;
-      const res = await fetch(`/v1/items/${id}/refetch`, { method: 'POST', headers });
-      if (res.ok) {
-        alert('Refetch queued');
-      } else {
-        alert('Failed to queue refetch');
+      btn.disabled = true;
+      try {
+        const res = await fetch(`/v1/items/${id}/refetch`, { method: 'POST', headers });
+        if (res.ok) {
+          toast.success('Refetch queued');
+        } else {
+          toast.error('Failed to queue refetch');
+        }
+      } catch {
+        toast.error('Network error');
+      } finally {
+        btn.disabled = false;
       }
     });
   });
 
+  /* =============================================
+     Delete Buttons (with confirmation dialog)
+     ============================================= */
   document.querySelectorAll('button.delete').forEach((btn) => {
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       const id = btn.dataset.itemId;
       if (!id) return;
-      if (!confirm('Delete this item?')) return;
-      const res = await fetch(`/v1/items/${id}`, { method: 'DELETE', headers });
-      if (res.ok) {
-        window.location = '/ui/items';
-      } else {
-        alert('Failed to delete');
-      }
+
+      confirm.show(
+        'Delete article?',
+        'This action cannot be undone.',
+        async () => {
+          try {
+            const res = await fetch(`/v1/items/${id}`, { method: 'DELETE', headers });
+            if (res.ok) {
+              toast.success('Article deleted');
+              setTimeout(() => { window.location = '/ui/items'; }, 500);
+            } else {
+              toast.error('Failed to delete');
+            }
+          } catch {
+            toast.error('Network error');
+          }
+        },
+        'Delete',
+        'btn-danger'
+      );
     });
   });
 
+  /* =============================================
+     Filter Form (auto-submit on change)
+     ============================================= */
   const form = document.querySelector('.search-form');
   if (form) {
     form.querySelectorAll('select').forEach((sel) => {
@@ -118,6 +443,9 @@
     }
   }
 
+  /* =============================================
+     Detail Page: Tag Editor
+     ============================================= */
   const detailEditTagsBtn = document.querySelector('button.edit-tags');
   const detailTagEditor = document.getElementById('detail-tag-editor');
   const detailTagChips = document.getElementById('detail-tag-chips');
@@ -144,8 +472,8 @@
     const itemID = detailTagEditor.dataset.itemId || detailEditTagsBtn.dataset.itemId;
     const draftTags = [];
     const draftTagSet = new Set();
-    let originalTags = []; // 編集開始前のタグ（Cancel用）
-    let originalTitle = ''; // 編集開始前のタイトル（Cancel用）
+    let originalTags = [];
+    let originalTitle = '';
     let suggestions = [];
     let activeSuggestion = -1;
 
@@ -154,12 +482,14 @@
       activeSuggestion = -1;
       detailTagSuggestions.innerHTML = '';
       detailTagSuggestions.hidden = true;
+      detailTagInput.setAttribute('aria-expanded', 'false');
     };
 
     const renderSuggestions = () => {
       detailTagSuggestions.innerHTML = '';
       if (suggestions.length === 0) {
         detailTagSuggestions.hidden = true;
+        detailTagInput.setAttribute('aria-expanded', 'false');
         return;
       }
       suggestions.forEach((name, idx) => {
@@ -177,19 +507,21 @@
         detailTagSuggestions.appendChild(option);
       });
       detailTagSuggestions.hidden = false;
+      detailTagInput.setAttribute('aria-expanded', 'true');
     };
 
-    // チップエリアを再描画する。editing=trueなら×ボタン付き、falseなら×なし
     const renderChips = (tags, editing) => {
       detailTagChips.innerHTML = '';
       tags.forEach((tag, idx) => {
         const chip = document.createElement('span');
         chip.className = editing ? 'tag-chip' : 'tag';
+        chip.setAttribute('role', 'listitem');
         chip.textContent = tag;
         if (editing) {
           const remove = document.createElement('button');
           remove.type = 'button';
-          remove.textContent = '×';
+          remove.textContent = '\u00D7';
+          remove.setAttribute('aria-label', `Remove tag ${tag}`);
           remove.addEventListener('click', () => {
             draftTagSet.delete(tag);
             draftTags.splice(idx, 1);
@@ -236,15 +568,12 @@
       }
     };
 
-    // 編集モード開始：タイトルとタグの両方を編集可能にする
     const openEditor = () => {
-      // タイトルの元の値を保存し、入力フィールドに切替
       originalTitle = detailTitle.textContent;
       detailTitleInput.value = originalTitle;
       detailTitle.hidden = true;
       detailTitleInput.hidden = false;
 
-      // 現在表示中の×なしチップからタグ名を読み取る
       draftTags.length = 0;
       draftTagSet.clear();
       Array.from(detailTagChips.querySelectorAll('.tag')).forEach((el) => {
@@ -253,32 +582,30 @@
         draftTagSet.add(normalized);
         draftTags.push(normalized);
       });
-      originalTags = draftTags.slice(); // Cancel用に保存
+      originalTags = draftTags.slice();
       renderChips(draftTags, true);
       detailTagInput.value = '';
       clearSuggestions();
       detailTagInput.hidden = false;
       detailTagActions.hidden = false;
-      detailEditTagsBtn.disabled = true; // 編集中は再クリック不可
-      // Refetch/Deleteも編集中は無効化
-      document.querySelectorAll('.item-actions button.refetch, .item-actions button.delete').forEach((btn) => { btn.disabled = true; });
+      detailEditTagsBtn.disabled = true;
+      // Hide the header actions and show edit mode actions
+      const headerActions = document.getElementById('detail-header-actions');
+      if (headerActions) headerActions.style.display = 'none';
       detailTitleInput.focus();
     };
 
-    // 編集モード終了：タイトルとタグの両方を表示モードに戻す
     const closeEditor = (savedTags, savedTitle) => {
-      // タイトルを表示モードに復帰
       detailTitle.textContent = savedTitle;
       detailTitle.hidden = false;
       detailTitleInput.hidden = true;
-
       detailTagInput.hidden = true;
       detailTagActions.hidden = true;
       clearSuggestions();
       detailTagInput.value = '';
-      detailEditTagsBtn.disabled = false; // 編集終了後に再び押せるように
-      // Refetch/Deleteも再有効化
-      document.querySelectorAll('.item-actions button.refetch, .item-actions button.delete').forEach((btn) => { btn.disabled = false; });
+      detailEditTagsBtn.disabled = false;
+      const headerActions = document.getElementById('detail-header-actions');
+      if (headerActions) headerActions.style.display = '';
       renderChips(savedTags, false);
     };
 
@@ -288,26 +615,24 @@
     });
 
     detailTagCancelBtn.addEventListener('click', () => {
-      // キャンセル：編集開始前のタイトルとタグに戻す
       closeEditor(originalTags, originalTitle);
     });
 
     detailTagSaveBtn.addEventListener('click', async () => {
       if (!itemID) return;
-      // 入力中のテキストがあれば追加
       addDraftTag(detailTagInput.value);
       detailTagInput.value = '';
       clearSuggestions();
 
-      // タイトルの空文字チェック
       const titleValue = detailTitleInput.value.trim();
       if (!titleValue) {
-        alert('Title cannot be empty');
+        toast.error('Title cannot be empty');
         detailTitleInput.focus();
         return;
       }
 
       detailTagSaveBtn.disabled = true;
+      detailTagSaveBtn.classList.add('btn-loading');
       try {
         const res = await fetch(`/v1/items/${encodeURIComponent(itemID)}`, {
           method: 'PATCH',
@@ -315,12 +640,11 @@
           body: JSON.stringify({ title: titleValue, tags: draftTags }),
         });
         if (!res.ok) {
-          alert('Failed to update');
+          toast.error('Failed to update');
           return;
         }
         const data = await res.json().catch(() => null);
 
-        // タグの更新
         const updatedTags = [];
         const seen = new Set();
         if (Array.isArray(data?.tags)) {
@@ -332,15 +656,13 @@
           });
         }
         const finalTags = updatedTags.length > 0 ? updatedTags : draftTags.slice();
-
-        // タイトルの更新
         const finalTitle = data?.title || titleValue;
         closeEditor(finalTags, finalTitle);
-
-        // ページタイトル同期
         document.title = finalTitle + ' | altpocket';
+        toast.success('Changes saved');
       } finally {
         detailTagSaveBtn.disabled = false;
+        detailTagSaveBtn.classList.remove('btn-loading');
       }
     });
 
@@ -395,6 +717,9 @@
     });
   }
 
+  /* =============================================
+     Quick Add: Tag Input
+     ============================================= */
   const quickAddTagInput = document.getElementById('quick-add-tag-input');
   const quickAddTagsEl = document.getElementById('quick-add-tags');
   const quickAddSuggestionsEl = document.getElementById('quick-add-suggestions');
@@ -417,10 +742,12 @@
       tags.forEach((tag, idx) => {
         const chip = document.createElement('span');
         chip.className = 'tag-chip';
+        chip.setAttribute('role', 'listitem');
         chip.textContent = tag;
         const remove = document.createElement('button');
         remove.type = 'button';
-        remove.textContent = '×';
+        remove.textContent = '\u00D7';
+        remove.setAttribute('aria-label', `Remove tag ${tag}`);
         remove.addEventListener('click', () => {
           tagSet.delete(tag);
           tags.splice(idx, 1);
@@ -496,4 +823,83 @@
       quickAddSuggestionsEl.innerHTML = '';
     });
   }
+
+  /* =============================================
+     Keyboard Shortcuts
+     ============================================= */
+  document.addEventListener('keydown', (e) => {
+    // Don't trigger shortcuts when typing in inputs
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) {
+      return;
+    }
+
+    // Don't trigger on modifier combos (except Cmd+Enter for forms)
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+    switch (e.key) {
+      case '/': {
+        e.preventDefault();
+        const searchInput = document.querySelector('.search-form input[type="text"], .search-bar input');
+        if (searchInput) searchInput.focus();
+        break;
+      }
+      case 'n': {
+        window.location.href = '/ui/quick-add';
+        break;
+      }
+      case '?': {
+        const overlay = document.getElementById('shortcuts-overlay');
+        if (overlay) {
+          overlay.classList.toggle('open');
+          overlay.setAttribute('aria-hidden', overlay.classList.contains('open') ? 'false' : 'true');
+        }
+        break;
+      }
+      case 'j':
+      case 'k': {
+        const cards = Array.from(document.querySelectorAll('.item-card'));
+        if (cards.length === 0) return;
+        const focused = document.activeElement?.closest('.item-card');
+        let idx = focused ? cards.indexOf(focused) : -1;
+        if (e.key === 'j') {
+          idx = Math.min(idx + 1, cards.length - 1);
+        } else {
+          idx = Math.max(idx - 1, 0);
+        }
+        const link = cards[idx]?.querySelector('.tile-link');
+        if (link) link.focus();
+        break;
+      }
+      case 'o':
+      case 'Enter': {
+        const focusedCard = document.activeElement?.closest('.item-card');
+        if (focusedCard) {
+          const link = focusedCard.querySelector('.tile-link');
+          if (link) link.click();
+        }
+        break;
+      }
+      case 'e': {
+        const editBtn = document.querySelector('button.edit-tags');
+        if (editBtn && !editBtn.disabled) editBtn.click();
+        break;
+      }
+    }
+  });
+
+  // Cmd+Enter to submit forms
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      const form = e.target.closest('form');
+      if (form) {
+        e.preventDefault();
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        } else {
+          form.submit();
+        }
+      }
+    }
+  });
 })();

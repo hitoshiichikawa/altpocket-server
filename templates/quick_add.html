@@ -2,7 +2,7 @@
 <section class="quick-add-shell">
   <article class="card quick-add-card">
     <h1>Quick Add</h1>
-    <p class="muted">Confirm the page details, add tags, and save to your library.</p>
+    <p class="muted">Save a page to your library.</p>
 
     {{if .Error}}
       <div class="error">{{.Error}}</div>
@@ -13,7 +13,7 @@
 
       <label class="field" for="quick-add-url">
         <span class="field-label">URL</span>
-        <input id="quick-add-url" class="input" type="url" name="url" required value="{{.URL}}" placeholder="https://example.com/article">
+        <input id="quick-add-url" class="input" type="url" name="url" required value="{{.URL}}" placeholder="https://example.com/article" autofocus>
       </label>
 
       <label class="field" for="quick-add-title">
@@ -29,9 +29,9 @@
       <div class="field">
         <span class="field-label">Tags</span>
         <input id="quick-add-tags-value" type="hidden" name="tags" value="{{.Tags}}">
-        <div id="quick-add-tags" class="tags"></div>
-        <input id="quick-add-tag-input" class="input" type="text" autocomplete="off" placeholder="Type tag then press Enter or comma">
-        <div id="quick-add-suggestions" class="tag-editor-suggestions"></div>
+        <div id="quick-add-tags" class="tags" role="list" aria-label="Selected tags"></div>
+        <input id="quick-add-tag-input" class="input" type="text" autocomplete="off" placeholder="Type tag then press Enter or comma" aria-label="Add tag">
+        <div id="quick-add-suggestions" class="tag-editor-suggestions" role="listbox" aria-label="Tag suggestions"></div>
       </div>
 
       <div class="quick-add-actions">

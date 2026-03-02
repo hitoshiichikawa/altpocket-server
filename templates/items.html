@@ -1,11 +1,30 @@
 {{define "content"}}
+<div class="page-header">
+  <h1>Library</h1>
+  {{if .Total}}<span class="page-header-count">{{.Total}} articles</span>{{end}}
+</div>
+
+<!-- Mobile: Filter / Sort toggle buttons -->
+<div class="filter-toggle-bar" style="margin-bottom: var(--space-4);">
+  <div class="search-bar" style="flex:1">
+    <span class="search-icon" aria-hidden="true">
+      <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="6"/><line x1="13" y1="13" x2="18" y2="18"/></svg>
+    </span>
+    <input type="text" name="q" placeholder="Search articles..." value="{{.Query}}" form="filter-form" aria-label="Search articles">
+  </div>
+  <button type="button" class="filter-toggle-btn" data-sheet-toggle="filter-sheet">
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="5" x2="17" y2="5"/><line x1="5" y1="10" x2="15" y2="10"/><line x1="7" y1="15" x2="13" y2="15"/></svg>
+    Filters
+  </button>
+</div>
+
 <section class="split">
   <aside class="sidebar">
     <div class="panel-title">Filters</div>
-    <form method="get" action="/ui/items" class="search-form">
+    <form id="filter-form" method="get" action="/ui/items" class="search-form">
       <label class="field">
         <span class="field-label">Search</span>
-        <input class="input" type="text" name="q" placeholder="Search title, excerpt, URL, tags" value="{{.Query}}">
+        <input class="input" type="text" name="q" placeholder="Search title, excerpt, URL, tags" value="{{.Query}}" aria-label="Search articles">
       </label>
 
       <label class="field">
@@ -26,42 +45,46 @@
       </label>
 
       <div class="tag-list">
-      <div class="tag-title">Tags</div>
-      <ul>
-        {{range .Tags}}
-          <li>
-            <label class="tag-filter-option">
-              <input type="checkbox" name="tag" value="{{.NormalizedName}}" {{if index $.SelectedTags .NormalizedName}}checked{{end}}>
-              <span>{{.Name}} <span class="muted">({{.Count}})</span></span>
-            </label>
-          </li>
-        {{end}}
-      </ul>
-      <a class="btn-secondary tag-clear-btn" href="/ui/items">Clear filters</a>
+        <div class="tag-title">Tags</div>
+        <ul>
+          {{range .Tags}}
+            <li>
+              <label class="tag-filter-option">
+                <input type="checkbox" name="tag" value="{{.NormalizedName}}" {{if index $.SelectedTags .NormalizedName}}checked{{end}}>
+                <span>{{.Name}} <span class="muted">({{.Count}})</span></span>
+              </label>
+            </li>
+          {{end}}
+        </ul>
+        <a class="btn-tertiary tag-clear-btn" href="/ui/items">Clear filters</a>
       </div>
 
       <button type="submit" class="btn-primary">Apply</button>
     </form>
   </aside>
 
-  <section class="items">
+  <section class="items" id="items-list" role="region" aria-label="Articles">
     {{if .QuickAddNotice}}
-      <div class="notice">{{.QuickAddNotice}}</div>
+      <div class="notice notice-success">{{.QuickAddNotice}}</div>
     {{end}}
 
     {{if not .Items}}
-      <div class="card empty-state">No items yet. Save a page from the extension or Quick Add.</div>
+      <div class="card empty-state">
+        <div class="empty-state-title">No articles yet</div>
+        <p class="empty-state-desc">Save your first article with Quick Add or the browser extension.</p>
+        <a class="btn-primary" href="/ui/quick-add">Quick Add</a>
+      </div>
     {{end}}
 
     {{range .Items}}
-      <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}">
+      <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" aria-labelledby="item-title-{{.ID}}">
         <a class="tile-link" href="/ui/items/{{.ID}}">
-          <h3>{{.Title}}</h3>
+          <h3 id="item-title-{{.ID}}">{{.Title}}</h3>
           <p class="excerpt-clamp">{{.Excerpt}}</p>
         </a>
 
         <div class="meta item-meta">
-          <span class="status-pill">{{.FetchStatus}}</span>
+          <span class="status-pill" data-status="{{.FetchStatus}}" role="status" aria-label="Fetch status: {{.FetchStatus}}">{{.FetchStatus}}</span>
           <span>{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
         </div>
 
@@ -74,20 +97,72 @@
         <div class="actions item-actions">
           <a class="btn-secondary action-button" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Original</a>
           <button type="button" class="btn-secondary refetch" data-item-id="{{.ID}}">Refetch</button>
-          <button type="button" class="btn-secondary delete" data-item-id="{{.ID}}">Delete</button>
+          <button type="button" class="btn-danger delete" data-item-id="{{.ID}}">Delete</button>
         </div>
       </article>
     {{end}}
 
-    <div class="card pagination">
+    <div class="pagination">
       {{if gt .Page 1}}
-        <a class="btn-secondary" href="{{.PrevURL}}">Prev</a>
+        <a class="btn-secondary" href="{{.PrevURL}}" aria-label="Previous page">&#x2039;</a>
       {{end}}
-      <span>Page {{.Page}} / {{.TotalPages}}</span>
+      <span class="page-info">Page {{.Page}} / {{.TotalPages}}</span>
       {{if lt .Page .TotalPages}}
-        <a class="btn-secondary" href="{{.NextURL}}">Next</a>
+        <a class="btn-secondary" href="{{.NextURL}}" aria-label="Next page">&#x203A;</a>
       {{end}}
     </div>
   </section>
 </section>
+
+<!-- Mobile Filter Bottom Sheet -->
+<div class="sheet-overlay" id="filter-sheet" aria-hidden="true">
+  <div class="bottom-sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-content">
+      <h2 class="sheet-title">Filters</h2>
+      <form method="get" action="/ui/items" class="search-form">
+        <label class="field">
+          <span class="field-label">Search</span>
+          <input class="input" type="text" name="q" placeholder="Search articles..." value="{{.Query}}">
+        </label>
+
+        <label class="field">
+          <span class="field-label">Sort by</span>
+          <select class="input" name="sort">
+            <option value="newest" {{if eq .Sort "newest"}}selected{{end}}>Newest</option>
+            <option value="relevance" {{if eq .Sort "relevance"}}selected{{end}}>Relevance</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span class="field-label">Per Page</span>
+          <select class="input" name="per_page">
+            {{range .PerPageOptions}}
+              <option value="{{.}}" {{if eq $.PerPage .}}selected{{end}}>{{.}} / page</option>
+            {{end}}
+          </select>
+        </label>
+
+        <div class="tag-list">
+          <div class="tag-title">Tags</div>
+          <ul>
+            {{range .Tags}}
+              <li>
+                <label class="tag-filter-option">
+                  <input type="checkbox" name="tag" value="{{.NormalizedName}}" {{if index $.SelectedTags .NormalizedName}}checked{{end}}>
+                  <span>{{.Name}} ({{.Count}})</span>
+                </label>
+              </li>
+            {{end}}
+          </ul>
+        </div>
+
+        <div class="sheet-actions">
+          <button type="submit" class="btn-primary">Apply Filters</button>
+          <a class="btn-tertiary" href="/ui/items" style="text-align:center">Clear all</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 {{end}}
