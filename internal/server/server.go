@@ -910,7 +910,9 @@ func (s *Server) handleUIQuickAddSubmit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	itemID, created, err := s.createItem(r.Context(), user.ID, urlValue, parseTagInput(tagsValue), "", "")
+	title := truncateUTF8(titleValue, 500)
+	excerpt := truncateUTF8(normalizeWhitespace(contentPreview), 200)
+	itemID, created, err := s.createItem(r.Context(), user.ID, urlValue, parseTagInput(tagsValue), title, excerpt)
 	if err != nil {
 		if errors.Is(err, errInvalidURL) {
 			s.renderUIQuickAdd(w, r, http.StatusBadRequest, urlValue, titleValue, tagsValue, contentPreview, "Invalid URL.")
