@@ -294,8 +294,8 @@
         // Update theme-color meta
         const metaDark = document.querySelector('meta[name="theme-color"][media*="dark"]');
         const metaLight = document.querySelector('meta[name="theme-color"][media*="light"]');
-        if (metaDark) metaDark.content = theme === 'dark' ? '#0a0a0a' : '#f5f5f7';
-        if (metaLight) metaLight.content = theme === 'light' ? '#f5f5f7' : '#0a0a0a';
+        if (metaDark) metaDark.content = theme === 'dark' ? '#121212' : '#f0f2f5';
+        if (metaLight) metaLight.content = theme === 'light' ? '#f0f2f5' : '#121212';
       });
     });
   }

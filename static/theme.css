@@ -1,18 +1,18 @@
 /* =============================================
-   altpocket Design Tokens — Apple HIG Edition
+   altpocket Design Tokens — Metro Business Edition
    ============================================= */
 
 /* --- Font Stacks --- */
 :root {
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+  --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont,
                "Hiragino Kaku Gothic ProN", "Hiragino Sans",
                "Noto Sans JP", "Yu Gothic", sans-serif;
-  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+  --font-display: "Segoe UI", -apple-system, BlinkMacSystemFont,
                   "Hiragino Kaku Gothic ProN", "Hiragino Sans",
                   "Noto Sans JP", "Yu Gothic", sans-serif;
-  --font-mono: "SF Mono", "Menlo", "Consolas",
+  --font-mono: "Cascadia Code", "SF Mono", "Consolas",
                "Noto Sans Mono", monospace;
-  --font-serif: "New York", "Georgia", "Hiragino Mincho ProN",
+  --font-serif: "Georgia", "Hiragino Mincho ProN",
                 "Noto Serif JP", serif;
 
   /* --- Spacing (4px base) --- */
@@ -28,110 +28,110 @@
   --space-12: 48px;
   --space-16: 64px;
 
-  /* --- Radius --- */
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
+  /* --- Radius (Metro: minimal) --- */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 4px;
   --radius-full: 9999px;
 
   /* --- Motion --- */
-  --motion-fast: 120ms;
-  --motion-standard: 250ms;
-  --motion-moderate: 350ms;
-  --motion-slow: 500ms;
+  --motion-fast: 100ms;
+  --motion-standard: 200ms;
+  --motion-moderate: 300ms;
+  --motion-slow: 400ms;
   --ease-default: cubic-bezier(0.25, 0.1, 0.25, 1.0);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1.0);
   --ease-decelerate: cubic-bezier(0.0, 0.0, 0.2, 1.0);
   --ease-accelerate: cubic-bezier(0.4, 0.0, 1.0, 1.0);
 
   /* --- Typography Scale (sizes) --- */
-  --type-large-title-size: 34px;
-  --type-title-1-size: 28px;
-  --type-title-2-size: 22px;
-  --type-title-3-size: 20px;
-  --type-headline-size: 17px;
-  --type-body-size: 17px;
-  --type-callout-size: 16px;
-  --type-subhead-size: 15px;
-  --type-footnote-size: 13px;
-  --type-caption-1-size: 12px;
-  --type-caption-2-size: 11px;
+  --type-large-title-size: 28px;
+  --type-title-1-size: 24px;
+  --type-title-2-size: 20px;
+  --type-title-3-size: 18px;
+  --type-headline-size: 16px;
+  --type-body-size: 14px;
+  --type-callout-size: 14px;
+  --type-subhead-size: 13px;
+  --type-footnote-size: 12px;
+  --type-caption-1-size: 11px;
+  --type-caption-2-size: 10px;
 }
 
-/* --- Dark Theme (Default) --- */
-:root[data-theme="dark"] {
-  --bg-base: #0a0a0a;
-  --bg-surface: #1c1c1e;
-  --bg-elevated: #2c2c2e;
-  --bg-grouped: #141416;
-
-  --text-primary: #f5f5f7;
-  --text-secondary: #98989d;
-  --text-tertiary: #636366;
-  --text-quaternary: #48484a;
-
-  --color-primary: #d4a574;
-  --color-primary-hover: #e0b589;
-  --color-primary-soft: rgba(212, 165, 116, 0.12);
-
-  --color-success: #30d158;
-  --color-warning: #ffd60a;
-  --color-danger: #ff453a;
-  --color-info: #64d2ff;
-
-  --separator: rgba(84, 84, 88, 0.65);
-  --separator-opaque: #38383a;
-
-  --material-thick: rgba(30, 30, 30, 0.85);
-  --material-thin: rgba(30, 30, 30, 0.55);
-  --material-ultra: rgba(30, 30, 30, 0.35);
-
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.08);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.16), 0 2px 4px rgba(0,0,0,0.08);
-  --shadow-lg: 0 12px 40px rgba(0,0,0,0.24), 0 4px 12px rgba(0,0,0,0.12);
-  --shadow-sheet: 0 -4px 32px rgba(0,0,0,0.30);
-}
-
-/* --- Light Theme --- */
+/* --- Light Theme (Default) --- */
 :root[data-theme="light"] {
-  --bg-base: #f5f5f7;
+  --bg-base: #f0f2f5;
   --bg-surface: #ffffff;
-  --bg-elevated: #f2f2f7;
-  --bg-grouped: #f2f2f7;
+  --bg-elevated: #f8f9fa;
+  --bg-grouped: #f0f2f5;
 
-  --text-primary: #1d1d1f;
-  --text-secondary: #6e6e73;
-  --text-tertiary: #aeaeb2;
-  --text-quaternary: #d1d1d6;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-tertiary: #9ca3af;
+  --text-quaternary: #d1d5db;
 
-  --color-primary: #b8895a;
-  --color-primary-hover: #a67a4e;
-  --color-primary-soft: rgba(184, 137, 90, 0.10);
+  --color-primary: #0067c5;
+  --color-primary-hover: #005ba1;
+  --color-primary-soft: rgba(0, 103, 197, 0.08);
 
-  --color-success: #34c759;
-  --color-warning: #ff9f0a;
-  --color-danger: #ff3b30;
-  --color-info: #007aff;
+  --color-success: #16a34a;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --color-info: #0284c7;
 
-  --separator: rgba(60, 60, 67, 0.29);
-  --separator-opaque: #c6c6c8;
+  --separator: #e5e7eb;
+  --separator-opaque: #d1d5db;
 
-  --material-thick: rgba(255, 255, 255, 0.85);
-  --material-thin: rgba(255, 255, 255, 0.55);
-  --material-ultra: rgba(255, 255, 255, 0.35);
+  --material-thick: rgba(255, 255, 255, 0.95);
+  --material-thin: rgba(255, 255, 255, 0.80);
+  --material-ultra: rgba(255, 255, 255, 0.60);
 
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
-  --shadow-lg: 0 12px 40px rgba(0,0,0,0.12), 0 4px 12px rgba(0,0,0,0.06);
-  --shadow-sheet: 0 -4px 32px rgba(0,0,0,0.15);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.08);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+  --shadow-sheet: 0 -2px 16px rgba(0,0,0,0.10);
+}
+
+/* --- Dark Theme --- */
+:root[data-theme="dark"] {
+  --bg-base: #121212;
+  --bg-surface: #1e1e1e;
+  --bg-elevated: #2a2a2a;
+  --bg-grouped: #161616;
+
+  --text-primary: #e5e7eb;
+  --text-secondary: #9ca3af;
+  --text-tertiary: #6b7280;
+  --text-quaternary: #4b5563;
+
+  --color-primary: #4da3ff;
+  --color-primary-hover: #7dbbff;
+  --color-primary-soft: rgba(77, 163, 255, 0.12);
+
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #f44336;
+  --color-info: #38bdf8;
+
+  --separator: #374151;
+  --separator-opaque: #4b5563;
+
+  --material-thick: rgba(30, 30, 30, 0.95);
+  --material-thin: rgba(30, 30, 30, 0.80);
+  --material-ultra: rgba(30, 30, 30, 0.60);
+
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.20);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.25);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.35);
+  --shadow-sheet: 0 -2px 16px rgba(0,0,0,0.30);
 }
 
 /* --- Responsive Typography --- */
 @media (max-width: 767px) {
   :root {
-    --type-large-title-size: 28px;
-    --type-title-1-size: 24px;
-    --type-title-2-size: 20px;
+    --type-large-title-size: 24px;
+    --type-title-1-size: 20px;
+    --type-title-2-size: 18px;
   }
 }
