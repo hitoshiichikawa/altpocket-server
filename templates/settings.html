@@ -1,13 +1,14 @@
 {{define "content"}}
 <section class="settings-shell">
-  <article class="card settings-card">
+  <article class="settings-card">
     <h1>Settings</h1>
-    <p class="muted">Manage your account preferences and external integrations.</p>
+    <p class="muted">Manage your account preferences and integrations.</p>
 
     {{if .NoticeMessage}}
       <div class="{{.NoticeClass}}">{{.NoticeMessage}}</div>
     {{end}}
 
+    <!-- Account -->
     <div class="settings-group">
       <h2>Account</h2>
       <div class="settings-row">
@@ -20,20 +21,37 @@
       </div>
     </div>
 
+    <!-- Appearance -->
+    <div class="settings-group">
+      <h2>Appearance</h2>
+      <div class="settings-row">
+        <span>Theme</span>
+        <div class="segmented-control" data-theme-toggle>
+          <input type="radio" id="theme-light" name="theme" value="light" checked>
+          <label for="theme-light">Light</label>
+          <input type="radio" id="theme-dark" name="theme" value="dark">
+          <label for="theme-dark">Dark</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- Google Sheets -->
     <div class="settings-group">
       <h2>Google Sheets Export</h2>
       {{if .GoogleSheetsConnected}}
         <div class="settings-row">
           <span>Status</span>
-          <strong>Connected</strong>
+          <strong style="color: var(--color-success);">Connected</strong>
         </div>
         {{if .GoogleSheetsSheetURL}}
         <div class="settings-row">
           <span>Current sheet</span>
-          <a href="{{.SheetURL}}" target="_blank" rel="noopener noreferrer">Open Sheet</a>
+          <a href="{{.SheetURL}}" target="_blank" rel="noopener noreferrer" class="btn-tertiary">Open Sheet &#x2197;</a>
         </div>
         {{else}}
-        <p class="muted">No spreadsheet created yet. Click export to create one.</p>
+        <div class="settings-row">
+          <span class="muted" style="margin:0">No spreadsheet created yet. Click export to create one.</span>
+        </div>
         {{end}}
       {{else}}
         <div class="settings-row">
@@ -50,7 +68,7 @@
           </form>
           <form method="post" action="/ui/settings/google/disconnect">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-            <button type="submit" class="btn-secondary">Disconnect Google</button>
+            <button type="submit" class="btn-danger">Disconnect Google</button>
           </form>
         {{else}}
           <form method="post" action="/ui/settings/google/connect">
@@ -60,6 +78,38 @@
         {{end}}
       </div>
     </div>
+
+    <!-- Tools -->
+    <div class="settings-group">
+      <h2>Tools</h2>
+      <div class="settings-row">
+        <span>Bookmarklet</span>
+        <span class="type-footnote" style="color: var(--text-tertiary);">Drag to bookmark bar</span>
+      </div>
+      <div class="settings-row">
+        <span>Keyboard shortcuts</span>
+        <button type="button" class="btn-tertiary" data-shortcuts-toggle>View shortcuts</button>
+      </div>
+    </div>
   </article>
 </section>
+
+<!-- Keyboard Shortcuts Dialog -->
+<div class="confirm-overlay shortcuts-overlay" id="shortcuts-overlay" aria-hidden="true">
+  <div class="confirm-dialog" style="max-width:440px; text-align:left;">
+    <h3>Keyboard Shortcuts</h3>
+    <dl class="shortcuts-dialog" style="display:grid; grid-template-columns:auto 1fr; gap:8px 16px; margin-top:16px;">
+      <dt><kbd>/</kbd></dt><dd>Search</dd>
+      <dt><kbd>n</kbd></dt><dd>Quick Add</dd>
+      <dt><kbd>j</kbd> / <kbd>k</kbd></dt><dd>Navigate items</dd>
+      <dt><kbd>o</kbd></dt><dd>Open item</dd>
+      <dt><kbd>e</kbd></dt><dd>Edit mode</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Close / Cancel</dd>
+      <dt><kbd>?</kbd></dt><dd>Show shortcuts</dd>
+    </dl>
+    <div style="margin-top:20px;">
+      <button type="button" class="btn-secondary" style="width:100%;" onclick="document.getElementById('shortcuts-overlay').classList.remove('open'); document.getElementById('shortcuts-overlay').setAttribute('aria-hidden','true');">Close</button>
+    </div>
+  </div>
+</div>
 {{end}}

@@ -645,11 +645,13 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Title":          "記事一覧",
 		"User":           user,
+		"ActiveNav":      "items",
 		"Items":          items,
 		"Tags":           tags,
 		"SelectedTags":   selectedTagSet(tagFilters),
 		"Page":           pag.Page,
 		"PerPage":        pag.PerPage,
+		"Total":          pag.Total,
 		"TotalPages":     max(1, (pag.Total+pag.PerPage-1)/pag.PerPage),
 		"Query":          q,
 		"Sort":           defaultSort(sort),
@@ -684,6 +686,7 @@ func (s *Server) handleUIItem(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Title":     pageTitle,
 		"User":      user,
+		"ActiveNav": "items",
 		"Item":      item,
 		"CSRFToken": s.csrfFromContext(r.Context()),
 	}
@@ -723,6 +726,7 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 	data := map[string]interface{}{
 		"Title":                 "設定",
 		"User":                  user,
+		"ActiveNav":             "settings",
 		"CSRFToken":             s.csrfFromContext(r.Context()),
 		"GoogleSheetsConnected": connected,
 		"GoogleSheetsSheetURL":  googleSheetURL(conn.SpreadsheetID),
@@ -992,6 +996,7 @@ func (s *Server) renderUIQuickAdd(w http.ResponseWriter, r *http.Request, status
 	data := map[string]interface{}{
 		"Title":          "クイック追加",
 		"User":           user,
+		"ActiveNav":      "quick-add",
 		"CSRFToken":      s.csrfFromContext(r.Context()),
 		"URL":            urlValue,
 		"SourceTitle":    titleValue,

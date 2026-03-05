@@ -1,29 +1,29 @@
 :root[data-theme="dark"] {
-  --bg-base: #0a0a0a;
-  --bg-surface: #141414;
-  --bg-elevated: #1e1e1e;
-  --text-primary: #e8e8e8;
-  --text-secondary: #9aa0a8;
-  --text-muted: #6b7078;
-  --border-default: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --accent: #d4a574;
-  --accent-soft: rgba(212, 165, 116, 0.14);
-  --danger: #d45c5c;
-  --ok: #6bc490;
+  --bg-base: #121212;
+  --bg-surface: #1e1e1e;
+  --bg-elevated: #2a2a2a;
+  --text-primary: #e5e7eb;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --border-default: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --accent: #4da3ff;
+  --accent-soft: rgba(77, 163, 255, 0.14);
+  --danger: #ef4444;
+  --ok: #22c55e;
 }
 
 :root[data-theme="light"] {
-  --bg-base: #f7f8fc;
+  --bg-base: #f0f2f5;
   --bg-surface: #ffffff;
-  --bg-elevated: #ffffff;
-  --text-primary: #1c2230;
-  --text-secondary: #4a5568;
-  --text-muted: #7b8794;
-  --border-default: rgba(0, 0, 0, 0.08);
-  --border-strong: rgba(0, 0, 0, 0.16);
-  --accent: #b8895a;
-  --accent-soft: rgba(184, 137, 90, 0.12);
+  --bg-elevated: #f8f9fa;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-muted: #6b7280;
+  --border-default: rgba(0, 0, 0, 0.10);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --accent: #0067c5;
+  --accent-soft: rgba(0, 103, 197, 0.10);
   --danger: #dc2626;
   --ok: #16a34a;
 }
@@ -46,7 +46,7 @@ body.reader-body {
 
 body.reader-body {
   padding: 10px;
-  font-family: "Inter", "Noto Sans JP", "Hiragino Kaku Gothic ProN", sans-serif;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
   color: var(--text-primary);
   background: var(--bg-base);
 }
@@ -72,7 +72,7 @@ body.reader-body[data-screen="login"] .reader-shell {
 
 .login-btn {
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: 3px;
   background: transparent;
   color: var(--text-primary);
   font: inherit;
@@ -167,7 +167,7 @@ body.reader-body[data-screen="login"] .reader-shell {
 .save-panel {
   border: 1px solid var(--border-default);
   background: var(--bg-surface);
-  border-radius: 12px;
+  border-radius: 3px;
   padding: 10px;
   display: grid;
   gap: 8px;
@@ -176,12 +176,12 @@ body.reader-body[data-screen="login"] .reader-shell {
 .save-btn {
   width: 100%;
   border: 1px solid var(--accent);
-  border-radius: 9px;
+  border-radius: 3px;
   background: var(--accent);
   color: #fff;
   font: inherit;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   padding: 9px 10px;
   cursor: pointer;
 }
@@ -209,7 +209,7 @@ body.reader-body[data-screen="login"] .reader-shell {
 
 .tag-input {
   width: 100%;
-  border-radius: 9px;
+  border-radius: 3px;
   border: 1px solid var(--border-default);
   background: var(--bg-elevated);
   color: var(--text-primary);
@@ -234,7 +234,7 @@ body.reader-body[data-screen="login"] .reader-shell {
 .suggestions button {
   width: 100%;
   text-align: left;
-  border-radius: 8px;
+  border-radius: 3px;
   border: 1px solid var(--border-default);
   background: var(--bg-elevated);
   color: var(--text-primary);
@@ -261,10 +261,10 @@ body.reader-body[data-screen="login"] .reader-shell {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border-radius: 999px;
+  border-radius: 2px;
   border: 1px solid var(--border-default);
-  background: var(--accent-soft);
-  color: var(--text-primary);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
   padding: 3px 10px;
   font-size: 12px;
 }
@@ -288,7 +288,7 @@ body.reader-body[data-screen="login"] .reader-shell {
 .search-panel {
   border: 1px solid var(--border-default);
   background: var(--bg-surface);
-  border-radius: 12px;
+  border-radius: 3px;
   padding: 10px;
   display: grid;
   gap: 6px;
@@ -303,7 +303,7 @@ body.reader-body[data-screen="login"] .reader-shell {
 
 .search-input {
   width: 100%;
-  border-radius: 9px;
+  border-radius: 3px;
   border: 1px solid var(--border-default);
   background: var(--bg-elevated);
   color: var(--text-primary);
@@ -326,7 +326,7 @@ body.reader-body[data-screen="login"] .reader-shell {
 
 .list-panel {
   border: 1px solid var(--border-default);
-  border-radius: 12px;
+  border-radius: 3px;
   background: var(--bg-surface);
   overflow: hidden;
   display: flex;
@@ -367,7 +367,7 @@ body.reader-body[data-screen="login"] .reader-shell {
 
 .item-card {
   border: 1px solid var(--border-default);
-  border-radius: 10px;
+  border-radius: 2px;
   background: rgba(255, 255, 255, 0.01);
   padding: 10px;
   display: grid;
@@ -402,10 +402,10 @@ body.reader-body[data-screen="login"] .reader-shell {
 
 .tag {
   border: 1px solid var(--border-default);
-  border-radius: 999px;
+  border-radius: 2px;
   padding: 2px 8px;
   color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-elevated);
   font-size: 11px;
 }
 
@@ -416,12 +416,12 @@ body.reader-body[data-screen="login"] .reader-shell {
 
 .show-original {
   border: 1px solid var(--accent);
-  border-radius: 9px;
+  border-radius: 3px;
   background: transparent;
   color: var(--accent);
   text-decoration: none;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   padding: 6px 10px;
 }
 

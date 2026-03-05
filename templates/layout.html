@@ -1,13 +1,15 @@
 {{define "layout"}}
 <!DOCTYPE html>
-<html lang="ja" data-theme="dark">
+<html lang="ja" data-theme="light">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#0a0a0a">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f0f2f5" media="(prefers-color-scheme: light)">
   <meta name="csrf-token" content="{{.CSRFToken}}">
   <title>{{.Title}} | altpocket</title>
   <link rel="manifest" href="/manifest.webmanifest?v={{assetVersion}}">
+  <script>try{var t=localStorage.getItem('altpocket-theme');if(t)document.documentElement.setAttribute('data-theme',t)}catch(e){}</script>
   <link rel="stylesheet" href="/static/theme.css?v={{assetVersion}}">
   <link rel="stylesheet" href="/static/style.css?v={{assetVersion}}">
 </head>
@@ -15,15 +17,22 @@
   <header class="topbar">
     <div class="topbar-inner">
       {{if .User}}
+        <button type="button" class="hamburger-btn" aria-label="Open navigation" data-nav-toggle>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <line x1="3" y1="5" x2="17" y2="5"/>
+            <line x1="3" y1="10" x2="17" y2="10"/>
+            <line x1="3" y1="15" x2="17" y2="15"/>
+          </svg>
+        </button>
         <a class="brand" href="/ui/items">altpocket</a>
         <nav class="topnav" aria-label="Primary">
-          <a href="/ui/items">Items</a>
-          <a href="/ui/quick-add">Quick Add</a>
+          <a href="/ui/items" {{if eq .ActiveNav "items"}}aria-current="page"{{end}}>Library</a>
+          <a href="/ui/quick-add" {{if eq .ActiveNav "quick-add"}}aria-current="page"{{end}}>Quick Add</a>
         </nav>
         <div class="account-menu" data-account-menu>
           <button type="button" class="account-menu-trigger" aria-haspopup="menu" aria-expanded="false">
             <span class="account-menu-name">{{if .User.Name}}{{.User.Name}}{{else}}{{.User.Email}}{{end}}</span>
-            <span class="account-menu-caret" aria-hidden="true">▾</span>
+            <span class="account-menu-caret" aria-hidden="true">&#x25BE;</span>
           </button>
           <div class="account-menu-panel" role="menu">
             <a href="/ui/settings" role="menuitem">Settings</a>
@@ -39,7 +48,43 @@
     </div>
   </header>
 
-  <main class="page-container">
+  {{if .User}}
+  <!-- Mobile Slide-over Navigation -->
+  <div class="nav-overlay" data-nav-overlay aria-hidden="true">
+    <nav class="nav-drawer" aria-label="Mobile navigation">
+      <div class="nav-drawer-brand">altpocket</div>
+      <div class="nav-drawer-links">
+        <a href="/ui/items" {{if eq .ActiveNav "items"}}aria-current="page"{{end}}>Library</a>
+        <a href="/ui/quick-add" {{if eq .ActiveNav "quick-add"}}aria-current="page"{{end}}>Quick Add</a>
+      </div>
+      <div class="nav-drawer-separator"></div>
+      <div class="nav-drawer-links">
+        <a href="/ui/settings" {{if eq .ActiveNav "settings"}}aria-current="page"{{end}}>Settings</a>
+      </div>
+      <div class="nav-drawer-footer">
+        <div class="nav-drawer-user-name">{{if .User.Name}}{{.User.Name}}{{else}}{{.User.Email}}{{end}}</div>
+        <div class="nav-drawer-user-email">{{.User.Email}}</div>
+      </div>
+    </nav>
+  </div>
+  {{end}}
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <!-- Confirmation Dialog -->
+  <div class="confirm-overlay" id="confirm-overlay" aria-hidden="true">
+    <div class="confirm-dialog" role="alertdialog" aria-labelledby="confirm-title" aria-describedby="confirm-desc">
+      <h3 id="confirm-title"></h3>
+      <p id="confirm-desc"></p>
+      <div class="confirm-dialog-actions">
+        <button type="button" id="confirm-action" class="btn-danger"></button>
+        <button type="button" id="confirm-cancel" class="btn-secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <main class="page-container page-enter">
     {{template "content" .}}
   </main>
 

@@ -1,48 +1,72 @@
 {{define "content"}}
 <section class="detail-layout">
+  <a class="detail-back" href="/ui/items">&#x2190; Library</a>
+
   <article class="card detail-card">
-    <header class="detail-header">
-      <h1 id="detail-title">{{.Item.Title}}</h1>
-      <input id="detail-title-input" class="input detail-title-input" type="text" value="{{.Item.Title}}" hidden>
+    <header>
+      <div class="detail-header">
+        <div>
+          <h1 id="detail-title">{{.Item.Title}}</h1>
+          <input id="detail-title-input" class="input detail-title-input" type="text" value="{{.Item.Title}}" hidden aria-label="Edit title">
+        </div>
+        <div class="detail-header-actions" id="detail-header-actions">
+          <button type="button" class="btn-secondary edit-tags" data-item-id="{{.Item.ID}}">Edit</button>
+          <div class="action-menu" data-action-menu>
+            <button type="button" class="btn-icon" aria-haspopup="menu" aria-expanded="false" aria-label="More actions" data-action-menu-trigger>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>
+            </button>
+            <div class="action-menu-panel" role="menu">
+              <button type="button" class="refetch" data-item-id="{{.Item.ID}}" role="menuitem">Refetch article</button>
+              <a href="{{.Item.URL}}" target="_blank" rel="noopener noreferrer" role="menuitem">Open original</a>
+              <button type="button" class="danger-item delete" data-item-id="{{.Item.ID}}" role="menuitem">Delete</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="detail-meta">
-        <a class="btn-secondary" href="{{.Item.URL}}" target="_blank" rel="noopener noreferrer">Open original</a>
-        <span class="status-pill">{{.Item.FetchStatus}}</span>
+        <a href="{{.Item.URL}}" target="_blank" rel="noopener noreferrer">{{.Item.URL}}</a>
+        <span>&middot;</span>
         <span>{{.Item.CreatedAt.Format "2006-01-02 15:04"}}</span>
+        <span>&middot;</span>
+        <span class="status-pill" data-status="{{.Item.FetchStatus}}" role="status" aria-label="Fetch status: {{.Item.FetchStatus}}">{{.Item.FetchStatus}}</span>
       </div>
     </header>
 
     {{if .Item.FetchError}}
-      <div class="error">{{.Item.FetchError}}</div>
+      <div class="error" style="margin-top: var(--space-4);">{{.Item.FetchError}}</div>
     {{end}}
 
     <div class="tag-editor" id="detail-tag-editor" data-item-id="{{.Item.ID}}">
-      <div id="detail-tag-chips" class="tags">
+      <div id="detail-tag-chips" class="tags" role="list" aria-label="Current tags">
         {{range .Item.Tags}}
-          <span class="tag">{{.Name}}</span>
+          <span class="tag" role="listitem">{{.Name}}</span>
         {{end}}
       </div>
-      <input id="detail-tag-input" class="input" type="text" autocomplete="off" placeholder="Type tag then press Enter or comma" hidden>
-      <ul id="detail-tag-suggestions" class="tag-editor-dropdown" hidden></ul>
+      <input id="detail-tag-input" class="input" type="text" autocomplete="off" placeholder="Type tag then press Enter or comma" hidden role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="detail-tag-suggestions" aria-label="Add tag">
+      <ul id="detail-tag-suggestions" class="tag-editor-dropdown" role="listbox" aria-label="Tag suggestions" hidden></ul>
       <div class="tag-editor-actions" id="detail-tag-actions" hidden>
         <button type="button" id="detail-tag-save" class="btn-primary">Save</button>
         <button type="button" id="detail-tag-cancel" class="btn-secondary">Cancel</button>
       </div>
     </div>
-
-    <div class="item-actions">
-      <button type="button" class="btn-secondary edit-tags" data-item-id="{{.Item.ID}}">Edit</button>
-      <button type="button" class="btn-secondary refetch" data-item-id="{{.Item.ID}}">Refetch</button>
-      <button type="button" class="btn-secondary delete" data-item-id="{{.Item.ID}}">Delete</button>
-      <a class="btn-secondary" href="/ui/items">Back</a>
-    </div>
   </article>
 
   <article class="card article-card">
     {{if .Item.ContentFull}}
-      <pre>{{.Item.ContentFull}}</pre>
+      <div class="reader-content">
+        <pre>{{.Item.ContentFull}}</pre>
+      </div>
     {{else}}
-      <div class="empty-state">Content not fetched yet.</div>
+      <div class="empty-state">
+        <div class="empty-state-title">Content not fetched yet</div>
+        <p class="empty-state-desc">The article content is being fetched. Try refreshing or use Refetch.</p>
+      </div>
     {{end}}
   </article>
+
+  <div class="detail-footer">
+    <a class="btn-secondary" href="{{.Item.URL}}" target="_blank" rel="noopener noreferrer">Open original &#x2197;</a>
+  </div>
 </section>
 {{end}}
