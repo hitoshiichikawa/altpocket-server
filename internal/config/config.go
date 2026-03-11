@@ -92,3 +92,14 @@ func getEnvInt(key string, fallback int) int {
 func SessionTTL() time.Duration {
 	return 7 * 24 * time.Hour
 }
+
+// ExtensionJWTTTL is the lifetime of short-lived JWTs issued for the Chrome extension.
+func ExtensionJWTTTL() time.Duration {
+	return 1 * time.Hour
+}
+
+// ExtensionRefreshTokenTTL is the sliding-window lifetime of extension refresh tokens.
+// The expiration is extended by this duration on each use.
+func ExtensionRefreshTokenTTL() time.Duration {
+	return 30 * 24 * time.Hour
+}

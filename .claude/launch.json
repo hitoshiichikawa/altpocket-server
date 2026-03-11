@@ -1,0 +1,20 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "DATABASE_URL=postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable",
+        "SESSION_SECRET=dev-secret",
+        "JWT_SECRET=dev-jwt-secret",
+        "GOOGLE_WEB_CLIENT_ID=dummy",
+        "GOOGLE_EXT_CLIENT_ID=dummy",
+        "GOOGLE_CLIENT_SECRET=dummy",
+        "PUBLIC_BASE_URL=http://localhost:8080",
+        "go", "run", "./cmd/api"
+      ],
+      "port": 8080
+    }
+  ]
+}

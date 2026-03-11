@@ -46,6 +46,7 @@ func main() {
 		select {
 		case <-ticker.C:
 			cleanupSessions(ctx, st, log)
+			cleanupRefreshTokens(ctx, st, log)
 			runOnce(ctx, st, f, log)
 		case <-done:
 			log.Info("worker_shutdown")
@@ -62,6 +63,17 @@ func cleanupSessions(ctx context.Context, st *store.Store, log *slog.Logger) {
 	}
 	if removed > 0 {
 		log.Info("session_cleanup", "removed", removed)
+	}
+}
+
+func cleanupRefreshTokens(ctx context.Context, st *store.Store, log *slog.Logger) {
+	removed, err := st.CleanupExpiredExtensionRefreshTokens(ctx)
+	if err != nil {
+		log.Error("refresh_token_cleanup_failed", "error", err)
+		return
+	}
+	if removed > 0 {
+		log.Info("refresh_token_cleanup", "removed", removed)
 	}
 }
 

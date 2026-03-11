@@ -538,10 +538,14 @@ test('save current tab posts item with prefill and sends async capture for newly
   assert.equal(env.elements.utilityStatus.classList.contains('is-success'), true);
 });
 
-test('401 during items fetch logs out and returns to login screen', async () => {
+test('401 during items fetch with failed refresh logs out and returns to login screen', async () => {
   const env = await loadSidepanelScript({
     storageData: { token: 'expired-token', refresh_token: 'r1', keep: 'ok' },
-    fetchHandlers: [jsonResponse(401, { error: 'unauthorized' })],
+    fetchHandlers: [
+      jsonResponse(401, { error: 'unauthorized' }),
+      // Refresh attempt also fails (expired refresh token).
+      jsonResponse(401, { error: 'invalid_token' }),
+    ],
   });
 
   await flushMicrotasks();
@@ -553,7 +557,34 @@ test('401 during items fetch logs out and returns to login screen', async () => 
   assert.equal(env.storageData.keep, 'ok');
 });
 
-test('manual sign-out clears all token-like keys and returns to login-only screen', async () => {
+test('401 during items fetch with successful refresh retries and stays on reader screen', async () => {
+  const env = await loadSidepanelScript({
+    storageData: { token: 'expired-token', refresh_token: 'valid-refresh' },
+    fetchHandlers: [
+      // First items fetch returns 401.
+      jsonResponse(401, { error: 'unauthorized' }),
+      // Refresh succeeds with a new token.
+      jsonResponse(200, { token: 'new-jwt-token', expires_in: 3600 }),
+      // Retry items fetch succeeds.
+      jsonResponse(200, { items: [], pagination: { total: 0 } }),
+    ],
+  });
+
+  await flushMicrotasks();
+
+  assert.equal(env.document.body.dataset.screen, 'reader');
+  // The refresh call was made.
+  assert.equal(env.fetchCalls.length, 3);
+  assert.equal(env.fetchCalls[1].url, 'https://api.example.test/v1/auth/extension/refresh');
+  const refreshPayload = JSON.parse(env.fetchCalls[1].options.body);
+  assert.equal(refreshPayload.refresh_token, 'valid-refresh');
+  // The retry used the new token.
+  assert.equal(env.fetchCalls[2].options.headers.Authorization, 'Bearer new-jwt-token');
+  // Storage was updated with new token.
+  assert.equal(env.storageSetCalls.some((c) => c.token === 'new-jwt-token'), true);
+});
+
+test('manual sign-out revokes refresh token on server and clears all token-like keys', async () => {
   const env = await loadSidepanelScript({
     storageData: {
       token: 'stored-token',
@@ -561,19 +592,46 @@ test('manual sign-out clears all token-like keys and returns to login-only scree
       sessionToken: 'session-like',
       keep: 'safe',
     },
-    fetchHandlers: [jsonResponse(200, { items: [], pagination: { total: 0 } })],
+    fetchHandlers: [
+      jsonResponse(200, { items: [], pagination: { total: 0 } }),
+      // Server-side refresh token revocation (logout endpoint).
+      jsonResponse(204, ''),
+    ],
   });
 
   await env.elements.signOut.click();
   await flushMicrotasks();
 
   assert.equal(env.document.body.dataset.screen, 'login');
+  // Verify the logout endpoint was called with the refresh token.
+  const logoutCall = env.fetchCalls.find((c) => c.url.includes('/v1/auth/extension/logout'));
+  assert.ok(logoutCall, 'logout endpoint should be called');
+  const logoutPayload = JSON.parse(logoutCall.options.body);
+  assert.equal(logoutPayload.refresh_token, 'refresh');
+  // Verify storage cleanup.
   assert.equal(env.storageRemoveCalls.length, 1);
   assert.equal(env.storageRemoveCalls[0].includes('token'), true);
   assert.equal(env.storageRemoveCalls[0].includes('refresh_token'), true);
   assert.equal(env.storageRemoveCalls[0].includes('sessionToken'), true);
   assert.equal(env.storageData.keep, 'safe');
   assert.equal(env.clearAuthTokenCalls.length, 1);
+});
+
+test('login stores refresh_token from exchange response', async () => {
+  const env = await loadSidepanelScript({
+    fetchHandlers: [
+      jsonResponse(200, { token: 'jwt-token', refresh_token: 'new-refresh', expires_in: 3600 }),
+      jsonResponse(200, { items: [], pagination: { total: 0 } }),
+    ],
+  });
+
+  await env.elements.login.click();
+  await flushMicrotasks();
+
+  assert.equal(env.document.body.dataset.screen, 'reader');
+  assert.equal(env.storageSetCalls.length, 1);
+  assert.equal(env.storageSetCalls[0].token, 'jwt-token');
+  assert.equal(env.storageSetCalls[0].refresh_token, 'new-refresh');
 });
 
 test('init with token and missing API permission shows guidance and skips list fetch', async () => {
