@@ -19,6 +19,7 @@ const itemListEl = document.getElementById('itemList');
 
 const appState = {
   token: '',
+  refreshToken: '',
   tags: [],
   searchTimer: null,
   lastFetchID: 0,
@@ -220,7 +221,31 @@ async function clearStoredToken() {
   }
 }
 
-function createExtensionAPIClient({ getToken, onAuthFailure }) {
+function createExtensionAPIClient({ getToken, getRefreshToken, onTokenRefreshed, onAuthFailure }) {
+  let refreshPromise = null;
+
+  async function tryRefresh(apiBase) {
+    const rt = getRefreshToken();
+    if (!rt) return false;
+    try {
+      const res = await fetch(`${apiBase}/v1/auth/extension/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: rt }),
+      });
+      if (!res.ok) return false;
+      const text = await res.text();
+      let body;
+      try { body = JSON.parse(text); } catch { return false; }
+      const newToken = typeof body?.token === 'string' ? body.token.trim() : '';
+      if (newToken === '') return false;
+      await onTokenRefreshed(newToken);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function requestJSON(url, options = {}, requestOptions = {}) {
     const { auth = true, authFailure = true } = requestOptions;
     const headers = options.headers ? { ...options.headers } : {};
@@ -242,6 +267,32 @@ function createExtensionAPIClient({ getToken, onAuthFailure }) {
         data: null,
         networkError,
       };
+    }
+
+    // On 401, attempt a transparent token refresh and retry once.
+    if (res.status === 401 && auth && authFailure) {
+      const apiBase = getConfiguredAPIBase();
+      if (apiBase) {
+        if (!refreshPromise) {
+          refreshPromise = tryRefresh(apiBase).finally(() => {
+            refreshPromise = null;
+          });
+        }
+        const refreshed = await refreshPromise;
+        if (refreshed) {
+          // Retry with the new token.
+          const retryHeaders = options.headers ? { ...options.headers } : {};
+          const newToken = getToken();
+          if (newToken) {
+            retryHeaders.Authorization = `Bearer ${newToken}`;
+          }
+          try {
+            res = await fetch(url, { ...options, headers: retryHeaders });
+          } catch (networkError) {
+            return { ok: false, status: 0, data: null, networkError };
+          }
+        }
+      }
     }
 
     const { data } = await readResponseBody(res);
@@ -266,6 +317,18 @@ function createExtensionAPIClient({ getToken, onAuthFailure }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id_token: idToken }),
+        },
+        { auth: false, authFailure: false },
+      );
+    },
+
+    revokeRefreshToken(apiBase, refreshToken) {
+      return requestJSON(
+        `${apiBase}/v1/auth/extension/logout`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken }),
         },
         { auth: false, authFailure: false },
       );
@@ -749,8 +812,12 @@ async function login() {
       return;
     }
 
+    const exchangedRefresh = typeof exchange.data?.refresh_token === 'string' ? exchange.data.refresh_token.trim() : '';
     appState.token = exchangedToken;
-    await chrome.storage.local.set({ token: appState.token });
+    appState.refreshToken = exchangedRefresh;
+    const storagePayload = { token: appState.token };
+    if (exchangedRefresh) storagePayload.refresh_token = exchangedRefresh;
+    await chrome.storage.local.set(storagePayload);
     showReaderScreen();
     await fetchItems('');
   } catch {
@@ -769,7 +836,15 @@ async function logout(options = {}) {
   if (signOutBtn) signOutBtn.disabled = true;
 
   try {
+    // Revoke refresh token on the server (best-effort).
+    const apiBase = getConfiguredAPIBase();
+    const rt = appState.refreshToken;
+    if (apiBase && rt) {
+      await apiClient.revokeRefreshToken(apiBase, rt).catch(() => {});
+    }
+
     await clearStoredToken();
+    appState.refreshToken = '';
     if (chrome.identity && typeof chrome.identity.clearAllCachedAuthTokens === 'function') {
       await chrome.identity.clearAllCachedAuthTokens();
     }
@@ -788,6 +863,14 @@ async function handleAuthFailure() {
 
 const apiClient = createExtensionAPIClient({
   getToken: () => getSessionToken(),
+  getRefreshToken: () => {
+    if (typeof appState.refreshToken !== 'string') return '';
+    return appState.refreshToken.trim();
+  },
+  onTokenRefreshed: async (newToken) => {
+    appState.token = newToken;
+    await chrome.storage.local.set({ token: newToken });
+  },
   onAuthFailure: handleAuthFailure,
 });
 
@@ -849,10 +932,12 @@ if (searchInputEl) {
 
 (async () => {
   try {
-    const data = await chrome.storage.local.get(['token']);
+    const data = await chrome.storage.local.get(['token', 'refresh_token']);
     const storedToken = typeof data?.token === 'string' ? data.token.trim() : '';
+    const storedRefresh = typeof data?.refresh_token === 'string' ? data.refresh_token.trim() : '';
     if (storedToken !== '') {
       appState.token = storedToken;
+      appState.refreshToken = storedRefresh;
       showReaderScreen();
       await fetchItems('');
       return;
