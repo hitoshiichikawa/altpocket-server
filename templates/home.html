@@ -1,16 +1,135 @@
 {{define "content"}}
-<section class="auth-shell">
-  <article class="card auth-card">
-    <div class="auth-brand">altpocket</div>
-    <p class="auth-eyebrow">Read-it-later for engineers</p>
-    <h1>Save it. Read it. Know it.</h1>
-    <p class="auth-tagline">Sign in with Google to start saving pages, tagging resources, and searching across your private knowledge base.</p>
-
-    <div class="auth-actions">
-      <a class="btn-primary" href="/v1/auth/google/login">Sign in with Google</a>
-      <a class="btn-secondary" href="/register">Create an account</a>
+<!-- Hero Section -->
+<section class="lp-hero">
+  <div class="lp-container">
+    <p class="lp-hero-eyebrow">Read-it-later for engineers</p>
+    <h1 class="lp-hero-title">Save it. Read it.<br>Know it.</h1>
+    <p class="lp-hero-desc">Web page saving, tagging, full-text search.<br>Your personal knowledge base, built for engineers.</p>
+    <div class="lp-hero-actions">
+      {{if .User}}
+        <a class="btn-primary" href="/ui/items">Go to Library</a>
+      {{else}}
+        <a class="btn-primary" href="/v1/auth/google/login">Sign in with Google</a>
+        <a class="btn-secondary" href="/register">Create an account</a>
+      {{end}}
     </div>
-    <p class="auth-legal">By continuing, you agree to our Terms.</p>
-  </article>
+  </div>
 </section>
+
+<!-- Features Section -->
+<section class="lp-section">
+  <div class="lp-container">
+    <h2 class="lp-section-title">Features</h2>
+    <div class="lp-features">
+      <article class="lp-feature-card">
+        <div class="lp-feature-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+          </svg>
+        </div>
+        <h3>One-click Save</h3>
+        <p>Save any web page instantly with Chrome extension or Quick Add. Never lose important articles again.</p>
+      </article>
+      <article class="lp-feature-card">
+        <div class="lp-feature-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/>
+          </svg>
+        </div>
+        <h3>Smart Tagging</h3>
+        <p>Organize your library with tags. Quickly categorize and filter content to find exactly what you need.</p>
+      </article>
+      <article class="lp-feature-card">
+        <div class="lp-feature-icon">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </div>
+        <h3>Full-text Search</h3>
+        <p>Search across all your saved pages instantly. Find that one article from months ago in seconds.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- How it works Section -->
+<section class="lp-section lp-section--alt">
+  <div class="lp-container">
+    <h2 class="lp-section-title">How it works</h2>
+    <div class="lp-steps">
+      <div class="lp-step">
+        <div class="lp-step-number">1</div>
+        <h3>Save</h3>
+        <p>Use the Chrome extension or paste a URL to save web pages to your personal library.</p>
+      </div>
+      <div class="lp-step-arrow" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+        </svg>
+      </div>
+      <div class="lp-step">
+        <div class="lp-step-number">2</div>
+        <h3>Organize</h3>
+        <p>Add tags and categorize your saved content. Build your own knowledge structure.</p>
+      </div>
+      <div class="lp-step-arrow" aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+        </svg>
+      </div>
+      <div class="lp-step">
+        <div class="lp-step-number">3</div>
+        <h3>Discover</h3>
+        <p>Full-text search across all saved pages. Your knowledge is always at your fingertips.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Use cases Section -->
+<section class="lp-section">
+  <div class="lp-container">
+    <h2 class="lp-section-title">Built for engineers</h2>
+    <div class="lp-usecases">
+      <div class="lp-usecase">
+        <h3>Technical Research</h3>
+        <p>Save documentation, blog posts, and Stack Overflow answers for your current projects. Tag them by technology or project name.</p>
+      </div>
+      <div class="lp-usecase">
+        <h3>Learning & Growth</h3>
+        <p>Build a curated library of tutorials, conference talks, and best practices. Come back to them when you're ready to dive deeper.</p>
+      </div>
+      <div class="lp-usecase">
+        <h3>Team Knowledge</h3>
+        <p>Keep architecture decisions, design docs, and reference materials organized. Share your curated collection with your team.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA Section -->
+<section class="lp-section lp-cta">
+  <div class="lp-container">
+    <h2 class="lp-cta-title">Start building your knowledge base</h2>
+    <p class="lp-cta-desc">Free to use. Sign in with Google to get started.</p>
+    <div class="lp-hero-actions">
+      {{if .User}}
+        <a class="btn-primary" href="/ui/items">Go to Library</a>
+      {{else}}
+        <a class="btn-primary" href="/v1/auth/google/login">Sign in with Google</a>
+      {{end}}
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="lp-footer">
+  <div class="lp-container lp-footer-inner">
+    <div class="lp-footer-brand">altpocket</div>
+    <nav class="lp-footer-links">
+      <a href="https://www-ap.market-river.net/static/privacy.html" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+    </nav>
+    <p class="lp-footer-copy">&copy; 2026 altpocket. All rights reserved.</p>
+  </div>
+</footer>
 {{end}}

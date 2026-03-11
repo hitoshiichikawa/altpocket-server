@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,6 +124,8 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/auth/google/login", s.handleGoogleLogin)
 		r.Get("/auth/google/callback", s.handleGoogleCallback)
 		r.Post("/auth/extension/exchange", s.handleExtensionExchange)
+		r.Post("/auth/extension/refresh", s.handleExtensionRefresh)
+		r.Post("/auth/extension/logout", s.handleExtensionLogout)
 		r.Get("/tags", s.requireAuth(s.handleTags))
 
 		r.Route("/items", func(r chi.Router) {
@@ -171,12 +175,11 @@ func (s *Server) handleServiceWorker(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.webSession(r); ok {
-		http.Redirect(w, r, "/ui/items", http.StatusFound)
-		return
-	}
 	data := map[string]interface{}{
-		"Title": "ログイン",
+		"Title": "altpocket",
+	}
+	if _, user, ok := s.webSession(r); ok {
+		data["User"] = user
 	}
 	if err := s.renderer.Render(w, "home", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
@@ -352,16 +355,94 @@ func (s *Server) handleExtensionExchange(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	token, exp, err := auth.IssueJWT(s.cfg.JWTSecret, user.ID, 24*time.Hour)
+	token, exp, err := auth.IssueJWT(s.cfg.JWTSecret, user.ID, config.ExtensionJWTTTL())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token_error"})
 		return
+	}
+
+	// Issue a refresh token (opaque random string, stored hashed in DB).
+	rawRefresh, err := s.randomString(32)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token_error"})
+		return
+	}
+	refreshHash := hashToken(rawRefresh)
+	_, err = s.store.CreateExtensionRefreshToken(r.Context(), user.ID, refreshHash, config.ExtensionRefreshTokenTTL())
+	if err != nil {
+		s.logger.Error("auth.extension.exchange.refresh_token_create_failed",
+			slog.String("error", err.Error()))
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token_error"})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"token":         token,
+		"expires_in":    exp - time.Now().Unix(),
+		"refresh_token": rawRefresh,
+	})
+}
+
+func (s *Server) handleExtensionRefresh(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RefreshToken == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+
+	refreshHash := hashToken(req.RefreshToken)
+	rt, err := s.store.GetExtensionRefreshToken(r.Context(), refreshHash)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
+		return
+	}
+
+	// Issue a new short-lived JWT.
+	user, err := s.store.GetUserByID(r.Context(), rt.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
+		return
+	}
+
+	token, exp, err := auth.IssueJWT(s.cfg.JWTSecret, user.ID, config.ExtensionJWTTTL())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token_error"})
+		return
+	}
+
+	// Slide the refresh token expiration forward.
+	if err := s.store.TouchExtensionRefreshToken(r.Context(), rt.ID, config.ExtensionRefreshTokenTTL()); err != nil {
+		s.logger.Error("auth.extension.refresh.touch_failed",
+			slog.String("error", err.Error()))
+		// Non-fatal: the new JWT is already issued, so continue.
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"token":      token,
 		"expires_in": exp - time.Now().Unix(),
 	})
+}
+
+func (s *Server) handleExtensionLogout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.RefreshToken == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+		return
+	}
+
+	refreshHash := hashToken(req.RefreshToken)
+	_ = s.store.DeleteExtensionRefreshToken(r.Context(), refreshHash)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// hashToken returns the hex-encoded SHA-256 hash of a raw token string.
+func hashToken(raw string) string {
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
 }
 
 func (s *Server) handleTags(w http.ResponseWriter, r *http.Request) {
