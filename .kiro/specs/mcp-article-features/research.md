@@ -4,9 +4,9 @@
 - **Feature**: `mcp-article-features`
 - **Discovery Scope**: New Feature（MCP Server基盤の新規追加）
 - **Key Findings**:
-  - Go公式MCP SDK（`github.com/modelcontextprotocol/go-sdk` v1.4.1）が安定版として利用可能
+  - Go公式MCP SDK（`github.com/modelcontextprotocol/go-sdk` v1.4.1）が安定版として利用可能。Streamable HTTP transport内蔵
   - 既存の`internal/store`パッケージがListItems/GetItemDetail/ListTagsWithCountを提供しており、MCP toolハンドラーから直接再利用可能
-  - `GetUserByEmail`メソッドが未実装のため、MCP認証用に追加が必要
+  - 既存APIサーバーへのエンドポイント埋め込みが最もシンプルな構成（新規バイナリ/コンテナ不要）
 
 ## Research Log
 
@@ -17,8 +17,8 @@
   - 公式SDK: `github.com/modelcontextprotocol/go-sdk` v1.4.1（2026-03-13リリース）、MCP v2025-11-25仕様対応
   - コミュニティ版: `github.com/mark3labs/mcp-go` v0.46.0、広く使われているが非公式
   - 公式SDKは型安全なジェネリックハンドラー（`AddTool[In, Out]`）を提供し、入力スキーマをGoの構造体タグから自動生成
-  - stdioトランスポートは`mcp.StdioTransport{}`で簡潔に起動可能
-- **Implications**: 公式SDKを採用。長期メンテナンス性とGoの型安全性を最大限活用可能
+  - Streamable HTTP transportは`mcp.NewStreamableHTTPServer(server)`で生成し、`http.Handler`として利用可能
+- **Implications**: 公式SDKを採用。Streamable HTTP transportの`http.Handler`をchiルーターにマウント
 
 ### 既存Store層の再利用性分析
 - **Context**: MCP toolハンドラーが既存のDBアクセス層を再利用できるか
@@ -30,20 +30,32 @@
   - `GetUserByEmail`メソッドも未実装 → 追加が必要
 - **Implications**: 大部分は既存store関数の薄いラッパーで実装可能。新規追加は2メソッドのみ
 
-### MCP認証モデル
-- **Context**: stdioトランスポートでの認証方式の検討
+### MCP認証モデル（HTTP transport）
+- **Context**: インターネット経由でのMCPアクセスにおける認証方式の検討
 - **Findings**:
-  - stdioはローカルプロセス間通信であり、ネットワーク認証は不要
-  - ユーザーの特定は環境変数`MCP_USER_EMAIL`で行い、起動時にDB照合してuserIDを確定する方式が最適
-  - 既存の`config.Load()`はAPIサーバー向けのmustEnvが多く、MCP用には別のconfig関数が必要
-- **Implications**: MCP専用の軽量config（DATABASE_URL + MCP_USER_EMAIL）を用意
+  - Streamable HTTP transportではネットワーク認証が必須
+  - Bearer Token（APIキー）方式が最もシンプルで、MCPクライアントのHTTPヘッダー設定と相性が良い
+  - `MCP_API_KEY`環境変数でトークンを管理し、`MCP_USER_EMAIL`でデータスコープを特定
+  - 両環境変数が未設定の場合はMCPエンドポイント自体を無効化（既存APIに影響なし）
+  - 既存の`config.Load()`に`MCPConfig`を追加する形で統合可能
+- **Implications**: chiミドルウェアでBearer Token検証を行い、認証済みリクエストのみMCP SDKに転送
+
+### トランスポート方式の比較
+- **Context**: stdio vs HTTP (Streamable HTTP) の選択
+- **Findings**:
+  - stdio: MCPクライアントがサブプロセスとして起動。ローカル実行が前提。DB接続URLをクライアント側に配置する必要あり
+  - Streamable HTTP: HTTPエンドポイントとして公開。リモートアクセス可能。既存APIサーバーに統合可能
+  - セルフホスト環境ではMCPクライアント（Claude Desktop等）とサーバーが別マシンの場合が一般的
+  - Streamable HTTPは公式SDKの`StreamableHTTPServer`で`http.Handler`を生成でき、chiルーターにマウント可能
+- **Implications**: Streamable HTTP transportを採用。既存APIサーバーの`/mcp`パスにマウント
 
 ## Architecture Pattern Evaluation
 
 | Option | Description | Strengths | Risks / Limitations | Notes |
 |--------|-------------|-----------|---------------------|-------|
-| 独立バイナリ（cmd/mcp） | 既存api/workerと同列の第3エントリーポイント | 既存パターンとの一貫性、既存store層を直接共有 | バイナリが増える | 既存のcmd/api, cmd/worker構成に自然に適合 |
-| APIサーバーへのMCPエンドポイント追加 | 既存HTTPサーバーにMCP over SSEを追加 | バイナリ数が増えない | HTTP認証が必要、stdioと非互換 | MCPクライアントの標準接続方式と合わない |
+| 既存APIサーバーへの埋め込み | chiルーターに/mcpパスとしてマウント | 新規バイナリ/コンテナ不要、既存インフラ活用、デプロイ変更なし | APIサーバーの責務が増える | **採用**: 最もシンプルかつ運用コスト最小 |
+| 独立バイナリ（cmd/mcp） | 第3エントリーポイント | 関心の分離 | 新規Dockerサービス必要、ポート管理、認証の二重管理 | HTTPの場合はメリット薄い |
+| 独立HTTPサーバー（別ポート） | 別プロセスでMCP専用サーバー | 完全な分離 | Docker Composeの変更、リバースプロキシ設定追加 | 過剰な分離 |
 
 ## Design Decisions
 
@@ -58,22 +70,29 @@
 - **Trade-offs**: mark3labs/mcp-goの方がコミュニティ事例が多いが、公式SDKの方が仕様追従が確実
 - **Follow-up**: go.modへの依存追加、最新バージョン互換性の確認
 
-### Decision: 独立バイナリ（cmd/mcp）としての配置
-- **Context**: MCP Serverの実行形態
-- **Selected Approach**: `cmd/mcp/main.go`として独立バイナリ化
-- **Rationale**: 既存の`cmd/api`・`cmd/worker`パターンとの一貫性。stdioトランスポートはプロセス起動型で、HTTPサーバーとは根本的に異なる
-- **Trade-offs**: Dockerイメージの追加が必要だが、構造の明確さが勝る
+### Decision: 既存APIサーバーへのエンドポイント埋め込み
+- **Context**: MCP Serverの実行形態（方針修正: stdio→HTTP）
+- **Selected Approach**: 既存`cmd/api`の chiルーターに`/mcp`パスとしてマウント
+- **Rationale**: インターネット経由のアクセスが前提。既存APIサーバーに埋め込むことで、新規バイナリ・Dockerサービス・リバースプロキシ設定が不要。デプロイフローの変更もなし
+- **Trade-offs**: APIサーバーの責務が若干増えるが、MCPハンドラーは`internal/mcp`パッケージに分離されており影響は限定的
 
-### Decision: 環境変数ベースのユーザー特定
-- **Context**: stdioトランスポートでの認証方式
-- **Selected Approach**: `MCP_USER_EMAIL`環境変数で対象ユーザーを指定し、起動時にDB照合
-- **Rationale**: stdioはローカルプロセスなのでネットワーク認証不要。MCPクライアント設定で環境変数を指定する形が最もシンプル
-- **Trade-offs**: マルチユーザー対応は不可だが、セルフホスト前提では十分
+### Decision: Bearer Token認証
+- **Context**: インターネット経由でのMCPアクセス認証方式
+- **Selected Approach**: `MCP_API_KEY`環境変数でAPIキーを管理し、`Authorization: Bearer <token>`ヘッダーで認証
+- **Rationale**: MCPクライアント（Claude Desktop等）はHTTPヘッダーの設定をサポートしており、最もシンプルな認証方式。OAuth等の複雑な認証フローは不要
+- **Trade-offs**: APIキーのローテーション機能は提供しない（環境変数の再設定で対応）
+
+### Decision: オプショナル有効化
+- **Context**: MCP機能が未設定の環境での振る舞い
+- **Selected Approach**: `MCP_API_KEY`・`MCP_USER_EMAIL`が未設定の場合はMCPエンドポイントを登録しない
+- **Rationale**: 既存ユーザーへの影響ゼロ。MCP機能を使わない場合は攻撃面も増えない
+- **Trade-offs**: なし（純粋なメリット）
 
 ## Risks & Mitigations
 - 公式SDKのAPIが今後変更される可能性 → v1安定版を使用し、go.sumでバージョン固定
-- 過去24h記事が大量の場合のレスポンスサイズ → ページネーション不要（リソースは一括取得が前提）だが、件数が多い場合は概要のみ返却
-- DB接続失敗時のMCPサーバーの振る舞い → 起動時にpingで確認し、失敗時は即座にexit
+- 過去24h記事が大量の場合のレスポンスサイズ → 概要のみ返却（全文は含めない）
+- APIキー漏洩リスク → HTTPS前提の運用ドキュメント整備、ログにAPIキーを含めない
+- MCP SDKのHTTP handlerとchiルーターの互換性 → `http.Handler`インターフェースで標準互換
 
 ## References
 - [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) — 公式Go SDK

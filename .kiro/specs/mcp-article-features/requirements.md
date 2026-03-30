@@ -1,17 +1,17 @@
 # Requirements Document
 
 ## Introduction
-altpocketにMCP (Model Context Protocol) Server機能を追加し、AIエージェントが保存済み記事データにプログラマティックにアクセスできるインターフェースを提供する。MCP Serverは記事の一覧取得・検索・詳細取得・タグ操作のツールと、過去24時間の新着記事リソースを公開する。これにより、AIエージェントが記事スクラップの解析、興味関心分析、トレンド抽出などを自律的に実行できる基盤を構築する。
+altpocketにMCP (Model Context Protocol) Server機能を追加し、AIエージェントがインターネット経由で保存済み記事データにアクセスできるインターフェースを提供する。MCP Serverは既存APIサーバーにHTTPエンドポイントとして組み込み、記事の一覧取得・検索・詳細取得・タグ操作のツールと、過去24時間の新着記事リソースを公開する。これにより、AIエージェントが記事スクラップの解析、興味関心分析、トレンド抽出などを自律的に実行できる基盤を構築する。
 
 ## Requirements
 
 ### Requirement 1: MCP Server基盤
-**Objective:** AIエージェント開発者として、altpocketのMCP Serverにstdioトランスポートで接続したい。これにより、Claude DesktopやCline等のMCPクライアントからaltpocketの記事データにアクセスできるようにするため。
+**Objective:** AIエージェント開発者として、altpocketのMCP ServerにインターネットのHTTP経由で接続したい。これにより、リモート環境からClaude Desktop、Cline等のMCPクライアントでaltpocketの記事データにアクセスできるようにするため。
 
 #### Acceptance Criteria
-1. The MCP Server shall MCPプロトコル（JSON-RPC 2.0 over stdio）を実装し、`initialize`・`tools/list`・`tools/call`・`resources/list`・`resources/read`リクエストに応答する
-2. The MCP Server shall `cmd/mcp/main.go`を実行エントリーポイントとし、既存の`internal/store`パッケージを介してPostgreSQLに接続する
-3. The MCP Server shall 環境変数`DATABASE_URL`によるDB接続設定を既存の`internal/config`パッケージと共有する
+1. The MCP Server shall MCPプロトコル（Streamable HTTP transport）を実装し、`initialize`・`tools/list`・`tools/call`・`resources/list`・`resources/read`リクエストに応答する
+2. The MCP Server shall 既存APIサーバー（`cmd/api`）に`/mcp`パスとしてマウントし、追加のバイナリやDockerサービスを必要としない
+3. The MCP Server shall 既存の`internal/store`パッケージを介してPostgreSQLに接続し、データアクセスを行う
 4. When MCPクライアントが`initialize`リクエストを送信した場合, the MCP Server shall サーバー名・バージョン・対応capabilities（tools, resources）を返却する
 5. If 不正なJSON-RPCリクエストを受信した場合, the MCP Server shall MCPプロトコルに準拠したエラーレスポンス（エラーコード・メッセージ）を返却する
 
@@ -58,9 +58,11 @@ altpocketにMCP (Model Context Protocol) Server機能を追加し、AIエージ�
 3. The `recent-articles` resource shall リソースのURIとして`altpocket://recent-articles`、名前として「新着記事（過去24時間）」を`resources/list`で公開する
 
 ### Requirement 7: 認証とセキュリティ
-**Objective:** システム管理者として、MCP Serverへのアクセスを認可されたユーザーのみに制限したい。これにより、記事データの不正アクセスを防止するため。
+**Objective:** システム管理者として、MCP Serverへのアクセスを認可されたユーザーのみに制限したい。これにより、インターネット経由でも記事データの不正アクセスを防止するため。
 
 #### Acceptance Criteria
-1. The MCP Server shall 環境変数`MCP_USER_EMAIL`で指定されたユーザーのデータのみにアクセスを制限する
-2. If `MCP_USER_EMAIL`に対応するユーザーがデータベースに存在しない場合, the MCP Server shall 起動時にエラーを出力して終了する
-3. The MCP Server shall stdioトランスポートのみをサポートし、ネットワーク経由の接続を受け付けない
+1. The MCP Server shall `Authorization: Bearer <token>`ヘッダーによるAPIキー認証を要求する
+2. The MCP Server shall 環境変数`MCP_API_KEY`で設定されたAPIキーと照合し、一致しない場合はリクエストを拒否する
+3. The MCP Server shall 環境変数`MCP_USER_EMAIL`で指定されたユーザーのデータのみにアクセスを制限する
+4. If `MCP_API_KEY`または`MCP_USER_EMAIL`が未設定の場合, the MCP Server shall MCPエンドポイントを無効化し、APIサーバー自体の起動は妨げない
+5. If 認証に失敗したリクエストを受信した場合, the MCP Server shall 401 Unauthorizedレスポンスを返却する
