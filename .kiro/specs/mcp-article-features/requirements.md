@@ -1,7 +1,7 @@
 # Requirements Document
 
 ## Introduction
-altpocketにMCP (Model Context Protocol) Server機能を追加し、AIエージェントがインターネット経由で保存済み記事データにアクセスできるインターフェースを提供する。MCP Serverは既存APIサーバーにHTTPエンドポイントとして組み込み、記事の一覧取得・検索・詳細取得・タグ操作のツールと、過去24時間の新着記事リソースを公開する。これにより、AIエージェントが記事スクラップの解析、興味関心分析、トレンド抽出などを自律的に実行できる基盤を構築する。
+altpocketにMCP (Model Context Protocol) Server機能を追加し、AIエージェントがインターネット経由で保存済み記事データにアクセスできるインターフェースを提供する。MCP Serverは既存APIサーバーにHTTPエンドポイントとして組み込み、記事の一覧取得・検索・詳細取得・タグ操作のツールと、過去24時間の新着記事リソースを公開する。APIキーは設定画面から生成・管理し、Bearer Token認証でアクセスを保護する。
 
 ## Requirements
 
@@ -62,7 +62,17 @@ altpocketにMCP (Model Context Protocol) Server機能を追加し、AIエージ�
 
 #### Acceptance Criteria
 1. The MCP Server shall `Authorization: Bearer <token>`ヘッダーによるAPIキー認証を要求する
-2. The MCP Server shall 環境変数`MCP_API_KEY`で設定されたAPIキーと照合し、一致しない場合はリクエストを拒否する
-3. The MCP Server shall 環境変数`MCP_USER_EMAIL`で指定されたユーザーのデータのみにアクセスを制限する
-4. If `MCP_API_KEY`または`MCP_USER_EMAIL`が未設定の場合, the MCP Server shall MCPエンドポイントを無効化し、APIサーバー自体の起動は妨げない
-5. If 認証に失敗したリクエストを受信した場合, the MCP Server shall 401 Unauthorizedレスポンスを返却する
+2. The MCP Server shall リクエストのBearerトークンをデータベースに保存されたAPIキーのSHA-256ハッシュと照合し、一致しない場合はリクエストを拒否する
+3. The MCP Server shall 認証されたAPIキーに紐づくユーザーのデータのみにアクセスを制限する
+4. If 認証に失敗したリクエストを受信した場合, the MCP Server shall 401 Unauthorizedレスポンスを返却する
+5. If 有効なAPIキーが1件も存在しない場合, the MCP Server shall MCPエンドポイントを常に有効にしつつ、全リクエストに対して401を返却する
+
+### Requirement 8: APIキー管理UI
+**Objective:** ユーザーとして、設定画面からMCP用APIキーを生成・管理したい。これにより、安全にAPIキーを発行してMCPクライアントに設定できるようにするため。
+
+#### Acceptance Criteria
+1. When ユーザーが設定画面でAPIキー生成ボタンを押した場合, the System shall 暗号学的に安全なランダムAPIキーを生成し、そのSHA-256ハッシュをデータベースに保存する
+2. When APIキーが正常に生成された場合, the System shall 生成された平文APIキーを画面に1回だけ表示し、以後は再表示不可とする
+3. The 設定画面 shall 既存のAPIキー一覧（作成日時、キーの先頭8文字のプレフィックス）を表示する
+4. When ユーザーがAPIキー失効ボタンを押した場合, the System shall 対象のAPIキーをデータベースから削除し、即座に無効化する
+5. The 設定画面 shall MCPクライアント設定例（接続URL、Bearerトークン設定）を表示する

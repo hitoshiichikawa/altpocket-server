@@ -1,34 +1,29 @@
 # Design Document: mcp-article-features
 
 ## Overview
-**Purpose**: altpocketの既存APIサーバーにMCP (Model Context Protocol) Serverエンドポイントを追加し、AIエージェントがインターネット経由で保存済み記事データにアクセスできるインターフェースを提供する。
-**Users**: AIエージェント開発者・利用者が、Claude Desktop、Cline、その他MCPクライアントからaltpocketの記事検索・解析・要約データ取得のワークフローに利用する。
-**Impact**: 既存の`cmd/api`サーバーに`/mcp`エンドポイントを追加。新規バイナリやDockerサービスは不要。既存のstore層を共有し、新規コードの大部分はMCPハンドラー層に集約する。
+**Purpose**: altpocketの既存APIサーバーにMCP Serverエンドポイントを追加し、AIエージェントがインターネット経由で記事データにアクセスできるインターフェースを提供する。APIキーは設定画面から生成・管理し、SHA-256ハッシュでDB保存する。
+**Users**: AIエージェント開発者が、Claude Desktop・Cline等のMCPクライアントから記事検索・解析・要約データ取得に利用する。altpocketユーザーが設定画面からAPIキーを発行・管理する。
+**Impact**: 既存`cmd/api`に`/mcp`エンドポイント追加。APIキー管理用のDBマイグレーション・設定画面UI・ハンドラーを追加。
 
 ### Goals
-- MCP準拠のStreamable HTTPエンドポイントを既存APIサーバーの`/mcp`パスに追加する
-- 4つのツール（list_items, search_items, get_item, list_tags）と1つのリソース（recent-articles）を公開する
-- Bearer Token認証と`MCP_USER_EMAIL`によるユーザースコープでデータアクセスを制限する
-- MCP環境変数が未設定の場合はエンドポイントを無効化し、既存機能に影響を与えない
+- MCP準拠のStreamable HTTPエンドポイントを`/mcp`パスに追加する
+- 4ツール（list_items, search_items, get_item, list_tags）と1リソース（recent-articles）を公開する
+- 設定画面でAPIキーを生成・失効管理し、Bearer Token認証でアクセスを保護する
 
 ### Non-Goals
-- stdioトランスポートのサポート（HTTP Streamableのみ）
-- マルチユーザー同時アクセス（1つのAPIキーに1ユーザーをバインド）
-- 記事の作成・更新・削除操作（読み取り専用）
-- LLMによる要約生成機能（AIエージェント側の責務）
+- stdioトランスポート
+- マルチユーザー同時アクセス
+- 記事の作成・更新・削除（読み取り専用）
+- LLMによる要約生成（AIエージェント側の責務）
 
 ## Architecture
 
 ### Existing Architecture Analysis
-altpocketは`cmd/`（実行境界）と`internal/`（ドメイン/インフラ）を分離したレイヤード構成を採用している。
-
-- `cmd/api/main.go`: HTTP API + Web UI サーバー（chi v5）
-- `cmd/worker/main.go`: 非同期コンテンツ取得ワーカー
-- `internal/server`: chiルーター定義、HTTPハンドラー、ミドルウェア
-- `internal/store`: PostgreSQLへのデータアクセス層
-- `internal/config`: 環境変数ベースの設定管理
-
-MCP Serverは`internal/server`のルーティングに`/mcp`パスとして組み込み、`internal/mcp`パッケージでツール/リソースハンドラーを定義する。
+- `cmd/api/main.go`: HTTP API + Web UIサーバー（chi v5）
+- `internal/server`: chiルーター、HTTPハンドラー、ミドルウェア
+- `internal/store`: PostgreSQLデータアクセス層
+- `internal/config`: 環境変数設定管理
+- `templates/settings.html`: 設定画面（Account, Appearance, Google Sheets, Tools）
 
 ### Architecture Pattern & Boundary Map
 
@@ -38,458 +33,323 @@ graph TB
         Claude[Claude Desktop / Cline]
     end
 
-    subgraph ExistingAPI[cmd/api - Existing Docker Container]
+    subgraph ExistingAPI[cmd/api - Docker Container]
         ChiRouter[chi Router]
-        APIHandlers[internal/server - Existing API Handlers]
-        MCPEndpoint[/mcp - MCP Streamable HTTP]
-        MCPAuth[MCP Bearer Token Auth Middleware]
-        MCPHandlers[internal/mcp - Tool and Resource Handlers]
+        APIHandlers[internal/server - API Handlers]
+        SettingsUI[Settings UI - API Key Management]
+        MCPAuth[MCP Auth Middleware]
+        MCPEndpoint[/mcp - Streamable HTTP]
+        MCPHandlers[internal/mcp - Handlers]
     end
 
-    subgraph SharedInternal[internal shared packages]
+    subgraph SharedInternal[internal packages]
         Store[internal/store]
-        Config[internal/config]
         DB[internal/db]
-        Logger[internal/logger]
     end
 
     subgraph Database[PostgreSQL]
         Items[items + item_contents]
         Tags[tags + item_tags]
         Users[users]
+        APIKeys[mcp_api_keys]
     end
 
-    Claude -->|HTTPS| ChiRouter
+    Claude -->|HTTPS + Bearer| ChiRouter
     ChiRouter --> APIHandlers
     ChiRouter --> MCPAuth
     MCPAuth --> MCPEndpoint
     MCPEndpoint --> MCPHandlers
     MCPHandlers --> Store
     APIHandlers --> Store
-    ExistingAPI --> Config
-    ExistingAPI --> DB
-    ExistingAPI --> Logger
+    SettingsUI --> Store
     Store --> Items
     Store --> Tags
     Store --> Users
+    Store --> APIKeys
 ```
 
 **Architecture Integration**:
-- Selected pattern: 既存APIサーバーへの埋め込み。chiルーターに`/mcp`パスをマウントし、MCP SDKのHTTPハンドラーに委譲
-- Domain boundaries: MCPハンドラーは読み取り専用。store層の既存メソッドを直接利用
-- Existing patterns preserved: chiルーティング、`internal/store`集約、`internal/config`環境変数管理
-- New components: `internal/mcp`パッケージ（MCPツール/リソースハンドラー）、MCP認証ミドルウェア
-- Steering compliance: 「既存レイヤーを崩さず追加できること」の原則に準拠
+- 既存APIサーバーへの埋め込み。`/mcp`パスをchiルーターにマウント
+- MCPハンドラーは読み取り専用。store層の既存メソッドを直接利用
+- APIキー管理は既存の設定画面（`/ui/settings`）に統合
+- 新規テーブル`mcp_api_keys`を追加（マイグレーション）
 
 ### Technology Stack
 
 | Layer | Choice / Version | Role in Feature | Notes |
 |-------|------------------|-----------------|-------|
-| MCP SDK | `modelcontextprotocol/go-sdk` v1.4.1 | MCP Server基盤、JSON-RPC処理、ツール/リソース登録 | 公式安定版。Streamable HTTP transport内蔵 |
-| Backend | Go 1.22 + chi v5 | 既存APIサーバーにMCPエンドポイント追加 | 既存と同一 |
-| Data | PostgreSQL 16 (pgx/v5) | 記事・タグ・ユーザーデータ | 既存store層を共有 |
-| Infrastructure | Docker | 既存apiコンテナで稼働 | 追加コンテナ不要 |
+| MCP SDK | `modelcontextprotocol/go-sdk` v1.4.1 | MCP Server基盤、Streamable HTTP transport | 公式安定版 |
+| Backend | Go 1.22 + chi v5 | 既存APIサーバー拡張 | 既存と同一 |
+| Data | PostgreSQL 16 (pgx/v5) | 記事・タグ・APIキーデータ | mcp_api_keysテーブル追加 |
+| Crypto | Go標準 `crypto/rand`, `crypto/sha256` | APIキー生成・ハッシュ化 | 外部依存なし |
 
 ## System Flows
 
-### MCP エンドポイントの初期化とツール呼び出しフロー
+### APIキー生成フロー
+
+```mermaid
+sequenceDiagram
+    participant User as User Browser
+    participant Server as Settings Handler
+    participant Store as internal/store
+    participant DB as PostgreSQL
+
+    User->>Server: POST /ui/settings/mcp/keys (generate)
+    Server->>Server: crypto/rand で32バイトランダムキー生成
+    Server->>Server: SHA-256ハッシュ計算
+    Server->>Store: CreateMCPAPIKey(userID, hash, prefix)
+    Store->>DB: INSERT INTO mcp_api_keys
+    Server->>User: 設定画面リダイレクト（平文キーを1回表示）
+```
+
+### MCPツール呼び出しフロー
 
 ```mermaid
 sequenceDiagram
     participant Client as MCP Client
-    participant Router as chi Router
     participant Auth as MCP Auth Middleware
-    participant SDK as MCP SDK HTTP Handler
-    participant Handler as internal/mcp Handler
+    participant SDK as MCP SDK Handler
+    participant Handler as internal/mcp
     participant Store as internal/store
 
-    Note over Router: APIサーバー起動時
-    Router->>Router: MCP_API_KEY and MCP_USER_EMAIL設定確認
-    alt MCP環境変数が未設定
-        Router->>Router: /mcp エンドポイント無効（既存APIは正常稼働）
-    end
-    Router->>Store: GetUserByEmail(MCP_USER_EMAIL)
-    Router->>SDK: NewMCPServer with tools and resources
-    Router->>Router: Mount /mcp with auth middleware
-
-    Note over Client: ツール呼び出し
-    Client->>Router: POST /mcp (Authorization: Bearer token)
-    Router->>Auth: Validate Bearer token
-    alt Token invalid
+    Client->>Auth: POST /mcp (Authorization: Bearer token)
+    Auth->>Auth: SHA-256(token) 計算
+    Auth->>Store: ValidateMCPAPIKey(hash)
+    alt Key not found
         Auth->>Client: 401 Unauthorized
     end
-    Auth->>SDK: Forward request
-    Client->>SDK: initialize
-    SDK->>Client: serverInfo + capabilities
-
-    Client->>SDK: tools/call (list_items)
-    SDK->>Handler: handleListItems(params)
-    Handler->>Store: ListItems(ctx, userID, ...)
-    Store->>Handler: items, pagination
-    Handler->>SDK: CallToolResult (JSON)
-    SDK->>Client: result
+    Auth->>SDK: Forward (userID in context)
+    SDK->>Handler: tools/call
+    Handler->>Store: ListItems/GetItemDetail/etc.
+    Store->>Handler: data
+    Handler->>Client: MCP result
 ```
 
 ## Requirements Traceability
 
-| Requirement | Summary | Components | Interfaces | Flows |
-|-------------|---------|------------|------------|-------|
-| 1.1 | MCP Streamable HTTP transport | MCPServer, server.go | StreamableHTTPHandler | 初期化フロー |
-| 1.2 | /mcp パスとしてマウント | server.go | chi.Mount | 初期化フロー |
-| 1.3 | 既存store層を介したDBアクセス | MCPHandlers | store.Store | ツール呼び出しフロー |
-| 1.4 | initializeレスポンス | MCPServer | ServerInfo | 初期化フロー |
-| 1.5 | エラーレスポンス | MCPServer | go-sdk組み込み | — |
-| 2.1–2.4 | list_items ツール | ListItemsHandler | ListItemsInput | ツール呼び出しフロー |
-| 3.1–3.5 | search_items ツール | SearchItemsHandler | SearchItemsInput | ツール呼び出しフロー |
-| 4.1–4.3 | get_item ツール | GetItemHandler | GetItemInput | ツール呼び出しフロー |
-| 5.1–5.2 | list_tags ツール | ListTagsHandler | ListTagsInput | ツール呼び出しフロー |
-| 6.1–6.3 | recent-articles リソース | RecentArticlesHandler | Resource URI | リソース読み取りフロー |
-| 7.1–7.2 | Bearer Token認証 | MCPAuthMiddleware | Authorization header | 認証フロー |
-| 7.3 | ユーザースコープ制限 | server.go起動時検証 | MCP_USER_EMAIL | 初期化フロー |
-| 7.4 | 環境変数未設定時の無効化 | server.go | config | 初期化フロー |
-| 7.5 | 401レスポンス | MCPAuthMiddleware | HTTP 401 | 認証フロー |
+| Requirement | Summary | Components | Interfaces |
+|-------------|---------|------------|------------|
+| 1.1–1.5 | MCP Server基盤 | MCPServer, server.go | StreamableHTTPHandler |
+| 2.1–2.4 | list_items | ListItemsHandler | ListItemsInput |
+| 3.1–3.5 | search_items | SearchItemsHandler | SearchItemsInput |
+| 4.1–4.3 | get_item | GetItemHandler | GetItemInput |
+| 5.1–5.2 | list_tags | ListTagsHandler | ListTagsInput |
+| 6.1–6.3 | recent-articles | RecentArticlesHandler | Resource URI |
+| 7.1–7.5 | 認証・セキュリティ | MCPAuthMiddleware, Store | Bearer Token, mcp_api_keys |
+| 8.1–8.5 | APIキー管理UI | SettingsHandlers, Store, Template | Settings UI |
 
 ## Components and Interfaces
 
-| Component | Domain/Layer | Intent | Req Coverage | Key Dependencies | Contracts |
-|-----------|-------------|--------|--------------|------------------|-----------|
-| server.go MCP統合 | internal/server | chiルーターへのMCPマウント | 1.1, 1.2, 7.3, 7.4 | config (P0), mcp SDK (P0) | — |
-| MCPAuthMiddleware | internal/mcp | Bearer Token認証 | 7.1, 7.2, 7.5 | config (P0) | Service |
-| MCPConfig | internal/config | MCP用設定読み込み | 1.2, 7.1–7.4 | — | Service |
-| ListItemsHandler | internal/mcp | 記事一覧取得ツール | 2.1–2.4 | store.ListItems (P0) | Service |
-| SearchItemsHandler | internal/mcp | 記事検索ツール | 3.1–3.5 | store.ListItems (P0) | Service |
-| GetItemHandler | internal/mcp | 記事詳細取得ツール | 4.1–4.3 | store.GetItemDetail (P0) | Service |
-| ListTagsHandler | internal/mcp | タグ一覧取得ツール | 5.1–5.2 | store.ListTagsWithCountFiltered (P0) | Service |
-| RecentArticlesHandler | internal/mcp | 新着記事リソース | 6.1–6.3 | store.ListRecentItems (P0) | Service |
-| GetUserByEmail | internal/store | メールアドレスでユーザー取得 | 7.3 | pgxpool (P0) | Service |
-| ListRecentItems | internal/store | 過去N時間の記事取得 | 6.1 | pgxpool (P0) | Service |
+| Component | Domain/Layer | Intent | Req Coverage | Key Dependencies |
+|-----------|-------------|--------|--------------|------------------|
+| server.go MCP統合 | internal/server | chiルーターへのMCPマウント | 1.1–1.2 | mcp SDK (P0) |
+| MCPAuthMiddleware | internal/mcp | Bearer Token→DB照合認証 | 7.1–7.5 | store (P0) |
+| ListItemsHandler | internal/mcp | 記事一覧取得ツール | 2.1–2.4 | store.ListItems (P0) |
+| SearchItemsHandler | internal/mcp | 記事検索ツール | 3.1–3.5 | store.ListItems (P0) |
+| GetItemHandler | internal/mcp | 記事詳細取得ツール | 4.1–4.3 | store.GetItemDetail (P0) |
+| ListTagsHandler | internal/mcp | タグ一覧取得ツール | 5.1–5.2 | store.ListTagsWithCountFiltered (P0) |
+| RecentArticlesHandler | internal/mcp | 新着記事リソース | 6.1–6.3 | store.ListRecentItems (P0) |
+| handleMCPKeyGenerate | internal/server | APIキー生成ハンドラー | 8.1–8.2 | store, crypto/rand (P0) |
+| handleMCPKeyRevoke | internal/server | APIキー失効ハンドラー | 8.4 | store (P0) |
+| settings.html MCP section | templates | APIキー管理UI | 8.2–8.5 | — |
+| MCPAPIKey store methods | internal/store | APIキーCRUD | 7.2, 8.1, 8.3, 8.4 | pgxpool (P0) |
+| ListRecentItems | internal/store | 過去N時間の記事取得 | 6.1 | pgxpool (P0) |
+| Migration 002 | migrations | mcp_api_keysテーブル作成 | 7.2, 8.1 | — |
 
-### Config Layer
+### MCP Handler Layer（internal/mcp）
 
-#### MCPConfig（internal/config への追加）
-
-| Field | Detail |
-|-------|--------|
-| Intent | MCP Server用の設定を環境変数から読み込む（オプション） |
-| Requirements | 1.2, 7.1, 7.2, 7.3, 7.4 |
-
-**Contracts**: Service [x]
-
-##### Service Interface
-```go
-// MCPConfig はMCP Server用のオプション設定
-type MCPConfig struct {
-    APIKey    string // MCP_API_KEY: Bearer Token認証キー
-    UserEmail string // MCP_USER_EMAIL: データスコープ対象ユーザー
-    Enabled   bool   // 両方が設定されている場合にtrue
-}
-
-// LoadMCPConfig はMCP用の設定を環境変数から読み込む
-// MCP_API_KEY, MCP_USER_EMAIL のいずれかが未設定の場合、Enabled=false を返す
-func LoadMCPConfig() MCPConfig
-```
-
-### Auth Layer
-
-#### MCPAuthMiddleware
-
-| Field | Detail |
-|-------|--------|
-| Intent | MCP エンドポイントへのリクエストをBearer Token認証で保護 |
-| Requirements | 7.1, 7.2, 7.5 |
-
-**Contracts**: Service [x]
-
-##### Service Interface
-```go
-// NewMCPAuthMiddleware はBearer Token検証のchiミドルウェアを返す
-// Authorization ヘッダーの値がapiKeyと一致しない場合は401を返す
-func NewMCPAuthMiddleware(apiKey string) func(http.Handler) http.Handler
-```
-- Preconditions: apiKeyが空でないこと
-- Postconditions: 認証成功時はリクエストを次のハンドラーに転送。失敗時は401
-
-### Store Layer（既存パッケージへの追加）
-
-#### GetUserByEmail
-
-| Field | Detail |
-|-------|--------|
-| Intent | メールアドレスからユーザーを取得 |
-| Requirements | 7.3 |
-
-**Contracts**: Service [x]
-
-##### Service Interface
-```go
-// GetUserByEmail はメールアドレスでユーザーを検索する
-// 該当ユーザーが存在しない場合は pgx.ErrNoRows を返す
-func (s *Store) GetUserByEmail(ctx context.Context, email string) (User, error)
-```
-
-#### ListRecentItems
-
-| Field | Detail |
-|-------|--------|
-| Intent | 指定時間以降に作成された記事をタグ付きで取得 |
-| Requirements | 6.1 |
-
-**Contracts**: Service [x]
-
-##### Service Interface
-```go
-// ListRecentItems は指定されたユーザーのsince以降に作成された記事を
-// 作成日時降順で返す。タグ情報を含む
-func (s *Store) ListRecentItems(ctx context.Context, userID string, since time.Time) ([]ItemListRow, error)
-```
-
-### MCP Handler Layer（新規パッケージ）
-
-#### internal/mcp パッケージ概要
-
-MCPツールとリソースのハンドラーを定義するパッケージ。各ハンドラーはstore層のメソッドを呼び出し、結果をMCPレスポンス形式に変換する。
+#### NewMCPServer / HTTPHandler
 
 ```go
-// NewMCPServer はツールとリソースを登録済みのMCP Serverインスタンスを生成する
-// userIDは全ツール/リソースのデータスコープに使用される
+// NewMCPServer はツールとリソースを登録済みのMCP Serverを生成する
 func NewMCPServer(st *store.Store, userID string) *mcp.Server
 
-// HTTPHandler はMCP ServerのStreamable HTTP handlerを返す
-// chiルーターにマウントして使用する
+// HTTPHandler はStreamable HTTP handlerを返す
 func HTTPHandler(server *mcp.Server) http.Handler
 ```
 
-#### ListItemsHandler
+#### MCPAuthMiddleware
 
-| Field | Detail |
-|-------|--------|
-| Intent | 記事一覧をページネーション付きで返却するMCPツールハンドラー |
-| Requirements | 2.1, 2.2, 2.3, 2.4 |
+```go
+// NewMCPAuthMiddleware はBearer Token検証ミドルウェアを返す
+// トークンのSHA-256ハッシュをDBと照合し、一致するキーのuserIDをcontextに格納
+func NewMCPAuthMiddleware(st *store.Store) func(http.Handler) http.Handler
+```
+- Bearer トークンを受け取り、SHA-256ハッシュを計算してDB照合
+- 一致したAPIキーの`user_id`をcontextに格納（ツールハンドラーが参照）
+- 不一致/欠如の場合は401
 
-**Contracts**: Service [x]
+#### Tool Input Types
 
-##### Service Interface
 ```go
 type ListItemsInput struct {
     Page    int    `json:"page"    jsonschema:"ページ番号（デフォルト: 1）"`
     PerPage int    `json:"per_page" jsonschema:"1ページあたりの件数（デフォルト: 30, 最大: 50）"`
-    Sort    string `json:"sort"    jsonschema:"並び替え: newest または oldest（デフォルト: newest）"`
+    Sort    string `json:"sort"    jsonschema:"並び替え: newest or oldest（デフォルト: newest）"`
 }
-```
-- Store呼び出し: `store.ListItems(ctx, userID, input.Page, input.PerPage, "", nil, input.Sort)`
 
-#### SearchItemsHandler
-
-| Field | Detail |
-|-------|--------|
-| Intent | キーワード・タグによる記事検索ツールハンドラー |
-| Requirements | 3.1, 3.2, 3.3, 3.4, 3.5 |
-
-**Contracts**: Service [x]
-
-##### Service Interface
-```go
 type SearchItemsInput struct {
     Query   string   `json:"query"    jsonschema:"検索キーワード"`
-    Tags    []string `json:"tags"     jsonschema:"タグによる絞り込み（AND結合）"`
+    Tags    []string `json:"tags"     jsonschema:"タグ絞り込み（AND結合）"`
     Page    int      `json:"page"     jsonschema:"ページ番号（デフォルト: 1）"`
     PerPage int      `json:"per_page" jsonschema:"1ページあたりの件数（デフォルト: 30, 最大: 50）"`
 }
-```
-- Preconditions: `Query`または`Tags`の少なくとも一方が指定されていること
-- Error: 両方未指定の場合はエラーレスポンス
-- Sort: queryが指定されている場合は`relevance`、tagsのみの場合は`newest`
 
-#### GetItemHandler
-
-| Field | Detail |
-|-------|--------|
-| Intent | 記事の全文コンテンツ含む詳細を返却するツールハンドラー |
-| Requirements | 4.1, 4.2, 4.3 |
-
-**Contracts**: Service [x]
-
-##### Service Interface
-```go
 type GetItemInput struct {
     ID string `json:"id" jsonschema:"記事のUUID,required"`
 }
-```
-- Error (4.2): 存在しない場合は「記事が見つかりません」エラー
-- 動作 (4.3): fetch_statusがpending/fetchingの場合、content_fullは空文字列として返却し、fetch_statusを明示
 
-#### ListTagsHandler
-
-| Field | Detail |
-|-------|--------|
-| Intent | タグ一覧を記事数付きで返却するツールハンドラー |
-| Requirements | 5.1, 5.2 |
-
-**Contracts**: Service [x]
-
-##### Service Interface
-```go
 type ListTagsInput struct {
     Query string `json:"query" jsonschema:"タグ名フィルタ（前方一致）"`
 }
 ```
-- Store呼び出し: `store.ListTagsWithCountFiltered(ctx, userID, input.Query, nil)`
 
 #### RecentArticlesHandler
-
-| Field | Detail |
-|-------|--------|
-| Intent | 過去24時間の新着記事をリソースとして公開するハンドラー |
-| Requirements | 6.1, 6.2, 6.3 |
-
-**Contracts**: Service [x]
-
-##### Service Interface
 - Resource URI: `altpocket://recent-articles`
 - Resource Name: `新着記事（過去24時間）`
-- MimeType: `application/json`
 - Store呼び出し: `store.ListRecentItems(ctx, userID, time.Now().Add(-24*time.Hour))`
-- 返却: 記事一覧JSON。0件でも空配列
 
-### Server Layer（既存パッケージへの統合）
+### Store Layer（internal/store への追加）
 
-#### server.go MCP統合
+```go
+// --- APIキー管理 ---
 
-| Field | Detail |
-|-------|--------|
-| Intent | 既存chiルーターにMCPエンドポイントをマウント |
-| Requirements | 1.1, 1.2, 7.3, 7.4 |
+type MCPAPIKey struct {
+    ID        string    `json:"id"`
+    UserID    string    `json:"user_id"`
+    KeyHash   string    `json:"-"`          // SHA-256ハッシュ（非公開）
+    KeyPrefix string    `json:"key_prefix"` // 先頭8文字（表示用）
+    CreatedAt time.Time `json:"created_at"`
+}
 
-**Implementation Notes**
-- `server.New()`の引数に`MCPConfig`を追加
-- `MCPConfig.Enabled == true`の場合のみ`/mcp`ルートを登録
-- ルート構成: `r.Route("/mcp", func(r chi.Router) { r.Use(MCPAuthMiddleware); r.Handle("/*", mcpHTTPHandler) })`
-- 起動時に`GetUserByEmail`でユーザー存在確認。不在時はログ警告を出してMCP無効化（サーバー自体は起動）
+// CreateMCPAPIKey はハッシュ化済みAPIキーをDBに保存する
+func (s *Store) CreateMCPAPIKey(ctx context.Context, userID, keyHash, keyPrefix string) (MCPAPIKey, error)
+
+// ListMCPAPIKeys はユーザーの全APIキー（プレフィックス・作成日時）を返す
+func (s *Store) ListMCPAPIKeys(ctx context.Context, userID string) ([]MCPAPIKey, error)
+
+// ValidateMCPAPIKey はハッシュでAPIキーを検索し、対応するuserIDを返す
+func (s *Store) ValidateMCPAPIKey(ctx context.Context, keyHash string) (string, error)
+
+// DeleteMCPAPIKey は指定IDのAPIキーを削除する（userID照合あり）
+func (s *Store) DeleteMCPAPIKey(ctx context.Context, userID, keyID string) error
+
+// --- 新着記事 ---
+
+// ListRecentItems はsince以降に作成された記事をタグ付きで返す
+func (s *Store) ListRecentItems(ctx context.Context, userID string, since time.Time) ([]ItemListRow, error)
+```
+
+### Server Layer（internal/server への追加）
+
+#### APIキー管理ハンドラー
+
+```go
+// handleMCPKeyGenerate はAPIキーを生成してセッション経由で1回表示
+// POST /ui/settings/mcp/keys
+func (s *Server) handleMCPKeyGenerate(w http.ResponseWriter, r *http.Request)
+
+// handleMCPKeyRevoke はAPIキーを失効（削除）
+// POST /ui/settings/mcp/keys/{id}/revoke
+func (s *Server) handleMCPKeyRevoke(w http.ResponseWriter, r *http.Request)
+```
+
+#### ルーティング追加
+
+```go
+// 既存UIルート内に追加
+r.Post("/ui/settings/mcp/keys", s.requireWeb(s.handleMCPKeyGenerate))
+r.Post("/ui/settings/mcp/keys/{id}/revoke", s.requireWeb(s.handleMCPKeyRevoke))
+
+// MCPエンドポイント（常に有効、認証はミドルウェアで制御）
+r.Route("/mcp", func(r chi.Router) {
+    r.Use(mcpAuthMiddleware)
+    r.Handle("/*", mcpHTTPHandler)
+})
+```
+
+### UI Layer（templates/settings.html への追加）
+
+設定画面にMCPセクションを追加。既存のGoogle Sheets・Toolsセクションと同じ`settings-group`パターンに従う。
+
+**表示内容**:
+- 「MCP API Keys」セクション見出し
+- 既存APIキー一覧テーブル（プレフィックス、作成日時、失効ボタン）
+- 「Generate New Key」ボタン
+- 生成直後: 平文キーを`<code>`で1回表示 + コピーボタン + 警告文
+- MCPクライアント設定例（接続URL・Bearerトークン設定のコードブロック）
 
 ## Data Models
 
 ### Domain Model
-既存のドメインモデルを変更せず再利用する。MCP固有の新規エンティティは発生しない。
-
-- **Item / ItemDetail / ItemListRow**: 記事データ（既存）
-- **Tag**: タグデータ（既存）
-- **User**: ユーザーデータ（既存）
-- **Pagination**: ページネーション情報（既存）
+既存モデル（Item, ItemDetail, Tag, User, Pagination）に加え、MCPAPIKeyエンティティを追加。
 
 ### Physical Data Model
-スキーマ変更なし。既存テーブル（items, item_contents, tags, item_tags, users）をそのまま利用する。
+
+#### Migration: `002_mcp_api_keys.sql`
+
+```sql
+CREATE TABLE mcp_api_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key_hash TEXT NOT NULL UNIQUE,
+    key_prefix TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_mcp_api_keys_user_id ON mcp_api_keys(user_id);
+CREATE INDEX idx_mcp_api_keys_key_hash ON mcp_api_keys(key_hash);
+```
 
 ### Data Contracts
 
-#### ツールレスポンス共通構造（TextContent内のJSON）
-
-**記事一覧レスポンス**（list_items, search_items共通）:
+**記事一覧レスポンス**（list_items, search_items）:
 ```json
 {
-  "items": [
-    {
-      "id": "uuid",
-      "url": "https://example.com/article",
-      "title": "記事タイトル",
-      "excerpt": "記事概要...",
-      "tags": [{"name": "go", "normalized_name": "go"}],
-      "fetch_status": "success",
-      "created_at": "2026-03-30T00:00:00Z"
-    }
-  ],
-  "pagination": {
-    "page": 1,
-    "per_page": 30,
-    "total": 150
-  }
+  "items": [{"id":"uuid","url":"...","title":"...","excerpt":"...","tags":[{"name":"go"}],"fetch_status":"success","created_at":"..."}],
+  "pagination": {"page":1,"per_page":30,"total":150}
 }
 ```
 
 **記事詳細レスポンス**（get_item）:
 ```json
-{
-  "id": "uuid",
-  "url": "https://example.com/article",
-  "canonical_url": "https://example.com/article",
-  "title": "記事タイトル",
-  "excerpt": "記事概要...",
-  "content_full": "記事全文テキスト...",
-  "tags": [{"name": "go", "normalized_name": "go"}],
-  "fetch_status": "success",
-  "created_at": "2026-03-30T00:00:00Z"
-}
+{"id":"uuid","url":"...","title":"...","excerpt":"...","content_full":"...","tags":[{"name":"go"}],"fetch_status":"success","created_at":"..."}
 ```
 
 **タグ一覧レスポンス**（list_tags）:
 ```json
-{
-  "tags": [
-    {"name": "Go", "normalized_name": "go", "count": 42}
-  ]
-}
+{"tags":[{"name":"Go","normalized_name":"go","count":42}]}
 ```
 
 **新着記事リソース**（recent-articles）:
 ```json
-{
-  "articles": [
-    {
-      "id": "uuid",
-      "url": "https://example.com/article",
-      "title": "記事タイトル",
-      "excerpt": "記事概要...",
-      "tags": [{"name": "go", "normalized_name": "go"}],
-      "created_at": "2026-03-30T00:00:00Z"
-    }
-  ],
-  "generated_at": "2026-03-30T12:00:00Z",
-  "count": 5
-}
+{"articles":[...],"generated_at":"...","count":5}
 ```
 
 ## Error Handling
 
-### Error Strategy
-MCP SDKの組み込みエラーハンドリングを活用し、ツールハンドラー内のエラーはMCPプロトコル準拠のレスポンスとして返却する。HTTP層の認証エラーはMCP SDKの手前でミドルウェアが処理する。
-
-### Error Categories and Responses
-
 | Category | Trigger | Response |
 |----------|---------|----------|
-| 認証失敗 | Bearerトークン不一致/欠如 | HTTP 401 Unauthorized（MCP SDK到達前） |
-| パラメータ不足 | search_itemsでquery/tags未指定 | `isError: true`、エラーメッセージをTextContentで返却 |
-| 記事未発見 | get_itemで存在しないID | `isError: true`、「記事が見つかりません」 |
-| UUID形式不正 | get_itemで不正なID形式 | `isError: true`、「IDの形式が不正です」 |
-| DB接続エラー | PostgreSQL接続失敗 | `isError: true`、「データベース接続エラー」 |
-| MCP無効 | 環境変数未設定 | /mcpパス未登録（404） |
-
-### Monitoring
-- 既存の`internal/logger`（slog）を使用した構造化ログ
-- ツール呼び出しごとにツール名・パラメータ・実行時間をINFOログ出力
-- 認証失敗はWARNログ出力（IPアドレス含む）
-- エラー発生時はERRORログ出力
+| 認証失敗 | Bearerトークン不一致/欠如 | HTTP 401 |
+| パラメータ不足 | search_itemsでquery/tags未指定 | MCP isError + メッセージ |
+| 記事未発見 | get_itemで存在しないID | MCP isError |
+| DB接続エラー | PostgreSQL障害 | MCP isError |
 
 ## Testing Strategy
 
 ### Unit Tests
-- `internal/mcp`: 各ハンドラーの入力バリデーション（パラメータデフォルト値、範囲チェック、必須パラメータ）
-- `internal/mcp`: MCPAuthMiddleware（有効トークン/無効トークン/ヘッダー欠如）
-- `internal/store.GetUserByEmail`: 存在するユーザー/存在しないユーザーのケース
-- `internal/store.ListRecentItems`: 過去24h以内/以外の記事の境界テスト
+- MCPAuthMiddleware: 有効/無効トークン/ヘッダー欠如
+- 各ツールハンドラー: 入力バリデーション、デフォルト値
+- Store: CreateMCPAPIKey, ValidateMCPAPIKey, DeleteMCPAPIKey, ListRecentItems
 
 ### Integration Tests
-- MCP SDK HTTP handler経由のツール呼び出しend-to-end
-- store層の新規メソッドのDB統合テスト（テスト用PostgreSQL）
-- 認証ミドルウェア統合テスト（有効/無効トークン + MCPリクエスト）
-
-### E2E Tests
-- Claude Desktop設定での接続確認（手動）
-- 各ツールの呼び出しと期待レスポンスの検証（手動）
+- MCP SDK HTTP handler経由のツール呼び出しE2E
+- APIキー生成→MCP認証→ツール呼び出しの一連のフロー
 
 ## Security Considerations
-- **Bearer Token認証**: `MCP_API_KEY`環境変数で管理。十分な長さ（32文字以上）を推奨
-- **ユーザースコープ**: 全クエリにuserIDが含まれ、他ユーザーのデータへのアクセス不可
-- **読み取り専用**: 記事の作成・更新・削除操作を一切提供しない
-- **オプショナル有効化**: 環境変数未設定時はエンドポイント自体が存在しない（攻撃面ゼロ）
-- **HTTPS前提**: 本番環境ではリバースプロキシ（nginx等）でTLS終端することを推奨
-- **DB接続情報**: ログ出力に含めない（既存slogポリシーに準拠）
+- **APIキーハッシュ保存**: 平文をDBに保存しない（SHA-256ハッシュのみ）
+- **1回表示**: 生成時のみ平文キーを表示。以後再表示不可
+- **ユーザースコープ**: 全クエリにuserID含む。他ユーザーデータへのアクセス不可
+- **読み取り専用**: 記事の変更操作なし
+- **HTTPS前提**: 本番環境ではTLS終端必須
+- **CSRFトークン**: キー生成・失効はPOSTリクエスト + CSRF保護（既存パターン）

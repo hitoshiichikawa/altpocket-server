@@ -76,17 +76,16 @@
 - **Rationale**: インターネット経由のアクセスが前提。既存APIサーバーに埋め込むことで、新規バイナリ・Dockerサービス・リバースプロキシ設定が不要。デプロイフローの変更もなし
 - **Trade-offs**: APIサーバーの責務が若干増えるが、MCPハンドラーは`internal/mcp`パッケージに分離されており影響は限定的
 
-### Decision: Bearer Token認証
+### Decision: DB保存APIキー + 設定画面管理
 - **Context**: インターネット経由でのMCPアクセス認証方式
-- **Selected Approach**: `MCP_API_KEY`環境変数でAPIキーを管理し、`Authorization: Bearer <token>`ヘッダーで認証
-- **Rationale**: MCPクライアント（Claude Desktop等）はHTTPヘッダーの設定をサポートしており、最もシンプルな認証方式。OAuth等の複雑な認証フローは不要
-- **Trade-offs**: APIキーのローテーション機能は提供しない（環境変数の再設定で対応）
-
-### Decision: オプショナル有効化
-- **Context**: MCP機能が未設定の環境での振る舞い
-- **Selected Approach**: `MCP_API_KEY`・`MCP_USER_EMAIL`が未設定の場合はMCPエンドポイントを登録しない
-- **Rationale**: 既存ユーザーへの影響ゼロ。MCP機能を使わない場合は攻撃面も増えない
-- **Trade-offs**: なし（純粋なメリット）
+- **Alternatives Considered**:
+  1. 環境変数`MCP_API_KEY` — 最もシンプルだがローテーション時にサーバー再起動必要
+  2. 設定画面でAPIキー生成・DB保存 — UXが良く、複数キー管理・即時失効可能
+  3. 既存JWT認証の流用 — MCPクライアントのトークンリフレッシュが煩雑
+- **Selected Approach**: 設定画面からAPIキーを生成し、SHA-256ハッシュをDBに保存
+- **Rationale**: ユーザーが自身でキーを管理でき、即時失効・複数キー対応が可能。サーバー再起動不要
+- **Trade-offs**: DBテーブル追加・マイグレーションが必要だが、運用の柔軟性が大幅に向上
+- **Security**: 平文キーはDB保存せず、生成時に1回のみ表示。SHA-256ハッシュで照合
 
 ## Risks & Mitigations
 - 公式SDKのAPIが今後変更される可能性 → v1安定版を使用し、go.sumでバージョン固定
