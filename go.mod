@@ -1,6 +1,8 @@
 module altpocket
 
-go 1.22
+go 1.23.0
+
+toolchain go1.24.7
 
 require (
 	github.com/PuerkitoBio/goquery v1.9.2
@@ -28,6 +30,7 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
+	github.com/mark3labs/mcp-go v0.46.0 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.54.0 // indirect
 	go.opentelemetry.io/otel v1.29.0 // indirect
