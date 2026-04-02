@@ -79,6 +79,57 @@
       </div>
     </div>
 
+    <!-- MCP API Keys -->
+    <div class="settings-group">
+      <h2>MCP API Keys</h2>
+      <p class="muted" style="margin:0 0 12px;">AI agents (Claude Desktop, Cline, etc.) can access your articles via MCP.</p>
+
+      {{if .NewMCPKey}}
+        <div class="notice notice-success" style="word-break:break-all;">
+          <strong>New API key created. Copy it now &mdash; it won't be shown again.</strong><br>
+          <code style="display:block; margin-top:8px; padding:8px; background:var(--bg-secondary); border-radius:4px; font-size:13px;">{{.NewMCPKey}}</code>
+          <button type="button" class="btn-tertiary" style="margin-top:8px;" onclick="navigator.clipboard.writeText('{{.NewMCPKey}}')">Copy to clipboard</button>
+        </div>
+      {{end}}
+
+      {{if .MCPAPIKeys}}
+        {{range .MCPAPIKeys}}
+        <div class="settings-row">
+          <span><code>{{.KeyPrefix}}...</code> &mdash; {{.CreatedAt.Format "2006-01-02"}}</span>
+          <form method="post" action="/ui/settings/mcp/keys/{{.ID}}/revoke" style="margin:0;">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn-danger" style="font-size:12px; padding:4px 8px;">Revoke</button>
+          </form>
+        </div>
+        {{end}}
+      {{else}}
+        <div class="settings-row">
+          <span class="muted" style="margin:0;">No API keys yet.</span>
+        </div>
+      {{end}}
+
+      <div class="settings-actions">
+        <form method="post" action="/ui/settings/mcp/keys">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <button type="submit" class="btn-primary">Generate New Key</button>
+        </form>
+      </div>
+
+      <details style="margin-top:12px;">
+        <summary class="muted" style="cursor:pointer;">MCP Client Configuration</summary>
+        <pre style="margin-top:8px; padding:12px; background:var(--bg-secondary); border-radius:6px; font-size:12px; overflow-x:auto;">{
+  "mcpServers": {
+    "altpocket": {
+      "url": "{{.MCPEndpointURL}}",
+      "headers": {
+        "Authorization": "Bearer YOUR_API_KEY"
+      }
+    }
+  }
+}</pre>
+      </details>
+    </div>
+
     <!-- Tools -->
     <div class="settings-group">
       <h2>Tools</h2>

@@ -16,6 +16,7 @@ import (
 
 	"altpocket/internal/auth"
 	"altpocket/internal/config"
+	"altpocket/internal/mcpserver"
 	"altpocket/internal/ratelimit"
 	"altpocket/internal/store"
 	"altpocket/internal/tag"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	mcpgoserver "github.com/mark3labs/mcp-go/server"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/idtoken"
@@ -151,10 +153,33 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/settings/google/callback", s.requireWeb(s.handleUISettingsGoogleCallback))
 		r.Post("/settings/google/disconnect", s.requireWeb(s.handleUISettingsGoogleDisconnect))
 		r.Post("/settings/google/export", s.requireWeb(s.handleUISettingsGoogleExport))
+		r.Post("/settings/mcp/keys", s.requireWeb(s.handleMCPKeyGenerate))
+		r.Post("/settings/mcp/keys/{id}/revoke", s.requireWeb(s.handleMCPKeyRevoke))
+	})
+
+	// MCP endpoint - always mounted, auth middleware handles access control
+	r.Route("/mcp", func(r chi.Router) {
+		r.Use(mcpserver.NewAuthMiddleware(s.store, s.logger))
+		r.Handle("/*", s.mcpHTTPHandler())
 	})
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 	return r
+}
+
+func (s *Server) mcpHTTPHandler() http.Handler {
+	// Create a placeholder MCP server; the actual userID is set per-request by auth middleware
+	// For Streamable HTTP, we create per-user servers dynamically
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userID := mcpserver.UserIDFromContext(r.Context())
+		if userID == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		srv := mcpserver.New(s.store, userID)
+		httpSrv := mcpgoserver.NewStreamableHTTPServer(srv)
+		httpSrv.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -794,6 +819,10 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	noticeMsg, noticeClass := settingsNotice(r.URL.Query().Get("status"))
+	if mcpMsg, mcpClass := settingsMCPNotice(r.URL.Query().Get("status")); mcpMsg != "" {
+		noticeMsg = mcpMsg
+		noticeClass = mcpClass
+	}
 	if custom := strings.TrimSpace(r.URL.Query().Get("message")); custom != "" {
 		noticeMsg = custom
 		if noticeClass == "" {
@@ -804,6 +833,10 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 	if sheetURL == "" {
 		sheetURL = googleSheetURL(conn.SpreadsheetID)
 	}
+
+	mcpKeys, _ := s.store.ListMCPAPIKeys(r.Context(), user.ID)
+	newMCPKey := r.URL.Query().Get("mcp_key")
+
 	data := map[string]interface{}{
 		"Title":                 "設定",
 		"User":                  user,
@@ -814,6 +847,9 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 		"SheetURL":              sheetURL,
 		"NoticeMessage":         noticeMsg,
 		"NoticeClass":           noticeClass,
+		"MCPAPIKeys":            mcpKeys,
+		"NewMCPKey":             newMCPKey,
+		"MCPEndpointURL":        s.mcpEndpointURL(),
 	}
 	if err := s.renderer.Render(w, "settings", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
