@@ -12,6 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// mcpNewKeyCookie holds a freshly generated plain MCP API key for one-time
+// display on the settings page. It is HttpOnly + short-lived so it never
+// reaches the URL bar, browser history, server access logs, or Referer headers.
+const mcpNewKeyCookie = "mcp_new_key"
+
 func (s *Server) handleMCPKeyGenerate(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -43,7 +48,36 @@ func (s *Server) handleMCPKeyGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, "/ui/settings?status=mcp_key_created&mcp_key="+plainKey, http.StatusFound)
+	http.SetCookie(w, &http.Cookie{
+		Name:     mcpNewKeyCookie,
+		Value:    plainKey,
+		Path:     "/ui/settings",
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(s.cfg.PublicBaseURL, "https://"),
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   120,
+	})
+
+	http.Redirect(w, r, "/ui/settings?status=mcp_key_created", http.StatusFound)
+}
+
+// consumeMCPNewKeyCookie reads and immediately clears the one-time
+// plain-key cookie. Returns "" if no cookie is present.
+func (s *Server) consumeMCPNewKeyCookie(w http.ResponseWriter, r *http.Request) string {
+	c, err := r.Cookie(mcpNewKeyCookie)
+	if err != nil || c.Value == "" {
+		return ""
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     mcpNewKeyCookie,
+		Value:    "",
+		Path:     "/ui/settings",
+		HttpOnly: true,
+		Secure:   strings.HasPrefix(s.cfg.PublicBaseURL, "https://"),
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+	return c.Value
 }
 
 func (s *Server) handleMCPKeyRevoke(w http.ResponseWriter, r *http.Request) {

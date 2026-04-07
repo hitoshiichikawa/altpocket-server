@@ -69,12 +69,14 @@ docker compose \
   -f deploy/docker-compose.production.yml \
   up -d db
 
-# 2) マイグレーション適用
-docker compose \
-  --env-file deploy/.env.production \
-  -f docker-compose.yml \
-  -f deploy/docker-compose.production.yml \
-  exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < migrations/001_init.sql
+# 2) マイグレーション適用（migrations/*.sql を番号順に全て適用）
+for f in migrations/*.sql; do
+  docker compose \
+    --env-file deploy/.env.production \
+    -f docker-compose.yml \
+    -f deploy/docker-compose.production.yml \
+    exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"
+done
 
 # 3) API/worker/edge 起動
 docker compose \

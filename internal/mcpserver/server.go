@@ -8,156 +8,138 @@ import (
 
 	"altpocket/internal/store"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // New creates an MCP server with all tools and resources registered.
 // userID scopes all data access to the authenticated user.
-func New(st *store.Store, userID string) *server.MCPServer {
-	s := server.NewMCPServer("altpocket", "1.0.0")
+func New(ds DataSource, userID string) *mcp.Server {
+	s := mcp.NewServer(&mcp.Implementation{
+		Name:    "altpocket",
+		Version: "1.0.0",
+	}, nil)
 
-	s.AddTool(listItemsTool(), listItemsHandler(st, userID))
-	s.AddTool(searchItemsTool(), searchItemsHandler(st, userID))
-	s.AddTool(getItemTool(), getItemHandler(st, userID))
-	s.AddTool(listTagsTool(), listTagsHandler(st, userID))
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_items",
+		Description: "保存済み記事の一覧をページネーション付きで取得する",
+	}, listItemsHandler(ds, userID))
 
-	s.AddResource(recentArticlesResource(), recentArticlesHandler(st, userID))
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "search_items",
+		Description: "キーワードやタグで記事を検索する",
+	}, searchItemsHandler(ds, userID))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_item",
+		Description: "記事の全文コンテンツを含む詳細情報を取得する",
+	}, getItemHandler(ds, userID))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_tags",
+		Description: "タグの一覧と各タグの記事数を取得する",
+	}, listTagsHandler(ds, userID))
+
+	s.AddResource(&mcp.Resource{
+		URI:         "altpocket://recent-articles",
+		Name:        "新着記事（過去24時間）",
+		Description: "過去24時間以内に保存された記事の一覧",
+		MIMEType:    "application/json",
+	}, recentArticlesHandler(ds, userID))
 
 	return s
 }
 
 // --- list_items tool ---
 
-func listItemsTool() mcp.Tool {
-	return mcp.NewTool("list_items",
-		mcp.WithDescription("保存済み記事の一覧をページネーション付きで取得する"),
-		mcp.WithNumber("page",
-			mcp.Description("ページ番号（デフォルト: 1）"),
-		),
-		mcp.WithNumber("per_page",
-			mcp.Description("1ページあたりの件数（デフォルト: 30, 最大: 50）"),
-		),
-		mcp.WithString("sort",
-			mcp.Description("並び替え: newest または oldest（デフォルト: newest）"),
-			mcp.Enum("newest", "oldest"),
-		),
-	)
+type ListItemsInput struct {
+	Page    int    `json:"page,omitempty" jsonschema:"ページ番号（デフォルト: 1）"`
+	PerPage int    `json:"per_page,omitempty" jsonschema:"1ページあたりの件数（デフォルト: 30, 最大: 50）"`
+	Sort    string `json:"sort,omitempty" jsonschema:"並び替え: newest または oldest（デフォルト: newest）"`
 }
 
-func listItemsHandler(st *store.Store, userID string) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		page := int(req.GetFloat("page", 1))
-		perPage := int(req.GetFloat("per_page", 30))
-		sort := req.GetString("sort", "newest")
-
+func listItemsHandler(ds DataSource, userID string) mcp.ToolHandlerFor[ListItemsInput, any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, args ListItemsInput) (*mcp.CallToolResult, any, error) {
+		page := args.Page
 		if page < 1 {
 			page = 1
 		}
+		perPage := args.PerPage
 		if perPage < 1 || perPage > 50 {
 			perPage = 30
 		}
+		sort := args.Sort
+		if sort == "" {
+			sort = "newest"
+		}
 
-		items, pag, err := st.ListItems(ctx, userID, page, perPage, "", nil, sort)
+		items, pag, err := ds.ListItems(ctx, userID, page, perPage, "", nil, sort)
 		if err != nil {
-			return errorResult("データベース接続エラー: " + err.Error()), nil
+			return errorResult("データベース接続エラー: " + err.Error()), nil, nil
 		}
 
 		return jsonResult(map[string]any{
 			"items":      formatItemList(items),
 			"pagination": map[string]any{"page": pag.Page, "per_page": pag.PerPage, "total": pag.Total},
-		})
+		}), nil, nil
 	}
 }
 
 // --- search_items tool ---
 
-func searchItemsTool() mcp.Tool {
-	return mcp.NewTool("search_items",
-		mcp.WithDescription("キーワードやタグで記事を検索する"),
-		mcp.WithString("query",
-			mcp.Description("検索キーワード"),
-		),
-		mcp.WithArray("tags",
-			mcp.Description("タグによる絞り込み（AND結合）"),
-			mcp.Items(map[string]any{"type": "string"}),
-		),
-		mcp.WithNumber("page",
-			mcp.Description("ページ番号（デフォルト: 1）"),
-		),
-		mcp.WithNumber("per_page",
-			mcp.Description("1ページあたりの件数（デフォルト: 30, 最大: 50）"),
-		),
-	)
+type SearchItemsInput struct {
+	Query   string   `json:"query,omitempty" jsonschema:"検索キーワード"`
+	Tags    []string `json:"tags,omitempty" jsonschema:"タグによる絞り込み（AND結合）"`
+	Page    int      `json:"page,omitempty" jsonschema:"ページ番号（デフォルト: 1）"`
+	PerPage int      `json:"per_page,omitempty" jsonschema:"1ページあたりの件数（デフォルト: 30, 最大: 50）"`
 }
 
-func searchItemsHandler(st *store.Store, userID string) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query := req.GetString("query", "")
-		page := int(req.GetFloat("page", 1))
-		perPage := int(req.GetFloat("per_page", 30))
-
-		var tags []string
-		if rawTags, ok := req.GetArguments()["tags"]; ok {
-			if arr, ok := rawTags.([]any); ok {
-				for _, v := range arr {
-					if s, ok := v.(string); ok {
-						tags = append(tags, s)
-					}
-				}
-			}
+func searchItemsHandler(ds DataSource, userID string) mcp.ToolHandlerFor[SearchItemsInput, any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, args SearchItemsInput) (*mcp.CallToolResult, any, error) {
+		if args.Query == "" && len(args.Tags) == 0 {
+			return errorResult("queryまたはtagsの少なくとも一方を指定してください"), nil, nil
 		}
 
-		if query == "" && len(tags) == 0 {
-			return errorResult("queryまたはtagsの少なくとも一方を指定してください"), nil
-		}
-
+		page := args.Page
 		if page < 1 {
 			page = 1
 		}
+		perPage := args.PerPage
 		if perPage < 1 || perPage > 50 {
 			perPage = 30
 		}
 
 		sort := "newest"
-		if query != "" {
+		if args.Query != "" {
 			sort = "relevance"
 		}
 
-		items, pag, err := st.ListItems(ctx, userID, page, perPage, query, tags, sort)
+		items, pag, err := ds.ListItems(ctx, userID, page, perPage, args.Query, args.Tags, sort)
 		if err != nil {
-			return errorResult("データベース接続エラー: " + err.Error()), nil
+			return errorResult("データベース接続エラー: " + err.Error()), nil, nil
 		}
 
 		return jsonResult(map[string]any{
 			"items":      formatItemList(items),
 			"pagination": map[string]any{"page": pag.Page, "per_page": pag.PerPage, "total": pag.Total},
-		})
+		}), nil, nil
 	}
 }
 
 // --- get_item tool ---
 
-func getItemTool() mcp.Tool {
-	return mcp.NewTool("get_item",
-		mcp.WithDescription("記事の全文コンテンツを含む詳細情報を取得する"),
-		mcp.WithString("id",
-			mcp.Description("記事のUUID"),
-			mcp.Required(),
-		),
-	)
+type GetItemInput struct {
+	ID string `json:"id" jsonschema:"記事のUUID"`
 }
 
-func getItemHandler(st *store.Store, userID string) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("id", "")
-		if id == "" {
-			return errorResult("IDを指定してください"), nil
+func getItemHandler(ds DataSource, userID string) mcp.ToolHandlerFor[GetItemInput, any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, args GetItemInput) (*mcp.CallToolResult, any, error) {
+		if args.ID == "" {
+			return errorResult("IDを指定してください"), nil, nil
 		}
 
-		detail, err := st.GetItemDetail(ctx, userID, id)
+		detail, err := ds.GetItemDetail(ctx, userID, args.ID)
 		if err != nil {
-			return errorResult("記事が見つかりません"), nil
+			return errorResult("記事が見つかりません"), nil, nil
 		}
 
 		tags := make([]map[string]string, 0, len(detail.Tags))
@@ -180,28 +162,21 @@ func getItemHandler(st *store.Store, userID string) server.ToolHandlerFunc {
 			"tags":          tags,
 			"fetch_status":  detail.FetchStatus,
 			"created_at":    detail.CreatedAt.Format(time.RFC3339),
-		})
+		}), nil, nil
 	}
 }
 
 // --- list_tags tool ---
 
-func listTagsTool() mcp.Tool {
-	return mcp.NewTool("list_tags",
-		mcp.WithDescription("タグの一覧と各タグの記事数を取得する"),
-		mcp.WithString("query",
-			mcp.Description("タグ名フィルタ（前方一致）"),
-		),
-	)
+type ListTagsInput struct {
+	Query string `json:"query,omitempty" jsonschema:"タグ名フィルタ（前方一致）"`
 }
 
-func listTagsHandler(st *store.Store, userID string) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query := req.GetString("query", "")
-
-		tags, err := st.ListTagsWithCountFiltered(ctx, userID, query, nil)
+func listTagsHandler(ds DataSource, userID string) mcp.ToolHandlerFor[ListTagsInput, any] {
+	return func(ctx context.Context, req *mcp.CallToolRequest, args ListTagsInput) (*mcp.CallToolResult, any, error) {
+		tags, err := ds.ListTagsWithCountFiltered(ctx, userID, args.Query, nil)
 		if err != nil {
-			return errorResult("データベース接続エラー: " + err.Error()), nil
+			return errorResult("データベース接続エラー: " + err.Error()), nil, nil
 		}
 
 		result := make([]map[string]any, 0, len(tags))
@@ -213,25 +188,16 @@ func listTagsHandler(st *store.Store, userID string) server.ToolHandlerFunc {
 			})
 		}
 
-		return jsonResult(map[string]any{"tags": result})
+		return jsonResult(map[string]any{"tags": result}), nil, nil
 	}
 }
 
 // --- recent-articles resource ---
 
-func recentArticlesResource() mcp.Resource {
-	return mcp.NewResource(
-		"altpocket://recent-articles",
-		"新着記事（過去24時間）",
-		mcp.WithResourceDescription("過去24時間以内に保存された記事の一覧"),
-		mcp.WithMIMEType("application/json"),
-	)
-}
-
-func recentArticlesHandler(st *store.Store, userID string) server.ResourceHandlerFunc {
-	return func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+func recentArticlesHandler(ds DataSource, userID string) mcp.ResourceHandler {
+	return func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		since := time.Now().Add(-24 * time.Hour)
-		items, err := st.ListRecentItems(ctx, userID, since)
+		items, err := ds.ListRecentItems(ctx, userID, since)
 		if err != nil {
 			return nil, fmt.Errorf("データベース接続エラー: %w", err)
 		}
@@ -247,11 +213,13 @@ func recentArticlesHandler(st *store.Store, userID string) server.ResourceHandle
 			return nil, err
 		}
 
-		return []mcp.ResourceContents{
-			mcp.TextResourceContents{
-				URI:      "altpocket://recent-articles",
-				MIMEType: "application/json",
-				Text:     string(b),
+		return &mcp.ReadResourceResult{
+			Contents: []*mcp.ResourceContents{
+				{
+					URI:      "altpocket://recent-articles",
+					MIMEType: "application/json",
+					Text:     string(b),
+				},
 			},
 		}, nil
 	}
@@ -279,28 +247,22 @@ func formatItemList(items []store.ItemListRow) []map[string]any {
 	return result
 }
 
-func jsonResult(data any) (*mcp.CallToolResult, error) {
+func jsonResult(data any) *mcp.CallToolResult {
 	b, err := json.Marshal(data)
 	if err != nil {
-		return nil, err
+		return errorResult("JSONエンコードエラー: " + err.Error())
 	}
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			mcp.TextContent{
-				Type: "text",
-				Text: string(b),
-			},
+			&mcp.TextContent{Text: string(b)},
 		},
-	}, nil
+	}
 }
 
 func errorResult(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			mcp.TextContent{
-				Type: "text",
-				Text: msg,
-			},
+			&mcp.TextContent{Text: msg},
 		},
 		IsError: true,
 	}

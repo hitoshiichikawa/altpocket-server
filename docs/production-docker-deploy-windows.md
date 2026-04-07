@@ -130,9 +130,12 @@ docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\
 ```
 
 ### 4.2 マイグレーション
+`migrations\*.sql` を番号順にすべて適用します。
 ```powershell
-Get-Content .\migrations\001_init.sql -Raw |
-  docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml exec -T db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+Get-ChildItem .\migrations\*.sql | Sort-Object Name | ForEach-Object {
+  Get-Content $_.FullName -Raw |
+    docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml exec -T db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+}
 ```
 
 ### 4.3 API/Worker/Edge 起動

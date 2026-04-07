@@ -6,7 +6,7 @@ Pocket互換の「あとで読む」サービス。Chrome ExtensionでURL+タグ
 - API + Web UI(SSR): `cmd/api`
 - Worker: `cmd/worker`
 - DB: PostgreSQL 16
-- Migration: `migrations/001_init.sql`
+- Migration: `migrations/*.sql`（番号順に適用）
 - Extension: `extension/`
 
 ## 必須環境変数
@@ -37,6 +37,8 @@ CORS_ALLOW_ORIGINS=chrome-extension://your-extension-id,http://localhost:8080
 docker compose up -d db
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/001_init.sql
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/002_google_sheets_connections.sql
+psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/003_extension_refresh_tokens.sql
+psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/004_mcp_api_keys.sql
 
 docker compose up --build api worker
 ```

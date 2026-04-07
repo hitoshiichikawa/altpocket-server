@@ -24,14 +24,20 @@ docker compose up -d db
 ```
 
 ## 3. マイグレーション適用
+すべての `migrations/*.sql` を番号順に適用してください。
+
 **方法A: ホストに `psql` がある場合**
 ```bash
-psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/001_init.sql
+for f in migrations/*.sql; do
+  psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f "$f"
+done
 ```
 
 **方法B: `psql` がない場合（コンテナ経由）**
 ```bash
-docker compose exec -T db psql -U altpocket -d altpocket < migrations/001_init.sql
+for f in migrations/*.sql; do
+  docker compose exec -T db psql -U altpocket -d altpocket < "$f"
+done
 ```
 
 ## 4. API / Worker 起動

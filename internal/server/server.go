@@ -25,7 +25,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	mcpgoserver "github.com/mark3labs/mcp-go/server"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/idtoken"
@@ -158,9 +158,11 @@ func (s *Server) Routes() http.Handler {
 	})
 
 	// MCP endpoint - always mounted, auth middleware handles access control
+	mcpHandler := s.mcpHTTPHandler()
 	r.Route("/mcp", func(r chi.Router) {
 		r.Use(mcpserver.NewAuthMiddleware(s.store, s.logger))
-		r.Handle("/*", s.mcpHTTPHandler())
+		r.Handle("/*", mcpHandler)
+		r.Handle("/", mcpHandler)
 	})
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
@@ -168,18 +170,18 @@ func (s *Server) Routes() http.Handler {
 }
 
 func (s *Server) mcpHTTPHandler() http.Handler {
-	// Create a placeholder MCP server; the actual userID is set per-request by auth middleware
-	// For Streamable HTTP, we create per-user servers dynamically
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		userID := mcpserver.UserIDFromContext(r.Context())
-		if userID == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		srv := mcpserver.New(s.store, userID)
-		httpSrv := mcpgoserver.NewStreamableHTTPServer(srv)
-		httpSrv.ServeHTTP(w, r)
-	})
+	// Streamable HTTP handler. A fresh per-user MCP server is constructed for
+	// each request via getServer; the userID comes from the auth middleware.
+	return mcpsdk.NewStreamableHTTPHandler(
+		func(r *http.Request) *mcpsdk.Server {
+			userID := mcpserver.UserIDFromContext(r.Context())
+			if userID == "" {
+				return nil
+			}
+			return mcpserver.New(s.store, userID)
+		},
+		nil,
+	)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -835,7 +837,7 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mcpKeys, _ := s.store.ListMCPAPIKeys(r.Context(), user.ID)
-	newMCPKey := r.URL.Query().Get("mcp_key")
+	newMCPKey := s.consumeMCPNewKeyCookie(w, r)
 
 	data := map[string]interface{}{
 		"Title":                 "設定",
