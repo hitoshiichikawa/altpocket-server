@@ -1,0 +1,87 @@
+name: 機能要望・改善（idd-claude 自動開発）
+description: Claude Code チームに自動開発を依頼するための構造化 Issue テンプレート
+title: "[feat] "
+labels: ["auto-dev"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        このテンプレートは、idd-claude ワークフローによって自動開発される Issue 用です。
+        `auto-dev` ラベルが自動付与され、数分以内に Claude Code が Triage を開始します。
+
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景・解きたい課題
+      description: なぜこの機能／修正が必要か。現状の問題点と、解決されたときのあるべき姿
+      placeholder: |
+        例:
+        - 現在、ユーザー登録時にメール検証がないため、無効なアドレスでアカウントが作られている
+        - サポートへの問い合わせの 15% がこの問題に起因している
+    validations:
+      required: true
+
+  - type: textarea
+    id: user-story
+    attributes:
+      label: ユーザーストーリー
+      placeholder: |
+        As a <役割>
+        I want <機能>
+        So that <得られる価値>
+
+        例:
+        As a 新規登録ユーザー
+        I want メール認証リンクを受け取って本登録を完了する
+        So that 正しく届くメールアドレスでアカウントを作れる
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 期待する挙動・受入基準の候補
+      description: Given/When/Then 形式でなくても、箇条書きで OK。PM エージェントが整形します
+      placeholder: |
+        例:
+        - 登録時に認証メールが送信される
+        - リンク有効期限は 24 時間
+        - 未認証アカウントはログイン不可
+        - 再送信は 1 分に 1 回まで
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: スコープ外（対象外としたいこと）
+      description: 今回含めたくない事項を明示しておくと、Triage の精度が上がります
+      placeholder: |
+        例:
+        - SMS 認証の追加（別 Issue で扱う）
+        - 既存ユーザーへの遡及適用
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 既知の制約・依存
+      description: 触るべきでないファイル、固有の業務制約、外部依存の存在など
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: 優先度
+      options:
+        - High（今週中）
+        - Mid（今スプリント内）
+        - Low（時間があれば）
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: options
+    attributes:
+      label: 自動開発オプション
+      options:
+        - label: Triage をスキップして即時着手（simple な変更のみ推奨）
+          required: false
