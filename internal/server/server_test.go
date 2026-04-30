@@ -37,6 +37,50 @@ func TestPageURL(t *testing.T) {
 	}
 }
 
+// TestWantsItemsFragment guards the dispatch contract that lets
+// handleUIItems return an HTML fragment for the search-debounce / URL sync
+// flow (Issue #114).
+//
+// The handler must:
+//   - render the full /ui/items page when no opt-in header is present
+//     (preserves the current SSR contract, NFR 2)
+//   - render the items_list fragment only when X-Requested-With: ItemsFragment
+//     is supplied by the client-side JS
+func TestWantsItemsFragment(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{name: "no header", header: "", want: false},
+		{name: "exact match", header: "ItemsFragment", want: true},
+		{name: "case-insensitive match", header: "itemsfragment", want: true},
+		{name: "alternate casing", header: "ITEMSFRAGMENT", want: true},
+		{name: "unrelated XHR value (legacy XMLHttpRequest)", header: "XMLHttpRequest", want: false},
+		{name: "different value", header: "fragment", want: false},
+		{name: "value with spaces is rejected", header: " ItemsFragment ", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/ui/items", nil)
+			if tc.header != "" {
+				req.Header.Set("X-Requested-With", tc.header)
+			}
+			got := wantsItemsFragment(req)
+			if got != tc.want {
+				t.Fatalf("wantsItemsFragment(header=%q) = %v, want %v", tc.header, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil request returns false", func(t *testing.T) {
+		if wantsItemsFragment(nil) {
+			t.Fatalf("expected nil request to be treated as full-page render")
+		}
+	})
+}
+
 func TestParseTagInput(t *testing.T) {
 	got := parseTagInput(" Go,news;go\nweb ")
 	if len(got) != 3 {
