@@ -104,7 +104,7 @@ func runOnce(ctx context.Context, st *store.Store, f *fetcher.Fetcher, log *slog
 			if err != nil {
 				reason := classifyFetchError(err)
 				_ = st.UpdateFetchFailure(ctx, it.ID, reason)
-				log.Info("worker_fetch_failed", "item_id", it.ID, "reason", reason)
+				logFetchFailure(log, it.ID, reason, err)
 				return
 			}
 			err = st.UpdateFetchSuccess(ctx, it.ID, res.Title, res.Excerpt, res.ContentFull, res.ContentSearch, res.ContentBytes)
@@ -137,5 +137,26 @@ func classifyFetchError(err error) string {
 	if errors.Is(err, fetcher.ErrNoContent) {
 		return "no_content"
 	}
+	if errors.Is(err, fetcher.ErrBlockedIP) {
+		return "blocked_ip"
+	}
 	return "fetch_failed"
+}
+
+// logFetchFailure emits the worker_fetch_failed slog event. SSRF rejections
+// get an extra "blocked_category" field (loopback / private / link_local /
+// unique_local / ipv4_mapped / ...) to help operators triage. We never log
+// the raw URL, query string, or any auth headers (NFR 1.3).
+func logFetchFailure(log *slog.Logger, itemID string, reason string, err error) {
+	var blockedErr *fetcher.BlockedIPError
+	if errors.As(err, &blockedErr) {
+		log.Info(
+			"worker_fetch_failed",
+			"item_id", itemID,
+			"reason", reason,
+			"blocked_category", string(blockedErr.Category),
+		)
+		return
+	}
+	log.Info("worker_fetch_failed", "item_id", itemID, "reason", reason)
 }
