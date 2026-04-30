@@ -10,6 +10,7 @@ import (
 
 type Renderer struct {
 	templates map[string]*template.Template
+	fragments map[string]*template.Template
 }
 
 // BuildRevision can be injected at build time via -ldflags.
@@ -28,6 +29,7 @@ func New(templateDir string) (*Renderer, error) {
 	home := filepath.Join(templateDir, "home.html")
 	register := filepath.Join(templateDir, "register.html")
 	items := filepath.Join(templateDir, "items.html")
+	itemsList := filepath.Join(templateDir, "items_list.html")
 	detail := filepath.Join(templateDir, "item_detail.html")
 	quickAdd := filepath.Join(templateDir, "quick_add.html")
 	settings := filepath.Join(templateDir, "settings.html")
@@ -40,7 +42,13 @@ func New(templateDir string) (*Renderer, error) {
 	if err != nil {
 		return nil, err
 	}
-	itemsTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, items)
+	// Full items page bundles layout, items, and items_list partial.
+	itemsTpl, err := template.New("layout.html").Funcs(funcMap).ParseFiles(layout, items, itemsList)
+	if err != nil {
+		return nil, err
+	}
+	// Standalone fragment template for asynchronous list refresh (no layout).
+	itemsFragmentTpl, err := template.New("items_list.html").Funcs(funcMap).ParseFiles(itemsList)
 	if err != nil {
 		return nil, err
 	}
@@ -56,14 +64,19 @@ func New(templateDir string) (*Renderer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Renderer{templates: map[string]*template.Template{
-		"home":      homeTpl,
-		"register":  registerTpl,
-		"items":     itemsTpl,
-		"detail":    detailTpl,
-		"quick_add": quickAddTpl,
-		"settings":  settingsTpl,
-	}}, nil
+	return &Renderer{
+		templates: map[string]*template.Template{
+			"home":      homeTpl,
+			"register":  registerTpl,
+			"items":     itemsTpl,
+			"detail":    detailTpl,
+			"quick_add": quickAddTpl,
+			"settings":  settingsTpl,
+		},
+		fragments: map[string]*template.Template{
+			"items_list": itemsFragmentTpl,
+		},
+	}, nil
 }
 
 func resolveAssetVersion() string {
@@ -91,4 +104,18 @@ func (r *Renderer) Render(w http.ResponseWriter, name string, data any) error {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	return tpl.ExecuteTemplate(w, "layout", data)
+}
+
+// RenderFragment writes a registered partial template (no layout) to w.
+// Used for asynchronous fragment swaps such as the items list updated by the
+// search debounce path; callers must keep the returned HTML drop-in
+// compatible with the corresponding region of the full page render.
+func (r *Renderer) RenderFragment(w http.ResponseWriter, name string, data any) error {
+	tpl, ok := r.fragments[name]
+	if !ok {
+		http.Error(w, "fragment not found", http.StatusInternalServerError)
+		return nil
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	return tpl.ExecuteTemplate(w, name, data)
 }

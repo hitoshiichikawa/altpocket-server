@@ -131,6 +131,121 @@ func renderItemsWith(t *testing.T, items []testItemRow) string {
 	return rr.Body.String()
 }
 
+// TestRenderFragmentItemsList verifies that the standalone items_list
+// fragment renders only the items region (no layout / no <html>).
+//
+// This is the rendering path used by the search debounce / URL sync flow
+// (Issue #114) to refresh the list without a full page reload.
+func TestRenderFragmentItemsList(t *testing.T) {
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+
+	t.Run("fragment contains items but no layout chrome", func(t *testing.T) {
+		r, err := New("../../templates")
+		if err != nil {
+			t.Fatalf("failed to create renderer: %v", err)
+		}
+		data := map[string]interface{}{
+			"Items": []testItemRow{{
+				ID:          "item-frag",
+				URL:         "https://example.com/a",
+				Title:       "Fragment記事",
+				Excerpt:     "本文抜粋",
+				FetchStatus: "completed",
+				CreatedAt:   now,
+				Tags:        nil,
+			}},
+			"Page":       1,
+			"TotalPages": 1,
+			"PrevURL":    "",
+			"NextURL":    "",
+		}
+
+		rr := httptest.NewRecorder()
+		if err := r.RenderFragment(rr, "items_list", data); err != nil {
+			t.Fatalf("RenderFragment error: %v", err)
+		}
+		body := rr.Body.String()
+
+		if strings.Contains(body, "<!DOCTYPE html>") {
+			t.Errorf("fragment must not include doctype, got body containing it")
+		}
+		if strings.Contains(body, "<html") || strings.Contains(body, "</html>") {
+			t.Errorf("fragment must not include <html> root element")
+		}
+		if strings.Contains(body, "<title>") {
+			t.Errorf("fragment must not include <title> element")
+		}
+		if !strings.Contains(body, `id="item-title-item-frag"`) {
+			t.Errorf("expected fragment to contain item card, got:\n%s", body)
+		}
+		if !strings.Contains(body, `class="pagination"`) {
+			t.Errorf("expected fragment to contain pagination block, got:\n%s", body)
+		}
+	})
+
+	t.Run("empty Items renders empty-state card without layout", func(t *testing.T) {
+		r, err := New("../../templates")
+		if err != nil {
+			t.Fatalf("failed to create renderer: %v", err)
+		}
+		data := map[string]interface{}{
+			"Items":      []testItemRow{},
+			"Page":       1,
+			"TotalPages": 1,
+		}
+
+		rr := httptest.NewRecorder()
+		if err := r.RenderFragment(rr, "items_list", data); err != nil {
+			t.Fatalf("RenderFragment error: %v", err)
+		}
+		body := rr.Body.String()
+
+		if !strings.Contains(body, "No articles yet") {
+			t.Errorf("expected empty-state card, got:\n%s", body)
+		}
+		if strings.Contains(body, "<html") {
+			t.Errorf("fragment must not include <html> root element")
+		}
+	})
+
+	t.Run("unknown fragment name returns 500", func(t *testing.T) {
+		r, err := New("../../templates")
+		if err != nil {
+			t.Fatalf("failed to create renderer: %v", err)
+		}
+		rr := httptest.NewRecorder()
+		_ = r.RenderFragment(rr, "does_not_exist", nil)
+		if rr.Code != 500 {
+			t.Errorf("expected 500 for unknown fragment, got %d", rr.Code)
+		}
+	})
+}
+
+// TestItemsPageEmbedsFragment ensures the full /ui/items page render still
+// includes the items list (which now comes from the items_list partial).
+// This guards against regressions in the partial wiring.
+func TestItemsPageEmbedsFragment(t *testing.T) {
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	body := renderItemsWith(t, []testItemRow{{
+		ID:          "item-embed",
+		URL:         "https://example.com/c",
+		Title:       "埋め込み記事",
+		Excerpt:     "本文抜粋",
+		FetchStatus: "completed",
+		CreatedAt:   now,
+	}})
+
+	if !strings.Contains(body, `id="item-title-item-embed"`) {
+		t.Errorf("full page render must still include items_list cards")
+	}
+	if !strings.Contains(body, `id="items-list"`) {
+		t.Errorf("full page render must include #items-list region")
+	}
+	if !strings.Contains(body, `data-items-region`) {
+		t.Errorf("full page render must mark #items-list with data-items-region")
+	}
+}
+
 func TestItemsTagsDivRendering(t *testing.T) {
 	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
 
