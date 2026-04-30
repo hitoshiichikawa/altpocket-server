@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -36,11 +37,36 @@ type Fetcher struct {
 }
 
 func New(maxBytes int64, contentFullLimit, contentSearchLimit int) *Fetcher {
+	// Custom transport with a guarded DialContext so SSRF checks run at the
+	// actual TCP connect step (Requirement 2 AC-4). We keep the rest of the
+	// transport defaults equivalent to http.DefaultTransport so existing
+	// fetch behavior (TLS, keep-alive, timeouts) is preserved (NFR 3.1).
+	baseDialer := &net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           guardedDialContext(baseDialer),
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout:   10 * time.Second,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {
 				return ErrTooManyRedir
+			}
+			// Re-check the redirect target as an IP literal even before TCP
+			// dial so the rejection error type stays consistent (Requirement 2
+			// AC-3). The DialContext layer will catch hostname-based redirects
+			// at connect time regardless.
+			if err := checkHostIPLiteral(req.URL.String()); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -49,6 +75,13 @@ func New(maxBytes int64, contentFullLimit, contentSearchLimit int) *Fetcher {
 }
 
 func (f *Fetcher) Fetch(ctx context.Context, rawURL string) (Result, error) {
+	// Early IP-literal check: if the URL host is an IP literal that points to
+	// a blocked range, refuse before any DNS / TCP work happens (Requirement
+	// 1 AC-6).
+	if err := checkHostIPLiteral(rawURL); err != nil {
+		return Result{}, err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return Result{}, err
