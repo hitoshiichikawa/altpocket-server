@@ -88,11 +88,13 @@
           <span>{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
         </div>
 
-        <div class="tags">
-          {{range .Tags}}
-            <span class="tag">{{.Name}}</span>
-          {{end}}
-        </div>
+        {{if .Tags}}
+          <div class="tags">
+            {{range .Tags}}
+              <span class="tag">{{.Name}}</span>
+            {{end}}
+          </div>
+        {{end}}
 
         <div class="actions item-actions">
           <a class="btn-secondary action-button" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Original</a>
