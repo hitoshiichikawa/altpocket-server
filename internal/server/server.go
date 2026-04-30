@@ -748,7 +748,18 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	tags, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
+
+	fragmentOnly := wantsItemsFragment(r)
+
+	// For full-page renders we also need the Tags facet for the sidebar. The
+	// fragment path skips this query because the sidebar is not re-rendered
+	// on debounce-driven swaps and the user's selected tag chips are kept
+	// intact by client-side JS.
+	var tags any
+	if !fragmentOnly {
+		t, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
+		tags = t
+	}
 
 	data := map[string]interface{}{
 		"Title":          "記事一覧",
@@ -770,9 +781,30 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		"QuickAddNotice": quickAddNotice(r.URL.Query().Get("quick_add")),
 	}
 
+	if fragmentOnly {
+		if err := s.renderer.RenderFragment(w, "items_list", data); err != nil {
+			http.Error(w, "render error", http.StatusInternalServerError)
+		}
+		return
+	}
+
 	if err := s.renderer.Render(w, "items", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
+}
+
+// wantsItemsFragment returns true when the caller asked for the items list as
+// an HTML fragment instead of the full page. The contract is the request
+// header `X-Requested-With: ItemsFragment`, which is sent by the search
+// debounce / URL sync flow on /ui/items (Issue #114).
+//
+// The match is case-insensitive on the value; absence of the header (or any
+// other value, including an empty string) means a full-page render.
+func wantsItemsFragment(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.EqualFold(r.Header.Get("X-Requested-With"), "ItemsFragment")
 }
 
 func (s *Server) handleUIItem(w http.ResponseWriter, r *http.Request) {
