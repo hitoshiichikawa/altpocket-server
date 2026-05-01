@@ -136,8 +136,8 @@
   - _Boundary: internal/server_
   - _Depends: 3.1_
 
-- [ ] 6. 既存平文データの無効化マイグレーション
-- [ ] 6.1 `migrations/005_invalidate_legacy_refresh_tokens.sql` を新規追加
+- [x] 6. 既存平文データの無効化マイグレーション
+- [x] 6.1 `migrations/005_invalidate_legacy_refresh_tokens.sql` を新規追加
   - `DELETE FROM user_google_sheets_connections;` の 1 行
   - 冒頭にコメントで「forward-only / 再認可方式 / 詳細は README と
     docs/encryption-key-rotation.md」を明記
