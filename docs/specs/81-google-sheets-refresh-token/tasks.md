@@ -4,7 +4,7 @@
 `_Depends:_` は cross-boundary な非自明な依存のみ記載する（同 `_Boundary:_` 内の
 順序依存は番号順で表現）。
 
-- [ ] 1. `internal/crypto` パッケージの新規実装
+- [x] 1. `internal/crypto` パッケージの新規実装
 - [x] 1.1 `internal/crypto/crypto.go` を新規作成し、AES-256-GCM の `Encrypt` /
       `Decrypt` / `DecodeKey` と sentinel error を実装する (P)
   - `KeySize = 32`, `NonceSize = 12` 定数を export
@@ -22,7 +22,7 @@
   - _Requirements: 1.3, 1.4, 2.5, NFR 1.1, NFR 1.2_
   - _Boundary: internal/crypto_
 
-- [ ] 1.2 `internal/crypto/crypto_test.go` を新規作成し、Req 7.1〜7.6 をカバーする
+- [x] 1.2 `internal/crypto/crypto_test.go` を新規作成し、Req 7.1〜7.6 をカバーする
       単体テストを追加する (P)
   - `TestEncryptDecryptRoundTrip` — 32 byte 鍵で往復一致（Req 7.1）
   - `TestDecryptWithWrongKey` — 別の 32 byte 鍵では `ErrDecryptionFailed`（Req 7.2）
