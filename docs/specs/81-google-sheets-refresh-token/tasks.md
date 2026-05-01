@@ -146,7 +146,7 @@
   - _Boundary: migrations_
 
 - [ ] 7. ドキュメント整備
-- [ ] 7.1 `README.md` の必須環境変数節に `ENCRYPTION_KEY` を追加し、移行手順節を新設 (P)
+- [x] 7.1 `README.md` の必須環境変数節に `ENCRYPTION_KEY` を追加し、移行手順節を新設 (P)
   - 必須環境変数表に `ENCRYPTION_KEY=<base64 of 32 random bytes>` を追加
   - `ENCRYPTION_KEY` の用途（Google Sheets `refresh_token` 暗号化）と要求形式
     （base64 エンコード、デコード後 32 byte）を本文に明記（Req 6.3）
