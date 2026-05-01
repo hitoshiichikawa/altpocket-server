@@ -42,6 +42,17 @@ func main() {
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
 
+	// Issue #40: run one full cycle immediately at startup so jobs queued
+	// just before/at boot are not stalled for ~1 minute waiting for the
+	// first ticker fire. The three-step order matches the ticker loop body
+	// below to keep behavior identical between the startup cycle and
+	// subsequent periodic cycles.
+	runStartupCycle(
+		func() { cleanupSessions(ctx, st, log) },
+		func() { cleanupRefreshTokens(ctx, st, log) },
+		func() { runOnce(ctx, st, f, log) },
+	)
+
 	for {
 		select {
 		case <-ticker.C:
@@ -53,6 +64,18 @@ func main() {
 			return
 		}
 	}
+}
+
+// runStartupCycle executes one cycle of the periodic worker steps in the
+// same order as the ticker loop body: expired session cleanup, expired
+// refresh-token cleanup, then the fetch run. Each step function is
+// expected to absorb its own errors (log-and-return) so this helper does
+// not propagate or short-circuit on failure. Kept as a small pure helper
+// so it can be exercised without a real DB or fetcher.
+func runStartupCycle(sessionFn, refreshFn, fetchFn func()) {
+	sessionFn()
+	refreshFn()
+	fetchFn()
 }
 
 func cleanupSessions(ctx context.Context, st *store.Store, log *slog.Logger) {
