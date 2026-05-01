@@ -103,8 +103,8 @@
   - _Boundary: internal/store_
   - _Depends: 3.1_
 
-- [ ] 4. `cmd/api/main.go` の起動シーケンス更新
-- [ ] 4.1 `cmd/api/main.go` で `store.New(pool, cfg.EncryptionKey)` に変更
+- [x] 4. `cmd/api/main.go` の起動シーケンス更新
+- [x] 4.1 `cmd/api/main.go` で `store.New(pool, cfg.EncryptionKey)` に変更
   - `config.Load` がすでに fail-fast 検証を済ませているため、main 側では追加検証不要
   - _Requirements: 3.1, NFR 2.1_
   - _Boundary: cmd/api_
