@@ -111,7 +111,7 @@
   - _Depends: 2.1, 3.1_
 
 - [ ] 5. ハンドラ層の復号エラー分岐
-- [ ] 5.1 `internal/server/server.go` の `handleUISettings` で
+- [x] 5.1 `internal/server/server.go` の `handleUISettings` で
       `errors.Is(err, store.ErrRefreshTokenDecryptFailed)` を判定し、`pgx.ErrNoRows`
       と同じく `connected = false` 扱いにする
   - 既存の `pgx.ErrNoRows` ブランチに合流させる
