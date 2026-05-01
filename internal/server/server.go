@@ -1024,14 +1024,33 @@ func (s *Server) handleUISettingsGoogleExport(w http.ResponseWriter, r *http.Req
 
 	conn, err := s.store.GetGoogleSheetsConnection(r.Context(), user.ID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
 			http.Redirect(w, r, "/ui/settings?status=google_not_connected", http.StatusFound)
 			return
+		case errors.Is(err, store.ErrRefreshTokenDecryptFailed):
+			// Same UX as "not connected": the existing
+			// google_not_connected notice tells the user to re-authorize.
+			// We log a structured event (no key, ciphertext, plaintext,
+			// or OAuth response) so operators can monitor the failure
+			// rate without leaking secrets.
+			// (Req 1.5, 2.2, 2.3, 2.4, NFR 1.2, NFR 1.3, NFR 2.1, NFR 3.2)
+			s.logger.Warn("settings.google_sheets.decrypt_failed",
+				slog.String("request_id", s.requestID(r.Context())),
+				slog.String("user_id", user.ID))
+			http.Redirect(w, r, "/ui/settings?status=google_not_connected", http.StatusFound)
+			return
+		default:
+			http.Redirect(w, r, "/ui/settings?status=export_failed", http.StatusFound)
+			return
 		}
-		http.Redirect(w, r, "/ui/settings?status=export_failed", http.StatusFound)
-		return
 	}
 
+	// conn.RefreshToken is plaintext at this point. It MUST stay scoped
+	// to this request: it is only passed into oauth2.Token via
+	// exportItemsToGoogleSheets below and never logged, persisted, or
+	// captured by a goroutine that outlives the request (Req 2.2,
+	// NFR 1.3).
 	sheetURL, err := s.exportItemsToGoogleSheets(r.Context(), user.ID, conn)
 	if err != nil {
 		s.logger.Warn("settings.google_sheets.export_failed",
