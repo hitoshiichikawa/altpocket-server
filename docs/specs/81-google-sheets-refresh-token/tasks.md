@@ -38,7 +38,7 @@
   - _Boundary: internal/crypto_
   - _Depends: 1.1_
 
-- [ ] 2. `internal/config` の `ENCRYPTION_KEY` 対応
+- [x] 2. `internal/config` の `ENCRYPTION_KEY` 対応
 - [x] 2.1 `internal/config/config.go` の `Config` 構造体に `EncryptionKey []byte`
       を追加し、`Load()` で `ENCRYPTION_KEY` 環境変数を読み込んで `crypto.DecodeKey`
       で検証、失敗時は panic
@@ -53,7 +53,7 @@
   - _Boundary: internal/config_
   - _Depends: 1.1_
 
-- [ ] 2.2 `internal/config/config_test.go` に `ENCRYPTION_KEY` の異常系テストを追加
+- [x] 2.2 `internal/config/config_test.go` に `ENCRYPTION_KEY` の異常系テストを追加
   - 既存 `setRequiredEnv` ヘルパに `t.Setenv("ENCRYPTION_KEY", "<valid base64 32 byte>")`
     を追加（既存テストを壊さない）
   - `TestLoadPanicsWithoutEncryptionKey` — `ENCRYPTION_KEY=""` で panic（Req 3.2）
