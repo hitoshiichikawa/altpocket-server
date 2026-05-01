@@ -5,7 +5,7 @@
 順序依存は番号順で表現）。
 
 - [ ] 1. `internal/crypto` パッケージの新規実装
-- [ ] 1.1 `internal/crypto/crypto.go` を新規作成し、AES-256-GCM の `Encrypt` /
+- [x] 1.1 `internal/crypto/crypto.go` を新規作成し、AES-256-GCM の `Encrypt` /
       `Decrypt` / `DecodeKey` と sentinel error を実装する (P)
   - `KeySize = 32`, `NonceSize = 12` 定数を export
   - `ErrInvalidKeyLength`, `ErrMalformedKey`, `ErrEmptyPlaintext`,
