@@ -845,11 +845,23 @@ func (s *Server) handleUISettings(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.store.GetGoogleSheetsConnection(r.Context(), user.ID)
 	connected := true
 	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			connected = false
+		case errors.Is(err, store.ErrRefreshTokenDecryptFailed):
+			// Treat decryption failures (wrong key, tampered ciphertext,
+			// legacy plaintext row) the same as "not connected" so the
+			// user is nudged to re-authorize. We log a structured event
+			// for operators (no key, ciphertext, or plaintext) so the
+			// failure rate is observable. (Req 2.3, 2.4, NFR 3.2)
+			s.logger.Warn("settings.google_sheets.decrypt_failed",
+				slog.String("request_id", s.requestID(r.Context())),
+				slog.String("user_id", user.ID))
+			connected = false
+		default:
 			http.Error(w, "db error", http.StatusInternalServerError)
 			return
 		}
-		connected = false
 	}
 
 	noticeMsg, noticeClass := settingsNotice(r.URL.Query().Get("status"))
