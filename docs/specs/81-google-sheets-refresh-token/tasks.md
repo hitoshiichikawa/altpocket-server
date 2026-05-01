@@ -66,7 +66,7 @@
   - _Boundary: internal/config_
   - _Depends: 2.1_
 
-- [ ] 3. `internal/store` の暗号化／復号統合
+- [x] 3. `internal/store` の暗号化／復号統合
 - [x] 3.1 `internal/store/store.go` の `Store` 構造体に `encryptionKey []byte` を追加し、
       `New` シグネチャを `New(db *pgxpool.Pool, encryptionKey []byte) *Store` に変更
   - `ErrRefreshTokenDecryptFailed` sentinel error を新規 export
@@ -86,7 +86,7 @@
   - _Boundary: internal/store_
   - _Depends: 1.1_
 
-- [ ] 3.2 `internal/store/store_encryption_test.go` を新規作成し、暗号化往復・
+- [x] 3.2 `internal/store/store_encryption_test.go` を新規作成し、暗号化往復・
       レガシー平文拒否・別鍵拒否を実 PostgreSQL 越しに検証
   - 32 byte 鍵を `crypto/rand.Read` で生成するヘルパ
   - `TestUpsertAndGetGoogleSheetsConnection_RoundTrip` — Upsert → Get で平文一致
