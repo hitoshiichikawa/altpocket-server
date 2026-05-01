@@ -157,7 +157,7 @@
   - _Requirements: 4.3, 5.4, 6.1, 6.3_
   - _Boundary: README.md_
 
-- [ ] 7.2 `.env.example` と `deploy/.env.production.example` に `ENCRYPTION_KEY`
+- [x] 7.2 `.env.example` と `deploy/.env.production.example` に `ENCRYPTION_KEY`
       のサンプル行を追加 (P)
   - `.env.example`: `ENCRYPTION_KEY=replace_with_base64_of_32_random_bytes`
   - `deploy/.env.production.example`: 既存 `SESSION_SECRET` の近傍に同様サンプル行
