@@ -145,7 +145,7 @@
   - _Requirements: 4.1, 4.5, NFR 2.3_
   - _Boundary: migrations_
 
-- [ ] 7. ドキュメント整備
+- [x] 7. ドキュメント整備
 - [x] 7.1 `README.md` の必須環境変数節に `ENCRYPTION_KEY` を追加し、移行手順節を新設 (P)
   - 必須環境変数表に `ENCRYPTION_KEY=<base64 of 32 random bytes>` を追加
   - `ENCRYPTION_KEY` の用途（Google Sheets `refresh_token` 暗号化）と要求形式
@@ -165,7 +165,7 @@
   - _Requirements: 6.2_
   - _Boundary: env-examples_
 
-- [ ] 7.3 `docs/encryption-key-rotation.md` を新規作成（鍵ローテーション運用手順書） (P)
+- [x] 7.3 `docs/encryption-key-rotation.md` を新規作成（鍵ローテーション運用手順書） (P)
   - 鍵ローテーション戦略: **再認可方式**（既存暗号化行を新鍵で読めなくし、利用者
     再認可で再構築。二重鍵での自動再暗号化は行わない）（Req 5.1）
   - 鍵生成例: `openssl rand -base64 32`（Req 5.4）
