@@ -67,7 +67,7 @@
   - _Depends: 2.1_
 
 - [ ] 3. `internal/store` の暗号化／復号統合
-- [ ] 3.1 `internal/store/store.go` の `Store` 構造体に `encryptionKey []byte` を追加し、
+- [x] 3.1 `internal/store/store.go` の `Store` 構造体に `encryptionKey []byte` を追加し、
       `New` シグネチャを `New(db *pgxpool.Pool, encryptionKey []byte) *Store` に変更
   - `ErrRefreshTokenDecryptFailed` sentinel error を新規 export
   - `UpsertGoogleSheetsConnection` 内で `crypto.Encrypt(s.encryptionKey, []byte(refreshToken))`
