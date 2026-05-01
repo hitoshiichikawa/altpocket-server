@@ -39,7 +39,7 @@
   - _Depends: 1.1_
 
 - [ ] 2. `internal/config` の `ENCRYPTION_KEY` 対応
-- [ ] 2.1 `internal/config/config.go` の `Config` 構造体に `EncryptionKey []byte`
+- [x] 2.1 `internal/config/config.go` の `Config` 構造体に `EncryptionKey []byte`
       を追加し、`Load()` で `ENCRYPTION_KEY` 環境変数を読み込んで `crypto.DecodeKey`
       で検証、失敗時は panic
   - `mustEnv("ENCRYPTION_KEY")` で取得
