@@ -110,7 +110,7 @@
   - _Boundary: cmd/api_
   - _Depends: 2.1, 3.1_
 
-- [ ] 5. ハンドラ層の復号エラー分岐
+- [x] 5. ハンドラ層の復号エラー分岐
 - [x] 5.1 `internal/server/server.go` の `handleUISettings` で
       `errors.Is(err, store.ErrRefreshTokenDecryptFailed)` を判定し、`pgx.ErrNoRows`
       と同じく `connected = false` 扱いにする
@@ -121,7 +121,7 @@
   - _Boundary: internal/server_
   - _Depends: 3.1_
 
-- [ ] 5.2 `internal/server/server.go` の `handleUISettingsGoogleExport` で
+- [x] 5.2 `internal/server/server.go` の `handleUISettingsGoogleExport` で
       `errors.Is(err, store.ErrRefreshTokenDecryptFailed)` を `pgx.ErrNoRows` と同じく
       `/ui/settings?status=google_not_connected` 相当へリダイレクトする分岐を追加。
       復号後の平文 `refresh_token` をリクエスト寿命を超えて保持しないことを保証する
