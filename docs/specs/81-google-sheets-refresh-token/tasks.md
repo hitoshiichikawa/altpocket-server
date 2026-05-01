@@ -177,8 +177,8 @@
   - _Requirements: 4.2, 4.5, 5.1, 5.2, 5.3, 5.4_
   - _Boundary: docs/encryption-key-rotation.md_
 
-- [ ] 8. 結合スモークテストの手順整備
-- [ ] 8.1 `docs/smoke-test.md`（既存ドキュメント）に Google Sheets 再認可フローの
+- [x] 8. 結合スモークテストの手順整備
+- [x] 8.1 `docs/smoke-test.md`（既存ドキュメント）に Google Sheets 再認可フローの
       スモーク手順を追記
   - migration 005 適用 → `ENCRYPTION_KEY` を投入 → API 起動
   - `/ui/settings` で Google 接続 → エクスポート実行 → スプレッドシートが作成されること
