@@ -3,6 +3,7 @@ package fetcher
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -218,6 +219,75 @@ func TestFetchReturnsErrNoContentWhenTitleIsMissing(t *testing.T) {
 	_, err := f.Fetch(context.Background(), "https://example.com/title-missing")
 	if err != ErrNoContent {
 		t.Fatalf("expected ErrNoContent, got %v", err)
+	}
+}
+
+// TestFetchRejectsIPLiteralURLs covers Requirement 1 AC-6 + Requirement 3
+// AC-1 at the Fetch entry point: when the URL is an IP literal pointing into
+// a blocked range, Fetch must return an error that satisfies
+// errors.Is(err, ErrBlockedIP) without performing any HTTP work.
+func TestFetchRejectsIPLiteralURLs(t *testing.T) {
+	cases := []string{
+		"http://127.0.0.1/",
+		"http://[::1]/",
+		"http://10.0.0.1/admin",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://[fc00::1]/",
+		"http://[fe80::1]/",
+		"http://255.255.255.255/",
+		"http://0.0.0.0/",
+		"http://[::ffff:127.0.0.1]/",
+	}
+	for _, u := range cases {
+		t.Run(u, func(t *testing.T) {
+			// Arrange: real Fetcher with default transport. We do NOT swap in
+			// roundTripFunc here because the early literal check must fire
+			// before any RoundTrip call.
+			f := New(1_000_000, 1024, 512)
+
+			// Act.
+			_, err := f.Fetch(context.Background(), u)
+
+			// Assert.
+			if err == nil {
+				t.Fatalf("expected blocked_ip error for %q, got nil", u)
+			}
+			if !errors.Is(err, ErrBlockedIP) {
+				t.Fatalf("expected ErrBlockedIP for %q, got %v", u, err)
+			}
+		})
+	}
+}
+
+// TestFetchAllowsRoundTripFuncOverride confirms that swapping Client to a
+// roundTripFunc-based client (the existing test pattern) still works for
+// public-IP-literal-style URLs — the SSRF guard lives in DialContext on the
+// default Transport, so a fully replaced Client bypasses it. This is the
+// expected behavior documented in OQ-1's option (b) bypass-by-Client-swap.
+// (Requirement 4 AC-2: existing roundTripFunc tests must remain green.)
+func TestFetchAllowsRoundTripFuncOverride(t *testing.T) {
+	// Arrange.
+	body := []byte("<html><head><title>OK</title></head><body><p>fine</p></body></html>")
+	f := New(1_000_000, 1024, 512)
+	f.Client = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(body)),
+				Header:     http.Header{"Content-Type": []string{"text/html"}},
+			}, nil
+		}),
+	}
+
+	// Act: use a public hostname so the early literal check is a no-op.
+	parsed, err := f.Fetch(context.Background(), "http://example.com/")
+
+	// Assert.
+	if err != nil {
+		t.Fatalf("unexpected error with roundTripFunc override: %v", err)
+	}
+	if parsed.Title != "OK" {
+		t.Fatalf("title mismatch: %q", parsed.Title)
 	}
 }
 
