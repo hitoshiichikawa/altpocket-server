@@ -29,7 +29,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	st := store.New(pool)
+	st := store.New(pool, cfg.EncryptionKey)
 	limiter := ratelimit.New(50, 50)
 	renderer, err := ui.New("templates")
 	if err != nil {
