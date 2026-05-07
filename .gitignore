@@ -1,4 +1,5 @@
 .env
 deploy/.env.production
+deploy/.env.staging
 .claude/settings.local.json
 .claude/worktrees/
