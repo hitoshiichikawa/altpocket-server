@@ -42,6 +42,17 @@ func main() {
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
 
+	// Issue #40: run one full cycle immediately at startup so jobs queued
+	// just before/at boot are not stalled for ~1 minute waiting for the
+	// first ticker fire. The three-step order matches the ticker loop body
+	// below to keep behavior identical between the startup cycle and
+	// subsequent periodic cycles.
+	runStartupCycle(
+		func() { cleanupSessions(ctx, st, log) },
+		func() { cleanupRefreshTokens(ctx, st, log) },
+		func() { runOnce(ctx, st, f, log) },
+	)
+
 	for {
 		select {
 		case <-ticker.C:
@@ -53,6 +64,18 @@ func main() {
 			return
 		}
 	}
+}
+
+// runStartupCycle executes one cycle of the periodic worker steps in the
+// same order as the ticker loop body: expired session cleanup, expired
+// refresh-token cleanup, then the fetch run. Each step function is
+// expected to absorb its own errors (log-and-return) so this helper does
+// not propagate or short-circuit on failure. Kept as a small pure helper
+// so it can be exercised without a real DB or fetcher.
+func runStartupCycle(sessionFn, refreshFn, fetchFn func()) {
+	sessionFn()
+	refreshFn()
+	fetchFn()
 }
 
 func cleanupSessions(ctx context.Context, st *store.Store, log *slog.Logger) {
@@ -104,7 +127,7 @@ func runOnce(ctx context.Context, st *store.Store, f *fetcher.Fetcher, log *slog
 			if err != nil {
 				reason := classifyFetchError(err)
 				_ = st.UpdateFetchFailure(ctx, it.ID, reason)
-				log.Info("worker_fetch_failed", "item_id", it.ID, "reason", reason)
+				logFetchFailure(log, it.ID, reason, err)
 				return
 			}
 			err = st.UpdateFetchSuccess(ctx, it.ID, res.Title, res.Excerpt, res.ContentFull, res.ContentSearch, res.ContentBytes)
@@ -137,5 +160,26 @@ func classifyFetchError(err error) string {
 	if errors.Is(err, fetcher.ErrNoContent) {
 		return "no_content"
 	}
+	if errors.Is(err, fetcher.ErrBlockedIP) {
+		return "blocked_ip"
+	}
 	return "fetch_failed"
+}
+
+// logFetchFailure emits the worker_fetch_failed slog event. SSRF rejections
+// get an extra "blocked_category" field (loopback / private / link_local /
+// unique_local / ipv4_mapped / ...) to help operators triage. We never log
+// the raw URL, query string, or any auth headers (NFR 1.3).
+func logFetchFailure(log *slog.Logger, itemID string, reason string, err error) {
+	var blockedErr *fetcher.BlockedIPError
+	if errors.As(err, &blockedErr) {
+		log.Info(
+			"worker_fetch_failed",
+			"item_id", itemID,
+			"reason", reason,
+			"blocked_category", string(blockedErr.Category),
+		)
+		return
+	}
+	log.Info("worker_fetch_failed", "item_id", itemID, "reason", reason)
 }
