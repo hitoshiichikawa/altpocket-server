@@ -1,10 +1,13 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"altpocket/internal/crypto"
 )
 
 type Config struct {
@@ -20,6 +23,11 @@ type Config struct {
 	ContentFullLimit   int
 	ContentSearchLimit int
 	CORSAllowOrigins   []string
+	// EncryptionKey is the 32-byte AES-256 key used to encrypt at-rest
+	// sensitive values (currently the Google Sheets refresh_token).
+	// It is decoded from the base64-encoded ENCRYPTION_KEY env var on
+	// startup. The raw key value is never logged.
+	EncryptionKey []byte
 }
 
 func Load() Config {
@@ -28,6 +36,8 @@ func Load() Config {
 	if env == "production" && len(corsAllowOrigins) == 0 {
 		panic("missing env: CORS_ALLOW_ORIGINS")
 	}
+
+	encryptionKey := mustDecodeEncryptionKey("ENCRYPTION_KEY")
 
 	return Config{
 		Env:                env,
@@ -42,7 +52,33 @@ func Load() Config {
 		ContentFullLimit:   getEnvInt("CONTENT_FULL_LIMIT_BYTES", 1_000_000),
 		ContentSearchLimit: getEnvInt("CONTENT_SEARCH_LIMIT_BYTES", 16_384),
 		CORSAllowOrigins:   corsAllowOrigins,
+		EncryptionKey:      encryptionKey,
 	}
+}
+
+// mustDecodeEncryptionKey reads, base64-decodes, and length-validates
+// the AES-256 key from the named env var. It panics with a descriptive
+// (but key-free) message on any failure to enforce fail-fast startup
+// behavior. The raw key value never appears in panic messages.
+func mustDecodeEncryptionKey(envName string) []byte {
+	raw := os.Getenv(envName)
+	if raw == "" {
+		panic("missing env: " + envName)
+	}
+	key, err := crypto.DecodeKey(raw)
+	if err != nil {
+		switch {
+		case errors.Is(err, crypto.ErrMalformedKey):
+			panic("invalid env: " + envName + " (base64 decode failed)")
+		case errors.Is(err, crypto.ErrInvalidKeyLength):
+			panic("invalid env: " + envName + " (must be 32 bytes after base64 decode)")
+		default:
+			// Defensive: unknown crypto error. Avoid leaking the key in
+			// the message by using a generic phrase.
+			panic("invalid env: " + envName + " (decode failed)")
+		}
+	}
+	return key
 }
 
 func getEnv(key, fallback string) string {

@@ -4,8 +4,8 @@
 `_Depends:_` は cross-boundary な非自明な依存のみ記載する（同 `_Boundary:_` 内の
 順序依存は番号順で表現）。
 
-- [ ] 1. `internal/crypto` パッケージの新規実装
-- [ ] 1.1 `internal/crypto/crypto.go` を新規作成し、AES-256-GCM の `Encrypt` /
+- [x] 1. `internal/crypto` パッケージの新規実装
+- [x] 1.1 `internal/crypto/crypto.go` を新規作成し、AES-256-GCM の `Encrypt` /
       `Decrypt` / `DecodeKey` と sentinel error を実装する (P)
   - `KeySize = 32`, `NonceSize = 12` 定数を export
   - `ErrInvalidKeyLength`, `ErrMalformedKey`, `ErrEmptyPlaintext`,
@@ -22,7 +22,7 @@
   - _Requirements: 1.3, 1.4, 2.5, NFR 1.1, NFR 1.2_
   - _Boundary: internal/crypto_
 
-- [ ] 1.2 `internal/crypto/crypto_test.go` を新規作成し、Req 7.1〜7.6 をカバーする
+- [x] 1.2 `internal/crypto/crypto_test.go` を新規作成し、Req 7.1〜7.6 をカバーする
       単体テストを追加する (P)
   - `TestEncryptDecryptRoundTrip` — 32 byte 鍵で往復一致（Req 7.1）
   - `TestDecryptWithWrongKey` — 別の 32 byte 鍵では `ErrDecryptionFailed`（Req 7.2）
@@ -38,8 +38,8 @@
   - _Boundary: internal/crypto_
   - _Depends: 1.1_
 
-- [ ] 2. `internal/config` の `ENCRYPTION_KEY` 対応
-- [ ] 2.1 `internal/config/config.go` の `Config` 構造体に `EncryptionKey []byte`
+- [x] 2. `internal/config` の `ENCRYPTION_KEY` 対応
+- [x] 2.1 `internal/config/config.go` の `Config` 構造体に `EncryptionKey []byte`
       を追加し、`Load()` で `ENCRYPTION_KEY` 環境変数を読み込んで `crypto.DecodeKey`
       で検証、失敗時は panic
   - `mustEnv("ENCRYPTION_KEY")` で取得
@@ -53,7 +53,7 @@
   - _Boundary: internal/config_
   - _Depends: 1.1_
 
-- [ ] 2.2 `internal/config/config_test.go` に `ENCRYPTION_KEY` の異常系テストを追加
+- [x] 2.2 `internal/config/config_test.go` に `ENCRYPTION_KEY` の異常系テストを追加
   - 既存 `setRequiredEnv` ヘルパに `t.Setenv("ENCRYPTION_KEY", "<valid base64 32 byte>")`
     を追加（既存テストを壊さない）
   - `TestLoadPanicsWithoutEncryptionKey` — `ENCRYPTION_KEY=""` で panic（Req 3.2）
@@ -66,8 +66,8 @@
   - _Boundary: internal/config_
   - _Depends: 2.1_
 
-- [ ] 3. `internal/store` の暗号化／復号統合
-- [ ] 3.1 `internal/store/store.go` の `Store` 構造体に `encryptionKey []byte` を追加し、
+- [x] 3. `internal/store` の暗号化／復号統合
+- [x] 3.1 `internal/store/store.go` の `Store` 構造体に `encryptionKey []byte` を追加し、
       `New` シグネチャを `New(db *pgxpool.Pool, encryptionKey []byte) *Store` に変更
   - `ErrRefreshTokenDecryptFailed` sentinel error を新規 export
   - `UpsertGoogleSheetsConnection` 内で `crypto.Encrypt(s.encryptionKey, []byte(refreshToken))`
@@ -86,7 +86,7 @@
   - _Boundary: internal/store_
   - _Depends: 1.1_
 
-- [ ] 3.2 `internal/store/store_encryption_test.go` を新規作成し、暗号化往復・
+- [x] 3.2 `internal/store/store_encryption_test.go` を新規作成し、暗号化往復・
       レガシー平文拒否・別鍵拒否を実 PostgreSQL 越しに検証
   - 32 byte 鍵を `crypto/rand.Read` で生成するヘルパ
   - `TestUpsertAndGetGoogleSheetsConnection_RoundTrip` — Upsert → Get で平文一致
@@ -103,15 +103,15 @@
   - _Boundary: internal/store_
   - _Depends: 3.1_
 
-- [ ] 4. `cmd/api/main.go` の起動シーケンス更新
-- [ ] 4.1 `cmd/api/main.go` で `store.New(pool, cfg.EncryptionKey)` に変更
+- [x] 4. `cmd/api/main.go` の起動シーケンス更新
+- [x] 4.1 `cmd/api/main.go` で `store.New(pool, cfg.EncryptionKey)` に変更
   - `config.Load` がすでに fail-fast 検証を済ませているため、main 側では追加検証不要
   - _Requirements: 3.1, NFR 2.1_
   - _Boundary: cmd/api_
   - _Depends: 2.1, 3.1_
 
-- [ ] 5. ハンドラ層の復号エラー分岐
-- [ ] 5.1 `internal/server/server.go` の `handleUISettings` で
+- [x] 5. ハンドラ層の復号エラー分岐
+- [x] 5.1 `internal/server/server.go` の `handleUISettings` で
       `errors.Is(err, store.ErrRefreshTokenDecryptFailed)` を判定し、`pgx.ErrNoRows`
       と同じく `connected = false` 扱いにする
   - 既存の `pgx.ErrNoRows` ブランチに合流させる
@@ -121,7 +121,7 @@
   - _Boundary: internal/server_
   - _Depends: 3.1_
 
-- [ ] 5.2 `internal/server/server.go` の `handleUISettingsGoogleExport` で
+- [x] 5.2 `internal/server/server.go` の `handleUISettingsGoogleExport` で
       `errors.Is(err, store.ErrRefreshTokenDecryptFailed)` を `pgx.ErrNoRows` と同じく
       `/ui/settings?status=google_not_connected` 相当へリダイレクトする分岐を追加。
       復号後の平文 `refresh_token` をリクエスト寿命を超えて保持しないことを保証する
@@ -136,8 +136,8 @@
   - _Boundary: internal/server_
   - _Depends: 3.1_
 
-- [ ] 6. 既存平文データの無効化マイグレーション
-- [ ] 6.1 `migrations/005_invalidate_legacy_refresh_tokens.sql` を新規追加
+- [x] 6. 既存平文データの無効化マイグレーション
+- [x] 6.1 `migrations/005_invalidate_legacy_refresh_tokens.sql` を新規追加
   - `DELETE FROM user_google_sheets_connections;` の 1 行
   - 冒頭にコメントで「forward-only / 再認可方式 / 詳細は README と
     docs/encryption-key-rotation.md」を明記
@@ -145,8 +145,8 @@
   - _Requirements: 4.1, 4.5, NFR 2.3_
   - _Boundary: migrations_
 
-- [ ] 7. ドキュメント整備
-- [ ] 7.1 `README.md` の必須環境変数節に `ENCRYPTION_KEY` を追加し、移行手順節を新設 (P)
+- [x] 7. ドキュメント整備
+- [x] 7.1 `README.md` の必須環境変数節に `ENCRYPTION_KEY` を追加し、移行手順節を新設 (P)
   - 必須環境変数表に `ENCRYPTION_KEY=<base64 of 32 random bytes>` を追加
   - `ENCRYPTION_KEY` の用途（Google Sheets `refresh_token` 暗号化）と要求形式
     （base64 エンコード、デコード後 32 byte）を本文に明記（Req 6.3）
@@ -157,7 +157,7 @@
   - _Requirements: 4.3, 5.4, 6.1, 6.3_
   - _Boundary: README.md_
 
-- [ ] 7.2 `.env.example` と `deploy/.env.production.example` に `ENCRYPTION_KEY`
+- [x] 7.2 `.env.example` と `deploy/.env.production.example` に `ENCRYPTION_KEY`
       のサンプル行を追加 (P)
   - `.env.example`: `ENCRYPTION_KEY=replace_with_base64_of_32_random_bytes`
   - `deploy/.env.production.example`: 既存 `SESSION_SECRET` の近傍に同様サンプル行
@@ -165,7 +165,7 @@
   - _Requirements: 6.2_
   - _Boundary: env-examples_
 
-- [ ] 7.3 `docs/encryption-key-rotation.md` を新規作成（鍵ローテーション運用手順書） (P)
+- [x] 7.3 `docs/encryption-key-rotation.md` を新規作成（鍵ローテーション運用手順書） (P)
   - 鍵ローテーション戦略: **再認可方式**（既存暗号化行を新鍵で読めなくし、利用者
     再認可で再構築。二重鍵での自動再暗号化は行わない）（Req 5.1）
   - 鍵生成例: `openssl rand -base64 32`（Req 5.4）
@@ -177,8 +177,8 @@
   - _Requirements: 4.2, 4.5, 5.1, 5.2, 5.3, 5.4_
   - _Boundary: docs/encryption-key-rotation.md_
 
-- [ ] 8. 結合スモークテストの手順整備
-- [ ] 8.1 `docs/smoke-test.md`（既存ドキュメント）に Google Sheets 再認可フローの
+- [x] 8. 結合スモークテストの手順整備
+- [x] 8.1 `docs/smoke-test.md`（既存ドキュメント）に Google Sheets 再認可フローの
       スモーク手順を追記
   - migration 005 適用 → `ENCRYPTION_KEY` を投入 → API 起動
   - `/ui/settings` で Google 接続 → エクスポート実行 → スプレッドシートが作成されること

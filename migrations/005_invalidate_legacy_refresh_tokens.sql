@@ -1,0 +1,22 @@
+-- Forward-only migration to invalidate legacy plaintext refresh_token rows.
+--
+-- Background:
+--   Issue #81 introduced AES-256-GCM encryption for the
+--   user_google_sheets_connections.refresh_token column. Existing rows
+--   contain plaintext OAuth refresh_tokens that cannot be safely
+--   round-tripped through the new decrypt path (they would surface as
+--   ErrRefreshTokenDecryptFailed). Per design.md ("Option B: re-auth
+--   migration"), we delete those rows and ask users to re-authorize via
+--   /ui/settings; the next callback will write a fresh, encrypted row.
+--
+-- Operator runbook:
+--   1. Apply this migration BEFORE rolling out the encrypted code path.
+--   2. Set the ENCRYPTION_KEY env var (see README.md "必須環境変数" and
+--      docs/encryption-key-rotation.md).
+--   3. Restart the API. Users will see "Connect Google before
+--      exporting." until they re-authorize.
+--
+-- This file is forward-only (no DOWN section). See
+-- docs/encryption-key-rotation.md for the analogous SQL used during
+-- key rotation events.
+DELETE FROM user_google_sheets_connections;
