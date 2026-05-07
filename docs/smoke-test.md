@@ -27,7 +27,7 @@ $env:API_BASE = "http://localhost:8080"
 When you run with non-default compose files or env-file, set `COMPOSE_CMD` as well:
 ```bash
 API_BASE=https://<APIドメイン> \
-COMPOSE_CMD='docker compose --env-file deploy/.env.production -f docker-compose.yml -f deploy/docker-compose.production.yml' \
+COMPOSE_CMD='docker compose --env-file deploy/.env.production -f deploy/docker-compose.production.yml' \
 ./scripts/test-api.sh
 ```
 
