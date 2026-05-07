@@ -29,7 +29,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	st := store.New(pool)
+	st := store.New(pool, cfg.EncryptionKey)
 	fullLimit := cfg.ContentFullLimit - 100
 	if fullLimit < 100 {
 		fullLimit = 100

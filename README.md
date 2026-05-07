@@ -22,9 +22,22 @@ GOOGLE_WEB_CLIENT_ID=your-web-client-id
 GOOGLE_CLIENT_SECRET=your-web-client-secret
 GOOGLE_EXT_CLIENT_ID=your-extension-client-id
 CORS_ALLOW_ORIGINS=chrome-extension://your-extension-id,http://localhost:8080
+ENCRYPTION_KEY=replace_with_base64_of_32_random_bytes
 ```
 
 `APP_ENV=production` では `CORS_ALLOW_ORIGINS` が必須です（未設定だと起動時にpanicします）。
+
+### `ENCRYPTION_KEY`（必須）
+
+Google Sheets 連携の `refresh_token` を AES-256-GCM で暗号化／復号するためのアプリ層
+鍵です。`cmd/api` および `cmd/worker` が起動時に読み込み、未設定／フォーマット不正／
+鍵長不一致のいずれかであれば fail-fast で起動を中止します（鍵そのものはエラー
+メッセージに含まれません）。
+
+- 形式: **base64 標準エンコード**（パディングあり）された **32 バイト**（=AES-256）
+- 生成例: `openssl rand -base64 32`
+- 鍵漏洩時／定期更新時の取り扱いは [`docs/encryption-key-rotation.md`](docs/encryption-key-rotation.md) を参照
+- ログ・エラーメッセージ・メトリクスに鍵そのもの・平文 `refresh_token`・暗号文を出さない運用です
 
 ### Google OAuth 設定
 - Google Cloud Console の「API とサービス > ライブラリ」で `Google Sheets API` を有効化
@@ -39,9 +52,27 @@ psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/002_google_sheets_connections.sql
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/003_extension_refresh_tokens.sql
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/004_mcp_api_keys.sql
+psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/005_invalidate_legacy_refresh_tokens.sql
 
 docker compose up --build api worker
 ```
+
+## Google Sheets `refresh_token` 暗号化への移行（Issue #81）
+
+`refresh_token` 列が平文だった時点のレコードは、暗号化導入後の復号経路を通せないため
+**移行＝再認可方式**を採用しています（自動バックフィルは行いません）。
+
+1. **鍵を生成**: `openssl rand -base64 32` で 32 バイト乱数を base64 化した文字列を取得
+2. **環境変数に投入**: `.env` / `deploy/.env.production` の `ENCRYPTION_KEY` に貼り付ける
+3. **マイグレーション 005 を適用**: `psql ... -f migrations/005_invalidate_legacy_refresh_tokens.sql`
+   （既存 `user_google_sheets_connections` レコードを全削除）
+4. **API を再起動**: `ENCRYPTION_KEY` 不整合があればここで fail-fast します
+5. **利用者は再認可**: `/ui/settings` 画面に「Connect Google before exporting.」が表示される
+   ので、Google アカウントを再接続してください。次回エクスポートで暗号化済み行が
+   作成されます
+
+鍵差し替え（ローテーション）が必要になったときの手順は
+[`docs/encryption-key-rotation.md`](docs/encryption-key-rotation.md) を参照してください。
 
 Web UI: http://localhost:8080/ui/items
 

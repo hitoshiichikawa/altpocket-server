@@ -2,21 +2,44 @@ package store
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"altpocket/internal/crypto"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrRefreshTokenDecryptFailed is returned by GetGoogleSheetsConnection
+// when the persisted refresh_token cannot be base64-decoded, is shorter
+// than the expected nonce, fails GCM authentication, or is a legacy
+// plaintext value left over from before encryption was introduced.
+//
+// Callers must treat this error the same as pgx.ErrNoRows from the
+// user's perspective ("not connected" / "needs re-authorization") so
+// that decryption failures are surfaced as a recoverable UX state, not
+// an internal server error. The underlying cause is intentionally
+// indistinguishable to avoid leaking which decryption invariant failed.
+var ErrRefreshTokenDecryptFailed = errors.New("store: refresh_token decrypt failed")
+
 type Store struct {
 	DB *pgxpool.Pool
+	// encryptionKey is the AES-256 key used to encrypt and decrypt
+	// at-rest refresh tokens. It is unexported (and never exposed via a
+	// getter) so handlers cannot accidentally log or persist it.
+	encryptionKey []byte
 }
 
-func New(db *pgxpool.Pool) *Store {
-	return &Store{DB: db}
+// New constructs a Store. encryptionKey must be exactly crypto.KeySize
+// (32) bytes; it is used to encrypt/decrypt persisted Google Sheets
+// refresh tokens. The caller is responsible for fail-fast validating
+// the key at startup (see internal/config.Load).
+func New(db *pgxpool.Pool, encryptionKey []byte) *Store {
+	return &Store{DB: db, encryptionKey: encryptionKey}
 }
 
 type User struct {
@@ -118,6 +141,21 @@ func (s *Store) GetUserByID(ctx context.Context, id string) (User, error) {
 	return u, nil
 }
 
+// GetGoogleSheetsConnection reads the user's Google Sheets connection
+// row, decodes the persisted refresh_token from base64, and decrypts
+// it with the Store's AES-256 key.
+//
+// Returns:
+//   - pgx.ErrNoRows when no connection record exists for userID.
+//   - ErrRefreshTokenDecryptFailed when the persisted value is not a
+//     valid base64 string, is too short to contain a nonce, fails GCM
+//     authentication, or is a legacy plaintext refresh_token. Callers
+//     must treat this case as "not connected" (Req 2.3 / Req 2.5).
+//   - other errors for genuine DB-level failures.
+//
+// On success, GoogleSheetsConnection.RefreshToken contains the
+// plaintext refresh token. Callers MUST NOT log, persist, or cache
+// that value beyond the request lifetime (Req 2.2 / NFR 1.3).
 func (s *Store) GetGoogleSheetsConnection(ctx context.Context, userID string) (GoogleSheetsConnection, error) {
 	row := s.DB.QueryRow(ctx, `
 		SELECT user_id, refresh_token, spreadsheet_id, created_at, updated_at
@@ -125,20 +163,55 @@ func (s *Store) GetGoogleSheetsConnection(ctx context.Context, userID string) (G
 		WHERE user_id=$1
 	`, userID)
 	var c GoogleSheetsConnection
-	if err := row.Scan(&c.UserID, &c.RefreshToken, &c.SpreadsheetID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	var stored string
+	if err := row.Scan(&c.UserID, &stored, &c.SpreadsheetID, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		return GoogleSheetsConnection{}, err
 	}
+
+	blob, err := base64.StdEncoding.DecodeString(stored)
+	if err != nil {
+		// Legacy plaintext rows (or any non-base64 string) collapse
+		// here; they are surfaced as decrypt-failed so the user is
+		// nudged to re-authorize. The original stored value is NOT
+		// included in the error to avoid leaking ciphertext or
+		// plaintext into logs (Req 1.5 / 2.4 / NFR 1.2).
+		return GoogleSheetsConnection{}, ErrRefreshTokenDecryptFailed
+	}
+	plaintext, err := crypto.Decrypt(s.encryptionKey, blob)
+	if err != nil {
+		// Any decryption failure - wrong key, tampered ciphertext,
+		// truncated blob - is collapsed into the sentinel error
+		// (Req 2.3, 2.5).
+		return GoogleSheetsConnection{}, ErrRefreshTokenDecryptFailed
+	}
+	c.RefreshToken = string(plaintext)
 	return c, nil
 }
 
+// UpsertGoogleSheetsConnection encrypts refreshToken with the Store's
+// AES-256 key, base64-encodes the resulting [nonce || ciphertext+tag]
+// blob, and writes it to the user's connection row. Each call uses a
+// fresh nonce (Req 1.3) so two upserts of the same plaintext produce
+// different stored values, and the plaintext is never persisted (Req
+// 1.1, 1.2).
+//
+// Returns crypto.ErrEmptyPlaintext if refreshToken is empty (callers
+// should validate non-empty before invoking) and any DB error from the
+// underlying UPSERT.
 func (s *Store) UpsertGoogleSheetsConnection(ctx context.Context, userID, refreshToken string) error {
-	_, err := s.DB.Exec(ctx, `
+	blob, err := crypto.Encrypt(s.encryptionKey, []byte(refreshToken))
+	if err != nil {
+		// Wrap the crypto sentinel without including the plaintext.
+		return fmt.Errorf("encrypt refresh_token: %w", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(blob)
+	_, err = s.DB.Exec(ctx, `
 		INSERT INTO user_google_sheets_connections (user_id, refresh_token, spreadsheet_id)
 		VALUES ($1, $2, '')
 		ON CONFLICT (user_id) DO UPDATE
 		SET refresh_token = EXCLUDED.refresh_token,
 			updated_at = NOW()
-	`, userID, refreshToken)
+	`, userID, encoded)
 	return err
 }
 
