@@ -26,8 +26,19 @@ name: Issue-driven Team Development
 # 3 つのモードを同一ワークフロー内で自動判別する:
 #   - design        : 初回・Architect 必要 → PM + Architect + PjM（設計 PR 作成ゲート）
 #   - impl          : 初回・Architect 不要 → PM + Developer + PjM（実装 PR 作成）
-#   - impl-resume   : 設計 PR が merge 済み（docs/specs/<N>-*/ が main に存在）
+#   - impl-resume   : 設計 PR が merge 済み（docs/specs/<N>-*/ が base ブランチに存在）
 #                     → Developer + PjM（実装 PR 作成）
+#
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Base branch の切替（gitflow 等の develop 起点運用）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# checkout / branch 作成 / PR base に使う base branch は repository variable
+# `IDD_CLAUDE_BASE_BRANCH` で切り替える（既定 `main`、`develop` 等で上書き可能）。
+# `IDD_CLAUDE_USE_ACTIONS` の opt-in gate は別変数で温存される。
+#
+#   Settings → Secrets and variables → Actions → Variables タブ → New variable
+#     Name : IDD_CLAUDE_BASE_BRANCH
+#     Value: develop
 #
 # 設計 PR が merge されると、人間が Issue から `awaiting-design-review` ラベルを
 # 外すことで本ワークフローが再発火し、impl-resume モードに入る。
@@ -73,11 +84,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    env:
+      # Base branch を repository variable で切替可能にする（既定 main / Req 3.1, 3.2）。
+      # 後段の checkout / branch 作成 / prompt heredoc はすべて env.BASE_BRANCH を参照する。
+      BASE_BRANCH: ${{ vars.IDD_CLAUDE_BASE_BRANCH || 'main' }}
+
     steps:
-      - name: Checkout main
+      - name: Checkout base branch
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
 
       - name: Configure git identity
@@ -129,7 +145,7 @@ jobs:
       #   impl-resume : claude/issue-<N>-impl-<slug>
       #   initial     : claude/issue-<N>-<slug>（design/impl をオーケストレーターが自己判定）
       # ─────────────────────────────────────────────────────────────
-      - name: Create working branch from main
+      - name: Create working branch from base
         id: branch
         run: |
           if [ "${{ steps.detect.outputs.mode }}" = "impl-resume" ]; then
@@ -137,6 +153,8 @@ jobs:
           else
             BRANCH="claude/issue-${{ github.event.issue.number }}-${{ steps.detect.outputs.slug }}"
           fi
+          # Checkout step が ref=$BASE_BRANCH で fetch しているため、HEAD は既に
+          # base branch の先端。ここでは作業ブランチを派生させて push するだけ。
           git checkout -B "$BRANCH"
           git push -u origin "$BRANCH" --force-with-lease
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
@@ -165,7 +183,7 @@ jobs:
             - URL   : ${{ github.event.issue.html_url }}
 
             ## 作業ブランチ
-            `${{ steps.branch.outputs.branch }}`（main から派生・push 済み・チェックアウト済み）
+            `${{ steps.branch.outputs.branch }}`（`${{ env.BASE_BRANCH }}` から派生・push 済み・チェックアウト済み）
 
             ## 作業ディレクトリ
             `${{ steps.detect.outputs.spec_dir_rel }}/`
@@ -183,7 +201,7 @@ jobs:
                - Issue ラベル: `claude-picked-up` → `ready-for-review`
 
             ## 制約
-            - `main` に直接 push しないこと
+            - `${{ env.BASE_BRANCH }}` に直接 push しないこと
             - 既存のテストを壊さないこと
             - 不明点は推測せず PR 本文の「確認事項」に列挙
 
@@ -212,7 +230,7 @@ jobs:
               ${{ github.event.issue.body }}
 
             ## 作業ブランチ
-            `${{ steps.branch.outputs.branch }}`（main から派生・push 済み・チェックアウト済み）
+            `${{ steps.branch.outputs.branch }}`（`${{ env.BASE_BRANCH }}` から派生・push 済み・チェックアウト済み）
 
             ## 作業ディレクトリ
             `${{ steps.detect.outputs.spec_dir_rel }}/`
@@ -253,7 +271,7 @@ jobs:
                 - Issue ラベル: `claude-picked-up` → `ready-for-review`
 
             ## 制約
-            - `main` に直接 push しないこと
+            - `${{ env.BASE_BRANCH }}` に直接 push しないこと
             - 既存のテストを壊さないこと
             - 不明点は推測せず PR 本文の「確認事項」に列挙
 

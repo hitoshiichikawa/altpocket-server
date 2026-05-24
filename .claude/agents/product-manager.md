@@ -90,6 +90,21 @@ Kiro / cc-sdd 準拠の要件定義（requirements.md）を作成します。
 - 既存コメントで人間が追記・回答している内容があれば、それを要件に反映する
 - 機能要件と受入基準が 1 対 1 になるよう構造化する
 
+# Issue 依存表現の明記（canonical 記法）
+
+PM agent は Issue を起票・分割・要件化する際、依存・親子関係を **canonical 記法** で本文に明記
+すること（PM 自身への規約として **shall** レベル）。詳細規約は
+[`.claude/rules/issue-dependency.md`](../rules/issue-dependency.md) を参照。
+
+- Issue 本文に `## 関連` セクション（英語 repo では `## Related`）を 1 つ設ける
+- canonical 関係種別: `Depends on:` / `Parent:` / `Split from:` / `Sibling:` / `Related:`
+- 既存 Issue が alias 形式（`前提依存:` / `Blocked by:` / `親 Issue:` / `Umbrella:` / `分割元:`）
+  で書かれていても canonical と等価扱い。retrofit（既存 Issue の書き換え）は不要
+- 逆ブロッキング（`Blocks: #N`）は本文に書かず、被ブロッキング側で `Depends on: #N` を記述する
+- canonical 記法の **キー部分は英語固定**（識別子と同じ扱い）。本文の説明部は日本語ベースで可
+- 新規 Issue / 分割で生成された Issue では canonical を選択する（強制 lint は導入していないが、
+  PM agent の責務として canonical 採用を推奨する）
+
 # 品質チェック（自己レビュー）
 
 書き終えたら [`.claude/rules/requirements-review-gate.md`](../rules/requirements-review-gate.md)
