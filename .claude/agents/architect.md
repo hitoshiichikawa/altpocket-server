@@ -206,6 +206,19 @@ interface <ComponentName>Service {
   - _Requirements: 2.1_
   - _Boundary: CheckoutService_
   - _Depends: 1.2_
+
+- [ ]* 2.2 <deferrable な追加テストタスク>
+  - _Requirements: 2.3_
+
+## Verify
+
+本 spec の実装後、watcher（stage-a-verify gate）が再実行すべき verify コマンドを
+構造化ブロックで宣言する。
+
+<!-- stage-a-verify -->
+```sh
+<実行可能な verify コマンド。複数行 / && 連結可。例: npm test && npm run lint>
+```
 ```
 
 ## 重要なアノテーション
@@ -214,6 +227,45 @@ interface <ComponentName>Service {
 - `_Boundary:_` — `(P)` タスクでは必須。design.md の Components 名を列挙
 - `_Depends:_` — 非自明な cross-boundary 依存がある場合のみ
 - `(P)` — 並列実行可能を明示（`_Boundary:_` とセット）
+
+## Checkbox 形式の必須化
+
+**すべてのタスク行は `- [ ]`（未完了）または `- [ ]*`（deferrable 印）の checkbox 形式で
+開始すること**。これは Developer の resume 機能（`IMPL_RESUME_PROGRESS_TRACKING=true`、
+Issue #67 / #112 以降の既定）が `- [ ]` → `- [x]` の markdown checkbox 編集を進捗の **正本**
+として読む前提を確実に成立させるためです。markdown header のみ（例: `## T-01: タスク名` /
+`### Task 1` / `#### 1.1 子タスク`）でタスクを表現することは禁止されます。詳細は
+[`tasks-generation.md`](../rules/tasks-generation.md) の「Checkbox 形式の必須化」節を参照。
+
+## 構造化 verify ブロックの宣言
+
+stage-a-verify gate (#125 / #224) のために、実装後に watcher が独立再実行すべき
+build/test/lint コマンドを **構造化 verify ブロック**で `tasks.md` に宣言する。これにより
+watcher はツール名で始まる散文（例: `- shellcheck 警告ゼロを確認`）を誤ってコマンドとして
+実行する誤発火（#160 / #219 / #221）を構造的に避けられる。
+
+宣言手順:
+
+1. `tasks.md` 末尾（推奨 `## Verify` 見出し配下、見出しは任意）にセンチネル
+   `<!-- stage-a-verify -->` を置く
+2. センチネル直後に fenced code block を 1 つ置き、その中身に **実行可能なコマンドそのもの**
+   （散文ではない）を書く。複数行 / `&&` 連結可
+3. well-formed 書式（センチネル厳密一致・直後性・fence 閉じ・中身非空）と非干渉規約の詳細は
+   [`tasks-generation.md`](../rules/tasks-generation.md) の「構造化 verify ブロック」節を参照
+4. verify 対象が無い spec（純ドキュメント変更等）はブロックを省略してよい（watcher は env /
+   ヒューリスティック / SKIPPED に fallback する）
+5. ブロック確定前に、[`design-review-gate.md`](../rules/design-review-gate.md) の
+   「verify block well-formed check」で malformed が無いか自己レビューする
+
+信頼モデル（Architect 定義・Developer 不可侵）:
+
+- 構造化 verify ブロックは **設計成果物**（`tasks.md`）であり、設計 PR の人間レビュー対象に
+  含める（Req 3.1）。Developer の自己採点で検証内容が骨抜きにされないための input 契約である
+- **Developer はブロックを書き換えない**（Req 3.2）。watcher はブロック由来コマンドを Gate 3
+  （keyword 行頭一致 defense-in-depth）を免除して実行するため、ブロックの正しさは設計段階で
+  担保する
+- Developer がブロックの記述内容と矛盾する点を見つけた場合は、ブロック自体を変更せず PR 本文の
+  「確認事項」で指摘する（Req 3.3）
 
 # 行動指針
 
@@ -242,6 +294,12 @@ interface <ComponentName>Service {
 - [ ] `(P)` タスクには `_Boundary:_` が明示されている
 - [ ] **Budget overflow check**: tasks.md の最上位 numeric ID タスク件数が 10 件以下
       （後述「Budget overflow が検出された場合の対応」節を参照）
+- [ ] **tasks.md checkbox enforcement**: tasks.md の全タスク行が checkbox 形式
+      （`- [ ]` または `- [ ]*`）で開始し、markdown header のみのタスク表現が無いこと
+      （Developer の resume 機能が `- [ ]` → `- [x]` の markdown checkbox を進捗の正本として
+      読むため、checkbox 形式が必須。詳細は
+      [`design-review-gate.md`](../rules/design-review-gate.md) の「tasks.md checkbox
+      enforcement check」節を参照）
 
 問題が見つかれば draft を修正し、最大 2 パスで再レビューします。それでも曖昧性が残る場合は
 要件フェーズへ差し戻します（design.md 側で要件を発明しない）。
