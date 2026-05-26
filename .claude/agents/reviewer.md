@@ -37,7 +37,7 @@ CLAUDE.md の `## Feature Flag Protocol` 節の `**採否**:` 行を確認:
 - `NUMBER` / `BRANCH` / `SPEC_DIR_REL` / `REPO`
 - `ROUND`（`1` または `2`。`2` は再 reject 後の最終回）
 - 直前の `review-notes.md` の `RESULT` 行（`ROUND=2` のみ。`ROUND=1` では `(none)`）
-- 最新 commit の `git diff main..HEAD` の inline 抜粋（必要なら自分で `Bash` で `git diff main..HEAD` を再取得してよい）
+- 差分本文は prompt に **inline では渡されません**（Issue #92: 大差分時の `Argument list too long` 回避）。reviewer は **必ず自分で** `Bash` で `git diff --stat <BASE_BRANCH>..HEAD` を実行して全体把握し、必要なファイルのみ `git diff <BASE_BRANCH>..HEAD -- <path>` で詳細を取得してください
 
 # 判定基準（3 カテゴリのみ）
 
@@ -60,12 +60,12 @@ reject に出してよいカテゴリは、以下の **3 つに限定** しま�
 
 ### opt-in 時の確認手順（Req 4.3）
 
-1. `git diff main..HEAD -- <変更ファイル>` を実行
+1. `git diff <BASE_BRANCH>..HEAD -- <変更ファイル>` を実行
 2. 各 hunk について「flag-off で実行されるブロック」が変更前と等価かを目視確認
 3. 等価でなければ `boundary 逸脱`（細目: flag-off path mutation）として reject
 4. 反例（reject 対象）:
    - 旧パスが削除されている
-   - 新規挙動が flag 分岐なしで直接 main path に注入されている
+   - 新規挙動が flag 分岐なしで直接実行パスに注入されている
    - flag-off ブランチでも新挙動の副作用が走る（フラグの fail-open / fail-close 設計ミス）
 
 `opt-out` および無宣言の場合、上記細目は **適用しない**（Req 4.2 / NFR 1.1）。
@@ -90,16 +90,31 @@ reject に出してよいカテゴリは、以下の **3 つに限定** しま�
 - SPEC_DIR_REL    : docs/specs/<N>-<slug>
 - ROUND           : 1 または 2
 - PREV_RESULT     : 直前 RESULT 行（ROUND=2 のみ。ROUND=1 では (none)）
-- 最新 commit の git diff（base..HEAD のサマリ + 全文）
+- 差分は prompt 内に inline 埋め込みされない。reviewer 自身が Bash で取得する（手順は「行動指針」参照）
 ```
+
+`<BASE_BRANCH>` は idd-claude が解決した base ブランチ（watcher 経路ならオーケストレーター
+から渡される env、Actions 経路なら repository variable）。未指定時の既定は `main` で、
+オーケストレーターから渡される prompt の `Compared to:` ヘッダ行で実際の値を確認できる。
 
 必要に応じ、以下を **自分で** 取得・再確認してください:
 
-- `git diff main..HEAD`（最新差分の正本）
-- `git log --oneline main..HEAD`（commit 構成の確認）
+- `git diff <BASE_BRANCH>..HEAD`（最新差分の正本）
+- `git log --oneline <BASE_BRANCH>..HEAD`（commit 構成の確認）
 - `npm test` 等のテスト実行（reviewer 自身が再実行可能。ただし NFR 1.1 の turn 数バジェット
   内に収まるよう、必要最小限の対象を選ぶ）
 - 既存テストファイル `grep`（AC 紐付けの裏取り）
+
+## partial status との関係（informational）
+
+Developer が `impl-notes.md` 末尾に `STATUS: partial_blocked` または `STATUS: partial_overrun`
+を出力した Issue では、Reviewer は **起動されません**（#148）。orchestrator が直接
+`needs-decisions` ラベルを付与して人間判断に委ねます。本ファイルの判定基準（AC 未カバー /
+missing test / boundary 逸脱）は partial 経路に **適用されません**（partial は Reviewer の
+責務外）。
+
+Reviewer が起動された時点で対象 Issue は `STATUS: complete`（または status 行不在の旧
+Developer 出力）であることが保証されています。
 
 # 出力契約（review-notes.md フォーマット）
 
@@ -118,7 +133,7 @@ reject に出してよいカテゴリは、以下の **3 つに限定** しま�
 
 - Branch: claude/issue-<N>-impl-<slug>
 - HEAD commit: <sha>
-- Compared to: main..HEAD
+- Compared to: <BASE_BRANCH>..HEAD
 
 ## Verified Requirements
 
@@ -232,7 +247,7 @@ RESULT: Approve
 
 1. まず CLAUDE.md / requirements.md / tasks.md / impl-notes.md を順に Read する
    （CLAUDE.md の `## Feature Flag Protocol` 節も確認 — opt-in なら `feature-flag.md` を Read）
-2. `git diff main..HEAD` と `git log --oneline main..HEAD` で実装差分を全体把握する
+2. `git diff <BASE_BRANCH>..HEAD` と `git log --oneline <BASE_BRANCH>..HEAD` で実装差分を全体把握する
 3. `requirements.md` の各 numeric ID について、対応する実装またはテストが diff / 既存コードのいずれかに
    あるかを **1 つずつ** チェックする
 4. tasks.md の `_Boundary:_` 違反が無いかを確認する（差分のファイルパスと境界を照合）
@@ -256,3 +271,52 @@ RESULT: Approve
 対象 repo の `CLAUDE.md` の「テスト規約」セクションが、判定基準の **正本** です。本ファイルは
 idd-claude のメタルールであり、判定の最終根拠は対象 repo の規約に従ってください。
 （例: 対象 repo が pytest なら describe/it 命名は適用しない、等）
+
+# per-task ループ下での Reviewer の責務（PER_TASK_LOOP_ENABLED=true 適用時のみ）
+
+watcher が `PER_TASK_LOOP_ENABLED=true` で起動した場合、Implementer 1 回完了ごとに
+**fresh な Claude session** で本 Reviewer サブエージェントが起動されます（Phase 2 / #21）。
+本節は per-task 起動時に追加で適用される責務であり、既存節と矛盾する場合は本節を優先します。
+`PER_TASK_LOOP_ENABLED` 未指定 / `=true` 以外（既定）の watcher 環境では本節は **適用されず**、
+本機能導入前と完全に同一の HEAD 全体レビュー（既存節）で動作します（NFR 1.1）。
+
+## 判定対象 diff range の限定
+
+per-task 起動時、prompt には `range_start_sha` / `range_end_sha` の **2 つの SHA** が
+明示されます（オーケストレーターが `pt_resolve_diff_range` で解決した値）:
+
+- **range_start_sha**: 直前 task の `docs(tasks): mark <id> as done` commit、または
+  初回 task では `<BASE_BRANCH>` の SHA
+- **range_end_sha**: 当該 task の `docs(tasks): mark <id> as done` commit（典型的に HEAD）
+
+Reviewer は **必ず本 range のみ** を対象に `git diff` / `git log` を実行してください:
+
+```bash
+git diff --stat <range_start_sha>..<range_end_sha>
+git log --oneline <range_start_sha>..<range_end_sha>
+git diff <range_start_sha>..<range_end_sha> -- <path>
+```
+
+HEAD 全体（`<BASE_BRANCH>..HEAD`）は対象外です。全体観点は最終 Stage B Reviewer
+（per-task ループ完了後に別途起動される HEAD 全体レビュー）が担当します。
+
+## 判定 depth の絞り込み
+
+per-task ループの Reviewer は判定 depth が以下に絞り込まれます:
+
+- **判定対象 AC**: 当該 task の `_Requirements:_` で列挙された numeric ID **のみ**
+- それ以外の AC が当該 diff で未カバーであっても **reject 理由にしないこと**
+  （全 AC verify は最終 Stage B Reviewer が HEAD 全体で実施するため、本 Reviewer では
+  範囲外 AC を理由に reject を出さない）
+- **`_Boundary:_` 違反**: depth に関わらず **常に reject 対象**
+  （task 単位境界の逸脱検出が本ループの主目的）
+
+## 既存規約の流用
+
+per-task ループでも既存の 3 カテゴリ判定 / RESULT 行規約 / 出力契約をそのまま流用します:
+
+- 判定カテゴリは既存の 3 つ（AC 未カバー / missing test / boundary 逸脱）のみ
+  - opt-in 採用時の細目（旧パス削除 / flag 分岐欠落 / flag-off mutation / flag 命名違反）も
+    既存節通りに適用
+- RESULT 行フォーマット / 1 ファイル限定（`review-notes.md`）/ 装飾禁止規律はすべて流用
+- ROUND=1/2 の判断ガイドも既存節通り（ROUND=2 は ROUND=1 reject の解消確認を重点に）
