@@ -43,6 +43,12 @@ Architect が `design.md` を書き終える前に、このゲートに従って
   File Structure Plan に対応ファイルが無いものを検出
 - **Budget overflow check**: tasks.md の最上位 numeric ID タスク件数を機械的にカウントし、
   閾値に応じて分岐する（後述「Budget overflow check（tasks.md 件数）」節を参照）
+- **tasks.md checkbox enforcement check**: tasks.md のすべてのタスク行が checkbox 形式
+  （`- [ ]` または `- [ ]*`）で開始することを機械的に確認する（後述「tasks.md checkbox
+  enforcement check」節を参照）
+- **verify block well-formed check**: tasks.md に構造化 verify ブロック（センチネル
+  `<!-- stage-a-verify -->` + 直後 fence）がある場合、それが well-formed か（直後 fence /
+  fence 閉じ / 中身非空）を機械的に確認する（後述「verify block well-formed check」節を参照）
 
 ### Budget overflow check（tasks.md 件数）
 
@@ -61,6 +67,12 @@ POSIX 互換の ERE で次のパターンに一致する行を 1 件として数
 意味: 行頭が `- [ ]` または `- [ ]*` で、続けて整数 ID + `.` + 半角スペースで始まる行
 （例: `- [ ] 1. <タイトル>` / `- [ ] 12. <タイトル>` / `- [ ]* 3. <タイトル>`）。
 **`1.1` のような小数階層 ID は子タスクなのでマッチしません**（`[0-9]+\.` の直後に空白が来る規約）。
+
+> **正準とハーネスの相互参照（#216）**: 本 regex は本ルールが **正準** であり、harness 側の
+> `local-watcher/bin/issue-watcher.sh` の `tc_count_tasks`（Tasks Count Gate #147）が同一 regex に
+> 厳密一致させて同一件数を返します。harness 側を変更する場合は **本節を正準として先に**更新して
+> ください（両者は別実行基盤のため共有コードを持てず、同一 regex の明記と相互参照でドリフトを
+> 防いでいます）。
 
 #### 閾値表（判定分岐）
 
@@ -95,6 +107,123 @@ Architect は `design.md` の **末尾**（既存セクション群の後）に 
 - `docs/specs/131-feat-architect-tasks-md-budget-overflow/test-fixtures/tasks-13.md`（consolidate → split）
 - `docs/specs/131-feat-architect-tasks-md-budget-overflow/test-fixtures/tasks-14.md`（forced split）
 - `docs/specs/131-feat-architect-tasks-md-budget-overflow/test-count.sh` — count 抽出 regex の整合性検証
+
+### tasks.md checkbox enforcement check
+
+`tasks.md` の **すべてのタスク行** が checkbox 形式（`- [ ]` 未完了 / `- [ ]*` deferrable）で
+開始することを機械的に確認します。本チェックは Developer の resume 機能
+（`IMPL_RESUME_PROGRESS_TRACKING=true`、Issue #67 / #112 以降の既定）が markdown 上の
+checkbox を進捗の **正本** として読む前提を、Architect 段階で確実に成立させるためのものです。
+
+#### 判定パターン（参照実装）
+
+タスク行と認識する POSIX 互換 ERE:
+
+```
+^- \[[ x]\]\*? [0-9]+(\.[0-9]+)*\.? 
+```
+
+意味: 行頭が `- [ ]` / `- [ ]*` / `- [x]` / `- [x]*` のいずれかで、続けて numeric 階層 ID
+（`1` / `1.1` / `2.1.3` 等）+ 半角スペースで始まる行をタスク行と認識する（最上位タスクは
+ID 末尾の `.` あり [`- [ ] 1. <名前>`]、子タスクは末尾の `.` なし [`- [ ] 1.1 <名前>`] が
+既存表記。regex 末尾の `\.?` がこの差を吸収）。checkbox を持たないタスク表現
+（例: `## T-01: タスク名` / `### Task 1` / `#### 1.1 子タスク` 等の markdown header だけで
+タスクを表す行）は本パターンにマッチせず、**違反として報告**されます。
+
+#### 検証手順
+
+1. Architect は `tasks.md` ドラフトの確定直前に、上記判定パターンで全タスク行を抽出する
+2. タスク本体を表す行が **markdown header のみ**（`^#{1,6} ` で始まり、リスト項目になって
+   いない行）でタスクを表現している箇所が無いかを目視確認する（例: `## T-01: タスク名` /
+   `### 子タスク`）
+3. checkbox 不在のタスク行を 1 件でも検出した場合、該当行を `- [ ] <numeric ID>. <タスク名>`
+   形式（または `- [ ]* <numeric ID> <タスク名>`）に修正してから確定する
+4. [`tasks-generation.md`](./tasks-generation.md) の「Checkbox 形式の必須化」節と整合する
+   ことを確認する（同節と本チェックは同一 checkbox 規約に依拠する）
+
+#### Budget overflow check との関係
+
+本 checkbox enforcement check と既存の **Budget overflow check** は、**同一の checkbox 規約**
+（`- [ ]` / `- [ ]*` で始まるタスク行の認識）に依拠しています:
+
+- Budget overflow check の count 抽出 regex `^- \[ \]\*? [0-9]+\. ` は **最上位 numeric ID
+  タスク**のみを数える狭い判定（ID 末尾の `.` を必須化）
+- checkbox enforcement check の判定パターン `^- \[[ x]\]\*? [0-9]+(\.[0-9]+)*\.? ` は
+  **親タスク・子タスク・完了済みタスク** を含む広い判定（ID 末尾の `.` をオプショナル化）
+- 両者は同じ「タスク行 = リスト項目 + checkbox + numeric ID」という規約を共有しており、
+  本機能導入により Budget overflow check の判定境界（10 / 11 / 13 / 14 件）は **変化しません**
+  （`docs/specs/131-feat-architect-tasks-md-budget-overflow/test-fixtures/` の 4 fixture が
+  全て `- [ ]` checkbox を持つことで引き続き動作します）
+
+#### 適用範囲（後方互換性）
+
+- 本チェックの対象は **Architect が新規に生成・編集する `tasks.md`** に限定する
+- 既に main に merge 済みの spec の `tasks.md` に対する **遡及的なルール違反検出は要求しない**
+  （retrofit は本 rule のスコープ外）
+- 既存 deferrable テストタスク表記 `- [ ]*` は有効な checkbox 形式として扱う（違反として
+  報告しない）
+- ≤ 10 件の正常ケースを含む Budget overflow check の挙動は変化しない
+
+### verify block well-formed check
+
+`tasks.md` に **構造化 verify ブロック**（stage-a-verify gate #125 / #224 の input 契約。
+センチネル `<!-- stage-a-verify -->` + 直後 fenced code block）が含まれる場合、それが
+well-formed であるかを機械的に確認します。本チェックは malformed なブロックが Developer
+フェーズまで持ち越され、watcher の実行時に黙って fallback（env / heuristic / SKIPPED）へ
+後退してしまう事故を、設計確定前に検出するためのものです（Req 5.1, 5.2）。
+
+#### well-formed 判定（参照実装）
+
+ブロックが well-formed であるとは、以下をすべて満たすことです（モジュール側 awk
+`stage_a_verify_extract_verify_block`（`local-watcher/bin/modules/stage-a-verify.sh`）の
+抽出基準と **同一**。両者は別実行基盤のため共有コードを持てず、同一基準の明記と相互参照で
+ドリフトを防いでいます。判定基準を変更する場合は本節とモジュール側 awk の双方を同期更新する
+こと）:
+
+1. **センチネル存在**: 行を trim した結果が厳密に `<!-- stage-a-verify -->` に一致する
+   アンカー行が存在する（前後空白許容、行内の他テキスト不可）
+2. **直後性 / 直後 fence**: アンカー行の次行以降で空行を任意個スキップした後の最初の非空行が
+   fence 開始（trim 後 ` ``` ` 始まり）である（fence 以外の非空行が先に来たら malformed）
+3. **fence 閉じ**: fence が次の ` ``` ` 行で閉じている（EOF まで閉じなければ malformed）
+4. **中身非空**: fence 内が trim 後すべて空ではない（空ブロックは malformed）
+5. **複数ブロック**: 上記を満たす最初のアンカー + fence のみを採用（決定論）
+
+書式規約の散文側正本は [`tasks-generation.md`](./tasks-generation.md) の「構造化 verify ブロック」
+節です（本節と同一の well-formed 条件に依拠）。
+
+#### 検証手順
+
+1. Architect は `tasks.md` ドラフトの確定直前に、センチネル `<!-- stage-a-verify -->` の有無を
+   走査する
+2. センチネルが存在する場合、上記 well-formed 判定 1〜4 を目視 / 機械的に確認する
+3. malformed（直後 fence なし / fence 未クローズ / 中身空）を検出した場合、**違反として報告**し、
+   確定前に well-formed な書式へ修正する（既存ゲートと同じ最大 2 パス）
+4. センチネルが存在しない（ブロックを宣言していない）spec は、本 well-formed 判定の対象外
+   （後述 Req 5.3 の warn とは別レイヤ）
+
+#### verify 対象あり + ブロック/env 両無の扱い（Req 5.3）
+
+verify 対象（build/test/lint）を持つはずのプロジェクトで、構造化 verify ブロックも
+`STAGE_A_VERIFY_COMMAND` も存在しない場合、本チェックは **warn 止まり**（reject しない）と
+します。design-less impl（tasks.md 不在の #204 等）や verify 不要 spec（純ドキュメント変更等）を
+誤って reject しないための安全側設計です。Architect は warn を受けて構造化ブロックの宣言を
+検討しますが、宣言しないことを理由に確定をブロックしません。
+
+> **design-less impl の SKIP は意図された仕様（#230）**: `design` モードを経由せず Architect が
+> `tasks.md` を生成しない design-less impl（tasks.md 不在）では、watcher 実行時に stage-a-verify
+> gate が verify コマンドを推測せず **SKIP** します。これは未実装の取りこぼしではなく
+> 「watcher は verify コマンドを推測しない」設計思想（#224 / #228）に基づく意図された仕様です。
+> design-less impl の regression は Developer が実行するテストと Reviewer の AC 判定で担保されます
+> （詳細は README「Stage A Verify Gate (#125)」節を参照）。本 well-formed check はそもそも
+> `tasks.md` を生成する Architect ルートのみが対象であり、design-less impl には適用されません。
+
+#### 適用範囲（後方互換性）
+
+- 本チェックの対象は **Architect が新規に生成・編集する `tasks.md`** に限定する
+- 既に main に merge 済みで構造化 verify ブロックを持たない既存 spec を **遡及的な違反として
+  報告しない**（Req 5.4、retrofit は本 rule のスコープ外）
+- 構造化 verify ブロックを持たない spec は従来どおり env / ヒューリスティック / SKIPPED に
+  fallback するため、本チェック導入により既存挙動は変化しない（NFR 1.1）
 
 ### `/goal` による自動ループ運用（Claude Code v2.1.139+）
 
