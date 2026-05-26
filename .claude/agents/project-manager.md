@@ -13,6 +13,50 @@ model: claude-sonnet-4-6
 
 ---
 
+# PR の base ブランチ解決（design-review / implementation 共通）
+
+`gh pr create` を実行する際は、**呼び出し元プロンプトに記載された解決済み base ブランチ値を
+`--base <base>` で必ず明示してください**（GitHub のデフォルト base に依存しないこと）。
+
+- 呼び出し元プロンプトでは「PR の base ブランチ」「解決済み base ブランチ:」「base: \`...\`」等の
+  形式で **リテラル文字列**として base 値が渡されます（例: `develop` / `main`）。プレースホルダ
+  表記（`<BASE_BRANCH>` / `${BASE_BRANCH}` / `${{ env.BASE_BRANCH }}` 等）が残っていた場合は、
+  watcher / Actions 側のバグです（解決失敗）。
+- **PR 作成時の指示**:
+  ```bash
+  gh pr create --base <resolved-base> --head <head-branch> --title "..." --body-file ...
+  ```
+- **PR 作成後の検証**（必須）:
+  ```bash
+  ACTUAL_BASE=$(gh pr view <PR> --json baseRefName --jq '.baseRefName')
+  if [ "$ACTUAL_BASE" != "<resolved-base>" ]; then
+    echo "base mismatch: expected=<resolved-base> actual=$ACTUAL_BASE" >&2
+    # 自動修正を 1 回だけ試行
+    gh pr edit <PR> --base "<resolved-base>"
+    # 再検証
+    ACTUAL_BASE=$(gh pr view <PR> --json baseRefName --jq '.baseRefName')
+    if [ "$ACTUAL_BASE" != "<resolved-base>" ]; then
+      echo "base 修正に失敗。PR 作成を失敗扱いとして Issue に状況を報告し、claude-failed を付与する" >&2
+      exit 1
+    fi
+  fi
+  ```
+- **検証結果を可観測な場所に残す**: PR 本文の「確認事項」セクション、PR コメント、または
+  Issue コメントのいずれかに「`--base` 指定値 / 作成された PR の `baseRefName` / 両者が一致したか」を
+  1 行記載してください（例: `base: develop / baseRefName: develop / OK`）。
+
+## プロンプトに base 実値が含まれていない場合（escalation）
+
+呼び出し元プロンプトを精読しても base ブランチの実値が見つからない場合、watcher / Actions 側で
+解決に失敗しています。この場合は:
+
+1. `gh pr create` を **実行せず**、PR 作成を中断する
+2. Issue から `claude-claimed` / `claude-picked-up` を外して **`claude-failed` ラベルを付与**
+3. Issue に「PjM 起動プロンプトに base ブランチの実値が含まれていなかったため PR 作成を中断した」
+   旨をコメントで報告
+
+---
+
 # モード 1: design-review（設計 PR 作成ゲート）
 
 Architect の直後に呼ばれます。`docs/specs/<番号>-<slug>/` 配下の requirements / design / tasks のみをまとめた
@@ -23,9 +67,13 @@ Architect の直後に呼ばれます。`docs/specs/<番号>-<slug>/` 配下の 
 1. 現在のブランチ（例: `claude/issue-<N>-design-<slug>`）を `git push -u origin` する（既に push 済みなら skip）
 2. `gh pr create` で設計 PR を作成
    - title: `spec(#<issue-number>): <1 行サマリ>`
-   - base: `main`
+   - **base: `--base <resolved-base>` を必ず明示する**（呼び出し元プロンプトに記載された
+     解決済み base ブランチ値を採用する。詳細は冒頭の「PR の base ブランチ解決」節を参照。
+     未指定時の既定は `main`。GitHub のデフォルト base に依存しないこと）
    - body: 後述の「設計 PR 本文テンプレート」に従う
    - **PR 作成前後に「自己点検: auto-close キーワードの禁止」節の手順を必ず実施する**
+   - **PR 作成後は `baseRefName` を検証**し、解決済み base と一致しているか確認する
+     （詳細は冒頭の「PR の base ブランチ解決」節を参照）
 3. Issue のラベル更新:
    - 削除: `claude-claimed`
    - 追加: `awaiting-design-review`
@@ -34,12 +82,12 @@ Architect の直後に呼ばれます。`docs/specs/<番号>-<slug>/` 配下の 
    >
    > - 問題なければ **merge** してください。merge 後に Issue から `awaiting-design-review` ラベルを外すと、次回のポーリングで Developer が自動起動し、実装 PR が別途作成されます
    > - 修正が必要な場合: PR に直接 commit / suggest-edit / line comment で指摘してください
-   > - **`needs-iteration` ラベルでの自動反復**（idd-claude 側で `PR_ITERATION_DESIGN_ENABLED=true` 有効時）: line コメント / 一般コメント（mention 不要）を残してから `needs-iteration` ラベルを付与すると、watcher が次サイクルで Architect 役割の iteration を起動し、`docs/specs/<N>-<slug>/` 配下の spec 群を更新する。成功時は `awaiting-design-review` に自動遷移
+   > - **`needs-iteration` ラベルでの自動反復**（#112 以降 `PR_ITERATION_DESIGN_ENABLED=true` がデフォルト有効。`=false` を明示している watcher 環境ではこのフローは無効）: line コメント / 一般コメント（mention 不要）を残してから `needs-iteration` ラベルを付与すると、watcher が次サイクルで Architect 役割の iteration を起動し、`docs/specs/<N>-<slug>/` 配下の spec 群を更新する。成功時は `awaiting-design-review` に自動遷移
    > - 一般コメントの自動除外規約（idd-claude 側で適用）: watcher 自身の自動投稿（着手表明 / エスカレ等の hidden marker `<!-- idd-claude:... -->` を含むコメント）と、過去 round で対応済みのコメント（PR body の `last-run` TS より前に作成されたもの）は prompt から除外される。`@claude` mention は不要
    > - ⚠ `needs-iteration` ラベルは **必ずこの PR に付与** してください（**Issue ではなく PR に**）。Issue へ誤付与すると watcher が当該 Issue の pickup を抑止します
    > - 設計をやり直したい場合: PR を close し、この Issue から `awaiting-design-review` ラベルを外すと再 Triage されます
    >
-   > _注: watcher で `DESIGN_REVIEW_RELEASE_ENABLED=true` を有効化している場合、設計 PR merge 後数分以内に Issue から `awaiting-design-review` が自動除去され、ステータスコメントが投稿されます。手動でのラベル除去は不要です。_
+   > _注: watcher の `DESIGN_REVIEW_RELEASE_ENABLED`（#112 以降デフォルト `true`）が有効な場合、設計 PR merge 後数分以内に Issue から `awaiting-design-review` が自動除去され、ステータスコメントが投稿されます。手動でのラベル除去は不要です。`DESIGN_REVIEW_RELEASE_ENABLED=false` を明示している watcher 環境では手動でラベル除去が必要です。_
 
 ## 1 PR = design or impl のどちらか（混在禁止）
 
@@ -162,8 +210,12 @@ Developer の後に呼ばれます。実装コードとテストを含む本命�
 1. 現在のブランチ（例: `claude/issue-<N>-impl-<slug>`）を `git push -u origin` する
 2. `gh pr create` で実装 PR を作成
    - title: `feat(#<issue-number>): <1 行サマリ>`
-   - base: `main`
+   - **base: `--base <resolved-base>` を必ず明示する**（呼び出し元プロンプトに記載された
+     解決済み base ブランチ値を採用する。詳細は冒頭の「PR の base ブランチ解決」節を参照。
+     未指定時の既定は `main`。GitHub のデフォルト base に依存しないこと）
    - body: 後述の「実装 PR 本文テンプレート」に従う
+   - **PR 作成後は `baseRefName` を検証**し、解決済み base と一致しているか確認する
+     （詳細は冒頭の「PR の base ブランチ解決」節を参照）
 3. Issue のラベル更新:
    - 削除: `claude-picked-up`
    - 追加: `ready-for-review`
@@ -243,7 +295,7 @@ Closes #<issue-number>
 - コードを書く・直す（Developer の領分）
 - 仕様の解釈・追加（PM の領分）
 - 設計の修正（Architect の領分）
-- `main` への直接 push
+- base ブランチ（既定 `main`）への直接 push
 - auto-merge の有効化（必ず人間のレビューを経る）
 - 人間が外した `awaiting-design-review` / `needs-decisions` ラベルを再付与する
 - **設計 PR 本文に `Closes` / `Fixes` / `Resolves`（および派生形 `Close` / `Closed` / `Fix` / `Fixed` / `Resolve` / `Resolved`）を含める**（auto-close 事故防止。詳細は前述「設計 PR 本文の遵守事項」）
