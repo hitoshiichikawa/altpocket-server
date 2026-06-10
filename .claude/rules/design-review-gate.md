@@ -31,6 +31,102 @@ Architect が `design.md` を書き終える前に、このゲートに従って
 - 投機的抽象化（将来スコープのためだけに存在するコンポーネント／アダプタ／インターフェース）を排除しているか
 - tasks.md で直接参照できない程に曖昧なセクションは、確定前に書き直す
 
+## Task turn 予算 sanity check（過大 task 検出）
+
+`tasks.md` ドラフトの確定直前に、Architect は各タスクが `DEV_MAX_TURNS`（既定 60）以内に
+収まる粒度であるかを **判断レビューの一環として** 点検します。本観点は、`tasks-generation.md`
+の「turn 予算ガイドライン（per-task Implementer ループ運用時の粒度指針）」で示した **タスク
+生成段階の指針** に対し、`design-review-gate.md` 側で **自己レビュー時の検出観点** を補う形で
+機能します（生成 vs レビューの役割分担）。
+
+本観点は **推奨（指針）レベル** であり、reject 条件ではありません。Mechanical Checks 節には
+属さず（後述の理由）、機械的な数値強制（CI / pre-commit / Mechanical Check による自動 reject）も
+行いません。観点に該当する task を発見した場合、Architect は当該 task の分割または最上位昇格を
+**検討** し、判断結果（分割するか据え置くか）を `design.md` / `tasks.md` に反映します。
+
+### 背景: 層対称分割の落とし穴
+
+frontend / UI / テストが重い責務は、backend / pure logic と比べて **turn コスト密度が高い**
+（描画・状態・スタイル・スナップショット・visual regression 等のコンテキストを並行で抱える
+ため）。「層ごとに対称に分割する」だけで安心していると、frontend 側のタスクだけが
+`error_max_turns` を踏み抜く事故が発生します（例: 「API クライアント lib(+test) + 複数
+component(+test)」を 1 タスクにまとめた事例）。
+
+このため、Architect 自己レビュー時には **turn コスト密度を意識した分割** に視点を切り替え、
+以下のシグナルで過大 task を点検することを推奨します。
+
+### 検出シグナル
+
+以下のシグナルのいずれかに該当する task は、過大 task の可能性を **点検対象** とします
+（必ず分割せよという意味ではなく、判断レビューの俎上に乗せるための観点列挙）:
+
+1. **異種責務の同居**: 1 つのタスクに「API クライアント lib(+test)」「複数 component(+test)」
+   「状態管理 / Store(+test)」「スタイル / theme 変更」等の **異種責務** が混在していないか。
+   同居していれば責務単位での分割を検討する
+2. **兄弟比突出**: 同階層の兄弟タスクと比較して、当該タスクの **詳細項目数** または
+   **想定新規ファイル数** が突出していないか。兄弟比の倍率や項目数の絶対値は **目安** であり
+   厳密な閾値は定めない（Open Question (b) の通り、定量強制はしない）
+3. **新規ファイル件数の目安**: 1 タスクで新規追加するファイル数が多い場合（**目安として 3 件
+   以上**）、分割を検討する。なお 3 件はあくまで **目安** であり、ファイル粒度（小ユーティリティの
+   集合体か / 大規模 component 1 件か）で実コストは大きく異なるため、絶対閾値としては運用しない
+4. **重い子タスクの同居**: 重い子タスク（`1.1` / `1.2` …）が同一親の下に複数同居していないか。
+   同居している場合、子を親から切り出して **最上位 task（`2` / `3` …）への昇格** を検討する
+   （子は独立 commit 単位として消化されるため、昇格させた方が turn 予算管理が容易）
+5. **turn コスト密度差**: frontend / UI / テスト重責務は backend より turn コスト密度が高い。
+   層対称分割（frontend 1 タスク + backend 1 タスク等）ではなく、**turn コスト密度を意識した
+   分割**（frontend を細かく刻み、backend を統合する等）が望ましい場面がある
+
+### 是正方針: 責務不変の粒度分割
+
+過大 task を検出した場合の是正は、**`design.md` の責務・コンポーネント構成を変えず、tasks の
+切り方のみを調整する** ことを基本とします（責務不変の粒度分割）。具体的には:
+
+- 異種責務同居タスクを **責務単位の独立タスク** に分割する（例: 「API lib + UI」 → 「API lib」
+  と「UI」を別タスクに）
+- 重い子タスクを **最上位 task に昇格** させる（親から切り出して `2` / `3` … として独立 commit
+  単位にする）
+- 兄弟比が突出しているタスクを **複数タスクに分解** する（責務単位 / ファイル単位の自然な
+  境界で分ける）
+
+`design.md` 側の責務再設計が必要と判断される場合のみ、judgment review に戻して再検討します
+（観点違反を理由に design 側の責務を強制的に書き換える運用は採用しない）。
+
+### Mechanical Checks 節に含めない理由
+
+本観点を **Mechanical Checks に含めない** のは以下の理由です（Mechanical Checks は機械的に
+判定可能な項目に限定するため）:
+
+- タスクごとの turn 消費量は実装難度・既存コードベースの状態・テスト規模に依存し、設計段階で
+  正確な事前見積もりが難しい
+- ファイル数 / 兄弟比などのシグナルは **必要条件にも十分条件にもならない**（小ファイル 5 件 <
+  大ファイル 1 件のケースが普通にある）。数値強制すると false-positive が頻発する
+- `DEV_MAX_TURNS` 既定値（60）は将来変更され得る。機械 enforcement に紐付けると数値追従コストが
+  発生する
+- 推奨どまりにすることで Architect / 人間設計者が判断材料として活用しつつ、reject 判定の自動化は
+  既存 Mechanical Checks（Requirements traceability / File Structure Plan 充填 / orphan component /
+  Budget overflow / checkbox enforcement / verify block well-formed）に集約できる
+
+### 既存規約との関係
+
+- [`tasks-generation.md`](./tasks-generation.md) の「turn 予算ガイドライン（per-task Implementer
+  ループ運用時の粒度指針）」節（#289 で追加）と **役割分担** します:
+  - `tasks-generation.md` 側 = **タスク生成段階** の粒度指針（fresh session 仕様 / 粒度指針 /
+    強度の項）
+  - 本節 = **Architect 自己レビュー段階** の検出観点（5 シグナル / 是正方針）
+- 既存「レビュー・ループ」節の **最大 2 パス** 規約および `/goal` 自動ループ運用節は変更しません
+  （本観点は判断レビュー側の観点追加であり、ループ手順自体は変えない）
+- Mechanical Checks 節（Requirements traceability / File Structure Plan 充填 / orphan component /
+  Budget overflow / checkbox enforcement / verify block well-formed）の判定基準は変更しません
+- 既に main に merge 済みの spec の `design.md` / `tasks.md` に対する **遡及的な違反検出は
+  要求しません**（retrofit は本観点のスコープ外）
+
+### 適用タイミング
+
+Architect は `tasks.md` ドラフトの確定直前、判断レビュー（要件カバレッジ / アーキテクチャ準備 /
+実行可能性）を通過し、Mechanical Checks（Budget overflow check など）が pass した後の段階で
+本観点を点検することを推奨します。本観点に該当する task を発見した場合は、上記「是正方針」に
+従って tasks の切り方を調整してから確定します。
+
 ## Mechanical Checks（自動確認項目）
 
 判断レビューの前に、機械的に確認します:

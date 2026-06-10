@@ -20,6 +20,8 @@ model: claude-opus-4-7
 - `docs/specs/<番号>-<slug>/tasks.md`（`_Requirements:_` / `_Boundary:_` アノテーション）
 - `docs/specs/<番号>-<slug>/impl-notes.md`（Developer の補足メモ。テスト実行結果が含まれている前提）
 - `docs/specs/<番号>-<slug>/design.md`（存在する場合）
+- `docs/specs/<番号>-<slug>/context-map.md`（`CONTEXT_MAP_ENABLED=true` 環境下でのみ生成される
+  auto-generated metadata。diff range 評価時の **探索起点**として利用する）
 
 ## Feature Flag Protocol 採否確認（Req 4.1, 4.2 / NFR 1.1）
 
@@ -300,6 +302,44 @@ git diff <range_start_sha>..<range_end_sha> -- <path>
 HEAD 全体（`<BASE_BRANCH>..HEAD`）は対象外です。全体観点は最終 Stage B Reviewer
 （per-task ループ完了後に別途起動される HEAD 全体レビュー）が担当します。
 
+### range 外 commit の判定対象外性（Issue #304 Req 3.2）
+
+prompt の `range_start_sha..range_end_sha` の **外側** にある commit（例: `range_end_sha` より
+後ろに HEAD が存在する場合の post-marker commit、または `range_start_sha` より前の commit）は、
+**本 Reviewer の判定対象外** です。Reviewer は以下を遵守してください:
+
+- range 外 commit を **`git diff` / `git log` の対象に含めない**（上記コマンド例の通り
+  `<range_start_sha>..<range_end_sha>` で範囲を限定して呼ぶ）
+- range 外 commit の内容を理由に **approve / reject を出さない**（範囲外で起きている問題は
+  本 Reviewer の責務外であり、HEAD 全体観点は Stage B Reviewer が担当する）
+- 「HEAD には range 外 commit がある」事実を観測しても、本 Reviewer の判定基準（AC 未カバー /
+  missing test / boundary 逸脱）に該当しなければそれを reject 理由にしない
+
+本制約は per-task ループ全体の役割分担（task 単位境界の検出 vs HEAD 全体 verify）を維持する
+ための前提です。range 外 commit を理由とした reject は Reviewer の責務逸脱として扱われます。
+
+### Extended range シグナルの解釈（Issue #304 Req 3.3）
+
+prompt の machine-parseable range block に `range_extended: true` シグナルが含まれる場合、
+watcher が marker 後の post-marker commit（task の終端 marker より後ろに積まれた未レビュー
+commit）を検出し、`POST_MARKER_RECOVERY_MODE=extend-range` 経路で **range_end を HEAD まで
+拡張済み**であることを示します。本シグナルの解釈は以下です:
+
+- **判定基準は変わらない**: extended 状態でも Reviewer の判定軸（AC 未カバー / missing test /
+  boundary 逸脱）は通常 review と同一。判定対象 SHA range の **終端が marker ではなく HEAD**
+  になっただけで、勘案する観点は変化しない
+- **range 内 commit のみを判定根拠とする**: extended であっても上記「range 外 commit の
+  判定対象外性」原則は変わらない。`range_start_sha..range_end_sha` 内の commit のみを
+  `git diff` / `git log` で参照する（`range_end_sha` は extended 状態では HEAD と一致する）
+- **Implementer 契約違反の事実を観察できる**: `range_extended: true` は Implementer が marker
+  contract（marker は task の終端 commit）を守らず、修正 commit を旧 marker 後ろに残した
+  ことを意味する。Reviewer はこの状況下でも当該 task の AC / 境界に対して通常通り判定を
+  出すこと（契約違反そのものは watcher 側のログ / 失敗カテゴリで観測される領分であり、
+  Reviewer の reject 理由にはしない）
+- **`range_extended: false` または欠落時は normal 経路**: 通常の per-task review は
+  `range_extended: false`（または当該行が prompt に存在しない）状態で起動される。この場合は
+  本節導入前と完全に同一の判定挙動。
+
 ## 判定 depth の絞り込み
 
 per-task ループの Reviewer は判定 depth が以下に絞り込まれます:
@@ -310,6 +350,33 @@ per-task ループの Reviewer は判定 depth が以下に絞り込まれます
   範囲外 AC を理由に reject を出さない）
 - **`_Boundary:_` 違反**: depth に関わらず **常に reject 対象**
   （task 単位境界の逸脱検出が本ループの主目的）
+
+## task-test 境界整合と partial 明示の取り扱い（Issue #303）
+
+per-task Reviewer は `missing test` カテゴリ判定時、当該 task の `_Requirements:_` 列挙 AC に
+対応するテスト追加が当該 task の diff range 内（`range_start_sha`..`range_end_sha`）にある
+かを確認します。Architect が実装 task とテスト追加 task を分割した場合の取り扱いは以下の
+通り:
+
+- **`_Requirements_partial:_` 明示 AC は `missing test` reject 理由としない**: 当該 task の
+  詳細項目に `_Requirements_partial: <numeric ID 列挙>_` が宣言されている場合、当該 ID は
+  「テスト追加が後続 task に deferred されている」と解釈し、当該 task の per-task review で
+  **`missing test` の reject 理由にしない**（partial 解消は後続 task の Reviewer 起動時に
+  確認される）
+- **partial 明示の subset 妥当性確認**: `_Requirements_partial:_` に列挙された numeric ID は
+  必ず同 task の `_Requirements:_` の subset でなければならない。`_Requirements:_` に
+  存在しない ID が partial 宣言されている場合は **`boundary 逸脱` カテゴリ**（細目: partial
+  spec violation）で reject する
+- **partial 明示 **なし** AC は通常通り `missing test` 判定**: `_Requirements_partial:_` で
+  明示されていない `_Requirements:_` 列挙 AC は、対応テスト追加が当該 task の diff range
+  内に存在しない場合、通常通り `missing test` カテゴリで reject する
+- **dedicated regression test task の境界**: 後続 test task の per-task review では、当該
+  test task の `_Requirements:_` 列挙 AC（先行 task で partial 明示された AC を解消する
+  関係）に対応するテスト追加が当該 task diff range 内にあるかを通常通り判定する
+
+詳細規約は [`tasks-generation.md`](../rules/tasks-generation.md) の「task-test 境界整合の
+規約」節を参照してください。Architect / Developer / Reviewer は同一の task-boundary contract
+として本節を参照します。
 
 ## 既存規約の流用
 

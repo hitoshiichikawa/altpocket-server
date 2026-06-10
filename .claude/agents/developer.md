@@ -51,6 +51,11 @@ merge 済み。idd-claude が解決した `<BASE_BRANCH>`、既定 `main`）前�
   - `refactor(scope): 動作を変えないリファクタ`
 - 実装と同時に単体テストを追加する（**テストなしの feat コミットは禁止**）
 - 変更前に `grep` / `glob` で既存実装・影響範囲を必ず把握する
+- **`CONTEXT_MAP_ENABLED=true` 環境下では**、watcher が `docs/specs/<番号>-<slug>/context-map.md`
+  を per-task 起動直前に生成し、prompt に inline embed します。広域 grep / glob を行う**前に**
+  本 context map を参照して候補ファイル列挙を消化してください（広域探索は候補で不足した
+  場合の **fallback** です）。`CONTEXT_MAP_ENABLED` 未設定 / `=false` の通常運用では本節は
+  適用されません（既存挙動と差分等価 / Req 3.5, NFR 1.1）。
 - 依存ライブラリを追加する場合は PR 本文にその理由を残せるよう、コミットメッセージにも記録する
 
 # Tool 呼び出しの並列化規律（Issue #135 以降適用）
@@ -390,6 +395,70 @@ fresh な Claude session** で本 Developer サブエージェントが起動さ
   ため、`diff-range-resolve-failed` を引き起こすリスクがある（watcher 側で fallback 解決は
   試行するが、canonical は単記分割のみ）。
 
+## Marker contract（marker は task の終端 commit）（Issue #304 / idd-codex #14 同型再発防止）
+
+per-task ループにおいて、`docs(tasks): mark <id> as done` marker commit は当該 task の
+**終端 commit**（task 完了時点で `${BASE_BRANCH}..HEAD` の最後尾に位置する commit）として
+扱う契約があります。本契約は watcher の `pt_resolve_diff_range` が当該 task の per-task
+Reviewer review range の **終端 SHA** を当該 marker commit に固定する前提に依拠しており、
+契約違反は **silent range truncation**（修正 commit が Reviewer の判定対象から漏れる事故）の
+原因になります。
+
+### marker 作成タイミングの契約（Req 1.1）
+
+- marker commit は、当該 task の **実装 commit・テスト commit・`impl-notes.md` への
+  learning 追記 commit** をすべて積み終えた **最後** に作成すること
+- 「実装途中で先に marker を打って後から修正を追加する」「learning 追記より先に marker を
+  打つ」等のフローは禁止。**「task の全成果物が積み終わった」状態でのみ marker を作る**
+- 本 attempt（Reviewer reject 後の retry も含む）の task-scope 作業がすべて完了した時点で
+  marker commit を作成する
+
+### retry 時の marker refresh 契約（Req 1.2）
+
+Reviewer reject や Debugger guidance による Implementer 再実行（round 2 / round 3）で
+修正 commit を追加する場合、**修正 commit を旧 marker より後ろに残してはならない**。
+旧 marker をそのままに修正 commit を marker 後ろに積むと、watcher の review range が
+旧 marker で固定されたまま修正 commit が漏れ、再 reject の根拠が実態と乖離します
+（idd-codex #14 で実際に発生した failure mode）。
+
+### 推奨 refresh 手順（順序付き）
+
+retry 時に marker を refresh する canonical 手順は以下です:
+
+1. **旧 marker commit の特定**: `git log --oneline ${BASE_BRANCH}..HEAD | grep "docs(tasks): mark <id> as done"` で
+   旧 marker の SHA を特定する
+2. **修正 commit を積む**: 実装 / テスト / learning 追記の修正 commit を通常通り積む（この
+   時点では旧 marker が中間位置に残っている状態）
+3. **旧 marker を剥がして新 marker を末尾に作り直す**: 以下のいずれかの方法で marker を
+   task 終端に移動する:
+   - **方法 A（推奨 / 単純）**: `git reset --soft <旧 marker の SHA>^` で旧 marker を含む
+     最近の commit を index に戻し、修正 commit を再 commit したうえで新 marker を末尾に
+     作成する
+   - **方法 B**: `git rebase -i ${BASE_BRANCH}` で旧 marker を tip に移動（reorder）し、
+     必要なら drop + 末尾で新 marker を作り直す
+4. **push して watcher の次サイクルへ**: refresh 後の HEAD（新 marker が終端）を push する。
+   watcher は次サイクルで新 marker を range_end として解決する
+
+### 禁止例
+
+以下のパターンは silent range truncation を引き起こすため **禁止**:
+
+- 旧 marker をそのままに修正 commit を marker **後ろに** 積む（marker が中間位置に残る）
+- 修正 commit と marker を別 attempt に分割し、marker のみを先行 attempt で push したまま
+  後続 attempt で修正 commit を push する
+- 旧 marker を残したまま「marker を打ち直す」つもりで `docs(tasks): mark <id> as done` を
+  もう 1 件追加する（同一 task ID の marker が複数存在する状態は watcher 側でも `1 commit
+  = 1 task ID` 規約に抵触する）
+
+### watcher 側 safety net との関係
+
+watcher は本契約違反を検出する safety net（`pt_detect_post_marker_commits` /
+`pt_handle_post_marker_commits` / `per-task-post-marker-commits-detected` カテゴリの
+claude-failed、env `POST_MARKER_RECOVERY_MODE`）を持ちますが、これは **Implementer 契約の
+代替ではなく defense-in-depth** です。default の `fail-with-diagnostic` モードでは
+silent truncation を顕在化させて claude-failed で停止するため、Implementer は本契約を
+遵守して safety net 発火を回避することが望まれます。
+
 ## learning 追記の責務（per-task ループの中核 / Req 4.1, 4.2, 4.4）
 
 - 完了時に `impl-notes.md` の `## Implementation Notes` セクション配下へ
@@ -401,6 +470,109 @@ fresh な Claude session** で本 Developer サブエージェントが起動さ
 - `## Implementation Notes` セクション **外** の既存記述（補足ノート / 確認事項など）には触れない
 - `## Implementation Notes` 見出し自体が無ければ初回 Implementer が追加してよい
   （`impl-notes.md` 自体が存在しなければ作成する）
+
+## per-task retry 時の Finding Closure Matrix 記録義務（Req 2.1〜2.5, 4.1, 4.4 / NFR 2.1）
+
+per-task retry 経路（Reviewer reject 後の Implementer 再起動 / Debugger Gate 経由再起動）では、
+prompt 本文に **「## 直前 round の Reviewer Findings」ブロック**（および `after-debugger` の場合
+は「## Debugger の Fix Plan（debugger-notes.md より）」ブロック）が inline 注入されます。
+Developer は本注入を checklist として扱い、`impl-notes.md` の `### Task <id>` h3 セクション
+末尾に **Finding Closure Matrix** を追記する義務を負います。
+
+### 適用範囲
+
+- **適用**: prompt 本文に「## 直前 round の Reviewer Findings」ブロックが含まれる redo 経路
+  （`redo_mode=after-round1` / `redo_mode=after-debugger`）のみ
+- **非適用**: 初回起動（`redo_mode=initial`）/ `PER_TASK_LOOP_ENABLED=false` 環境 /
+  prompt 本文に Findings 注入ブロックが含まれない場合は **本節を skip** すること
+  （Developer は prompt から本節該当の指示が無いことを観察して skip する。NFR 1.1 / Req 1.4 / 5.5）
+
+### Matrix の構造（規約テンプレ / 4 列）
+
+`impl-notes.md` の当該 task の `### Task <id>` h3 セクション末尾に、以下の見出しで Matrix を追記する:
+
+```markdown
+### Task <id> — Finding Closure Matrix (round=<N>)
+
+| Finding | Target | Fix Commit | Added/Updated Test | Verification |
+|---------|--------|------------|--------------------|--------------|
+| Finding 1 | 1.1 (AC 未カバー) | <短縮 SHA> | `local-watcher/test/foo_test.sh` 追加 | `bash foo_test.sh` 全 pass |
+| Finding 2 | boundary:Watcher | 未対応（理由: 仕様確認待ち、次 round へ持ち越し） | — | — |
+```
+
+- 見出し形式は `### Task <id> — Finding Closure Matrix (round=<N>)` で固定（`<id>` は対象 task ID、
+  `<N>` は当該 redo round 番号。`after-round1` なら `round=2`、`after-debugger` なら `round=3`）
+- 1 行 = 1 Finding（review-notes.md の `### Finding 1` / `### Finding 2` … と 1:1 で対応）
+- `Target` 列は review-notes.md の `**Target**:` 行に対応する numeric requirement ID または
+  `boundary:<component>` をそのまま転記する
+- `Fix Commit` 列は対応 commit の **短縮 SHA**（7 桁以上）を記載する。対応 commit が無い場合は
+  下記 enum 値のいずれかを記載する（Req 2.3）
+
+### `Fix Commit` 列の enum 値（対応不能時）
+
+対応 commit が存在しない Finding は、`Fix Commit` 列に以下のいずれかを記載する:
+
+- `未対応`（次 round で対応予定 / 後続 task の責務 等）
+- `対応不可（理由: <理由>）`（要件側の問題で実装不能、外部依存待ち 等）
+- `次 round へ持ち越し`（本 round では着手したが完了せず、次 round で継続）
+
+これら enum 値を採用した行では `Added/Updated Test` / `Verification` 列に `—` を記入してよい。
+
+### Debugger Gate 経由 round=3 のみ 5 列目「Fix Plan Step」追記（Req 2.5）
+
+`redo_mode=after-debugger` の prompt（= round=3）では、Matrix を 5 列に拡張し、5 列目に
+debugger-notes.md の `### 修正手順` のステップ番号への参照を追記する:
+
+```markdown
+### Task <id> — Finding Closure Matrix (round=3)
+
+| Finding | Target | Fix Commit | Added/Updated Test | Verification | Fix Plan Step |
+|---------|--------|------------|--------------------|--------------|---------------|
+| Finding 1 | 1.1 (missing test) | <SHA> | `foo_test.sh` 追加 | 全 pass | Fix Plan 修正手順 (2) |
+```
+
+- `redo_mode=after-round1`（round=2）では **4 列のまま**にし、5 列目を追加しない
+- 5 列目の値は debugger-notes.md の `### 修正手順` の項目番号（例: `Fix Plan 修正手順 (2)`）を
+  人間レビュワーが追跡できる粒度で記載する
+
+### 先行 task / 先行 round の Matrix 改変禁止（Req 2.4）
+
+- **先行 task の `### Task <id> — Finding Closure Matrix (round=<N>)` 見出しおよび本文は
+  改変・削除・並び替えしない**（前方伝播の規律。`### Task <id>` 既存 learning の改変禁止規約と並列）
+- **同一 task の先行 round の Matrix 行は改変・削除・並び替えしない**。round=3 で追記する場合は
+  既存の `(round=2)` Matrix を温存したまま、**新規見出し `(round=3)` で別の Matrix を追加する**
+- 既存 Matrix の表記揺れ修正・typo 修正等のリファクタも本 task の責務外（後続レビュー / 別 spec で扱う）
+
+### 配置と既存 learning との関係
+
+- Matrix は既存 `### Task <id>` h3 セクション **末尾** に追記する（既存 learning 本文の後ろ）
+- 既存 learning 追記の責務（採用方針 / 重要な判断 / 残存課題）は **本節と並列**に維持する。
+  Matrix 追記は learning の置き換えではなく追加であり、両方を残す
+- `## Implementation Notes` セクション **外** の既存記述には触れない規約は本節でも継承する
+
+## task-test 境界整合の責務（Issue #303）
+
+per-task Reviewer は当該 task の `_Requirements:_` 列挙 AC について「対応テストが当該 task の
+diff range 内にあるか」を `missing test` カテゴリで判定します（[`reviewer.md`](./reviewer.md)
+の per-task ループ節）。Developer は以下の責務を負います:
+
+- **当該 task 内のテスト実装責務**: 当該 task の `_Requirements:_` に列挙された AC のうち
+  `_Requirements_partial:_` に **含まれない** ID については、当該 task 内で対応テストを実装
+  すること。「実装は本 task / テストは後続 task で」という分割は、`_Requirements_partial:_`
+  が明示されている AC ID に **限り** 許容されます
+- **partial 明示の解釈**: `_Requirements_partial:_` で明示された AC は、当該 task 内では
+  実装のみ行い、対応テスト追加は後続 task に deferred されている状態です。当該 task では
+  partial 明示された AC のテスト追加を強制されません
+- **同 task 内テストが書けないとき**: 当該 task の `_Requirements:_` 列挙 AC（partial 除外
+  後）に対応するテストが、当該 task の boundary 内で実装できないと判断した場合、
+  `tasks.md` を **書き換えず** PR 本文「確認事項」または Issue コメントで Architect への
+  差し戻しを提案すること（spec 書き換え禁止規約と整合）
+- **AC 範囲外のテストを書かない**: `_Requirements:_` に列挙されていない AC のテストを当該
+  task で追加しないこと（範囲外 AC は別 task の責務）
+
+詳細規約は [`tasks-generation.md`](../rules/tasks-generation.md) の「task-test 境界整合の
+規約」節を参照してください。Architect / Developer / Reviewer は同一の task-boundary contract
+として本節を参照します。
 
 ## 既存 learnings の利用
 

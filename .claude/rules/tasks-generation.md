@@ -56,6 +56,7 @@ Architect が出力する `tasks.md` は、Developer が迷わず実装を進め
 | キー | 必須? | 用途 |
 |---|---|---|
 | `_Requirements:_` | **必須** | 対応する requirement ID を列挙（numeric のみ、例: `1.1, 2.3`）。説明や括弧書きは付けない |
+| `_Requirements_partial:_` | per-task Reviewer 運用で deferred test を伴う場合のみ | 当該 task では実装のみ行い、対応テスト追加を後続 task に deferred している AC numeric ID を列挙。詳細は後述「task-test 境界整合の規約」節を参照 |
 | `_Boundary:_` | 並列可タスク `(P)` でのみ必須 | 担当するコンポーネント名を列挙（design.md の Components 名と一致） |
 | `_Depends:_` | 非自明な cross-boundary 依存のみ | 先行するタスク ID を列挙。自明な順序依存は省略 |
 
@@ -69,6 +70,128 @@ Architect が出力する `tasks.md` は、Developer が迷わず実装を進め
 
 - **numeric 階層 ID** のみ使用: `1`, `1.1`, `1.2`, `2`, `2.1` ...
 - `T-01` や `FR-01` 形式の英字 ID は使わない（requirements.md の numeric ID と揃えるため）
+
+## task-test 境界整合の規約（per-task Reviewer 運用時 / Issue #303）
+
+`PER_TASK_LOOP_ENABLED=true` の per-task Reviewer ループ運用では、各 task 完了時に Reviewer
+が当該 task の `_Requirements:_` で宣言された AC numeric ID について「対応テストが当該 task の
+diff range 内にあるか」を `missing test` カテゴリで判定します。Architect が「実行時挙動の変更」と
+「対応 regression / failure-path / safety-fallback テスト追加」を異なる task に分割し、なお
+先行 task の `_Requirements:_` に当該テスト側 AC を残したままにすると、per-task Reviewer は
+テスト未追加の状態で AC 紐付けを評価し、`missing test` で reject する事故が発生します
+（idd-codex 側で複数回観測。本節は Architect 段階での予防規約です）。
+
+本節は **per-task Reviewer ループ運用時の Architect / Developer / Reviewer 共通の参照点**
+（task-boundary contract）として機能します。`PER_TASK_LOOP_ENABLED` 未指定 / `=true` 以外
+（既定）の運用環境では本節は **適用されず**、既存単一 Developer 一括実装フローの挙動は
+変化しません（NFR 1.1 / 1.2 / 1.3）。
+
+### Architect への要求（Req 1.1〜1.3, 1.5）
+
+Architect は `tasks.md` 生成時に **task 単位**で以下を決定すること:
+
+1. **同一 task 内に対応テストを含める（default）**: 各 task の `_Requirements:_` に列挙した
+   AC について、対応テスト追加作業を **当該 task の詳細項目に明記** することを default
+   とする。task の詳細項目に「テスト追加」「regression test 追加」「shell-level fixture
+   検証」等の具体的な作業項目を 1 つ以上含めること
+2. **behavior-changing task は最低限の regression test を同 task 内に含める**: 当該 task が
+   実行時挙動を変える（behavior-changing）場合、当該 task 内に最低限の regression /
+   shell-level test 追加を含めること（テストが完全に他 task へ deferred されているのは
+   後述 partial 明示が必須）
+3. **特に同 task 内テスト必須となる AC カテゴリ**: 当該 task の `_Requirements:_` に
+   regression coverage / failure path / API・parse failure handling / stale data safety /
+   safety-side fallback の AC numeric ID が含まれる場合、対応テスト追加作業を **必ず**
+   同 task 内に含める（後続 task への deferred は不可）
+
+### partial 明示の canonical 記法（Req 1.4, 1.5 / NFR 2.3）
+
+対応テストを後続 task に deferred する場合、Architect は先行 task で当該 AC を
+**partial 明示**するか、`_Requirements:_` から除外する必要があります。partial 明示の
+canonical 記法は **以下の独立アノテーション方式 1 つに固定** します（複数表記の混在を生まない /
+NFR 2.3）:
+
+```markdown
+- [ ] 2.1 新エラーハンドリング実装（テストは task 3 で追加）
+  - 詳細項目
+  - _Requirements: 2.1, 2.2_
+  - _Requirements_partial: 2.2_
+  - _Boundary: ErrorHandler_
+```
+
+意味解釈:
+
+- `_Requirements: 2.1, 2.2_` — 当該 task が AC 2.1, 2.2 に対する **実装**を持つ
+- `_Requirements_partial: 2.2_` — そのうち 2.2 は **テスト追加が deferred** されており、当該
+  task の per-task Reviewer 判定で `missing test` の reject 対象外とする
+- partial 明示された AC は、後続のいずれかの task（dedicated regression test task 等）で
+  対応テスト追加が完了する必要がある（Architect は deferred 先 task を明示する責務を持つ）
+
+書式規約:
+
+- 1 行 = 1 アノテーション。`_Requirements_partial:_` の値は numeric 階層 ID のスペース /
+  カンマ区切り（`_Requirements:_` と同じ書式）
+- `_Requirements_partial:_` に列挙する numeric ID は **必ず**同 task の `_Requirements:_` に
+  含まれる subset でなければならない（`_Requirements:_` に存在しない ID を partial 宣言する
+  ことはできない）
+- partial 宣言が無い AC は「同 task 内にテスト追加されている」とみなされ、per-task Reviewer は
+  通常通り `missing test` 判定対象として扱う
+
+代替記法（**禁止**。canonical 化のため）:
+
+- 行内サフィックス方式（例: `_Requirements: 1.1 (partial), 1.2_`）は `_Requirements:_` の
+  既存パース規約（numeric ID 列挙、説明や括弧書き禁止）と矛盾するため採用しない
+- task タイトル中の散文（例: `タスク名 (partial)`）は機械パース不能のため不可
+- `<!-- partial: 1.1 -->` 等の HTML コメント方式は markdown checkbox enforcement と
+  非干渉だが、Reviewer が同一ルールで解釈できないため不採用
+
+### dedicated regression test task の境界制約（Req 2.1〜2.3）
+
+Architect が dedicated regression test task（テストのみを目的とする後続 task）を切り出す
+場合、当該 test task は以下の境界制約に従うこと:
+
+1. **`_Requirements:_` の重複制御**: 当該 test task の `_Requirements:_` は、先行
+   behavior-changing task の `_Requirements:_` と重複させない、または **partial 解消関係**
+   （先行 task で `_Requirements_partial:_` 明示された AC を当該 test task でカバーする
+   関係）であることを task の詳細項目に明示する
+2. **スコープ限定**: dedicated regression test task のスコープは **E2E / 統合テスト /
+   coverage 補完等**、先行 task の per-task Reviewer 判定に影響しない範囲に限定する。
+   単体テストの追加が先行 task の AC に直接紐づく場合は、後続 test task に切り出さず
+   先行 task 内に含めること
+3. **partial 解消の責務**: 先行 task で `_Requirements_partial:_` 明示された AC は、
+   後続のいずれかの test task で対応テスト追加が完了する必要がある（Architect は
+   deferred 先 task を tasks.md 上で明示すること。task 名 / 詳細項目に「task N の
+   deferred test を解消する」旨を含める）
+
+### Developer / Reviewer の参照（Req 3.1〜3.5）
+
+本節は Architect / Developer / Reviewer が **同一の task-boundary contract** として参照
+します。各エージェントの責務:
+
+- **Developer**: 当該 task の `_Requirements:_` に列挙された AC のうち
+  `_Requirements_partial:_` に含まれない ID については、当該 task 内で対応テストを実装する
+  責務を負う。実装できないと判断した場合は `tasks.md` を書き換えず、PR 本文「確認事項」
+  または Issue コメントで Architect への差し戻しを提案する（詳細は
+  [`developer.md`](../agents/developer.md) の per-task ループ節）
+- **Reviewer**: per-task Reviewer 起動時、当該 task の `_Requirements:_` 列挙 AC に対応する
+  テスト追加が当該 task diff range 内にあるかを `missing test` カテゴリで判定する。
+  `_Requirements_partial:_` で明示された AC については、当該 task の `missing test` reject
+  理由としない（partial 解消は後続 task で確認される）。詳細は
+  [`reviewer.md`](../agents/reviewer.md) の per-task ループ節
+
+### 後方互換性（NFR 1.1〜1.3, 既存運用との関係 / Req 5.1〜5.3）
+
+- `PER_TASK_LOOP_ENABLED` 未指定 / `=true` 以外の運用では本節は適用されない（既存単一
+  Developer 一括実装フローの挙動を変化させない）
+- 既に main に merge 済みの `tasks.md` に対する **遡及的な書き換えは要求しない**（retrofit
+  は本 rule のスコープ外）
+- 既存の `_Requirements:_` / `_Boundary:_` / `_Depends:_` / `(P)` / `- [ ]*` の各アノテーション
+  規約を破壊的に変更しない。`_Requirements_partial:_` は **新規追加**の optional
+  アノテーションであり、既存 spec が宣言しない場合は従来通り「全 AC が同 task 内テスト
+  必須」とみなされる
+- 既存 Mechanical Checks（Budget overflow check / checkbox enforcement check / verify block
+  well-formed check）の判定ロジックは変更しない。`_Requirements_partial:_` 行は
+  checkbox enforcement check の判定パターン（`^- \[[ x]\]\*? [0-9]+(\.[0-9]+)*\.? `）に
+  マッチしないため、タスク件数カウント・checkbox 判定への影響はない
 
 ## Optional なテストタスク
 
@@ -95,6 +218,71 @@ deferrable なテスト追加タスクは checkbox を `- [ ]*`（アスタリ�
 > ≥14 件 forced split）。10 件以下の正常ケースで挙動は変化しません。カウントは **最上位
 > numeric ID タスク**（`- [ ] 1.` / `- [ ] 2.` …）のみが対象で、子タスク（`1.1` 等）や deferrable
 > テストタスク（`- [ ]*`）は数えません。
+
+## turn 予算ガイドライン（per-task Implementer ループ運用時の粒度指針）
+
+`PER_TASK_LOOP_ENABLED=true` の per-task Implementer ループ運用では、`tasks.md` の **1 タスクごと**に
+fresh な Claude session で Implementer が起動され、各タスクの turn 数は `DEV_MAX_TURNS`（既定 60）
+を上限として **タスク間で独立に消費**されます。前のタスクで余った turn を次のタスクへ繰り越す
+ことはできません。
+
+### fresh session 仕様（前提）
+
+- per-task Implementer は **タスクごとに新規 Claude session で起動**する。session 状態（過去の
+  reasoning / context）はタスク間で持ち越されず、turn カウンタも各タスクで 0 から始まる
+- 一度 `error_max_turns`（`DEV_MAX_TURNS` 到達による Claude CLI 自発 exit）で失敗したタスクは、
+  再試行時も **同一タスク内で再び 0 turn から開始**する（過去 turn は再利用できない）
+- したがって「タスク間の turn 累積を増やす」「Issue 全体の turn 枠を引き上げる」といった発想は
+  per-task ループ運用上 **無効**であり、turn 予算は常に「1 タスクが `DEV_MAX_TURNS` に収まるか」
+  だけが効く
+
+### 粒度指針（推奨）
+
+- **1 タスクは `DEV_MAX_TURNS`（既定 60）以内に収まる粒度を目安とする**。設計段階で「実装 + テスト +
+  軽い refactor が 1 commit で完了する」程度の小ささに刻んでおくと、`error_max_turns` の発生確率を
+  運用前に下げられる
+- **frontend / UI / テストが重い責務は細かく切る**:
+  - 「UI = 1 component + 1 test = 1 task」を目安とする（複数 component を 1 タスクに束ねない）
+  - UI / frontend は描画・状態・スタイル・テストのコンテキストを並行で抱えるため turn 消費が
+    膨らみやすく、1 タスクに複数 component を束ねると `DEV_MAX_TURNS` 到達リスクが顕著に上がる
+  - Visual regression / snapshot 系テストの追加が必要な場合は別タスクに分離してよい
+- **重い子タスクは親に束ねず、トップレベル task に昇格させる**:
+  - 子タスク（`1.1` / `1.2` …）の合計 turn 見積もりが親の 1 つあたり目安を上回りそうなら、子を
+    親から切り出して別の最上位 task（`2` / `3` …）に昇格させる
+  - 最上位 task は独立 commit 単位として消化されるため、昇格させた方が turn 予算管理が容易
+- **既存ガイドライン（「3〜10 件目安」「checkbox 必須化」）との関係**: 本指針は上記ガイドラインの
+  **上位ではなく補助**として機能する。件数上限（≤10 件）に収まる範囲で、各タスクの turn 予算を
+  さらに意識する形で適用すること
+
+### 強度（推奨どまり / Mechanical Check 不在）
+
+本節のガイドラインは **推奨（指針）レベル**であり、`design-review-gate.md` の Mechanical Checks
+（Budget overflow check / checkbox enforcement check / verify block well-formed check）のような
+機械的な reject 条件としては宣言しません。理由は以下:
+
+- タスクごとの turn 消費量は実装難度・既存コードベースの状態・テスト規模に依存し、設計段階で
+  正確な事前見積もりが難しい
+- 数値（`DEV_MAX_TURNS=60`）は将来変更され得るため、機械 enforcement に紐付けると追従コストが
+  発生する
+- 推奨に留めることで Architect / 人間設計者が判断材料として活用しつつ、reject 判定の自動化は
+  既存 Mechanical Checks に集約できる
+
+> **根拠**: per-task ループは fresh session 仕様により turn 数がタスク単位で独立消費されるため、
+> 設計段階で 1 タスクの turn 予算を意識することが、運用時の `error_max_turns` 発生確率を直接
+> 下げる最も効果の高い手段になる。`DEV_MAX_TURNS` の恒久引き上げ（後述 README の
+> Troubleshooting 節参照）はタスク粒度の不適合を覆い隠す対症療法であり、根本的にはタスク粒度の
+> 是正で対処することが推奨される（詳細な対応優先順は README「`per-task-implementer-failed` /
+> `error_max_turns` 対応」節を参照）。
+
+### Architect 自己レビュー時の検出観点との相互参照（#292）
+
+本節（タスク生成段階の粒度指針）と対になる **Architect 自己レビュー段階の検出観点** は、
+[`design-review-gate.md`](./design-review-gate.md) の「Task turn 予算 sanity check（過大 task
+検出）」節を参照してください。同節では本節の粒度指針を踏まえた上で、`tasks.md` 確定直前に
+点検すべき 5 つの検出シグナル（異種責務同居 / 兄弟比突出 / 新規ファイル件数の目安 / 重い子タスク
+同居 / turn コスト密度差）と是正方針（責務不変の粒度分割）を観点として列挙しています。生成
+（本節）と自己レビュー検出（`design-review-gate.md` 側）の双方を参照することで、過大 task の
+発生確率を運用前に下げられます。
 
 ## 構造化 verify ブロック（stage-a-verify gate の input 契約）
 

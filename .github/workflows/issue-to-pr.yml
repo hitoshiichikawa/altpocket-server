@@ -108,8 +108,11 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: Detect mode and slug
         id: detect
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
           NUM="${{ github.event.issue.number }}"
+          # shellcheck disable=SC2012  # docs/specs/<N>-* は ASCII slug 限定。ls -d で十分（.shellcheckrc の accepted baseline と同一方針）
           SPEC_DIR=$(ls -d "docs/specs/${NUM}-"* 2>/dev/null | head -1 || true)
 
           if [ -n "$SPEC_DIR" ] && [ -f "$SPEC_DIR/requirements.md" ]; then
@@ -117,7 +120,7 @@ jobs:
             echo "mode=impl-resume" >> "$GITHUB_OUTPUT"
             echo "has_existing_spec=true" >> "$GITHUB_OUTPUT"
           else
-            SLUG=$(echo "${{ github.event.issue.title }}" \
+            SLUG=$(echo "$ISSUE_TITLE" \
               | tr '[:upper:]' '[:lower:]' \
               | sed -E 's/[^a-z0-9]+/-/g' \
               | cut -c1-40 \

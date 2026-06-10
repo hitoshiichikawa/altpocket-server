@@ -224,9 +224,43 @@ interface <ComponentName>Service {
 ## 重要なアノテーション
 
 - `_Requirements:_` — 必須。requirements.md の numeric ID のみ列挙（例: `1.1, 2.3`）
+- `_Requirements_partial:_` — per-task Reviewer 運用で deferred test を伴う場合のみ。
+  当該 task の `_Requirements:_` のうち、対応テスト追加を後続 task に deferred している
+  AC numeric ID を列挙（subset であること）。詳細は
+  [`tasks-generation.md`](../rules/tasks-generation.md) の「task-test 境界整合の規約」節
 - `_Boundary:_` — `(P)` タスクでは必須。design.md の Components 名を列挙
 - `_Depends:_` — 非自明な cross-boundary 依存がある場合のみ
 - `(P)` — 並列実行可能を明示（`_Boundary:_` とセット）
+
+## task-test 境界整合（per-task Reviewer 運用時の入力契約 / Issue #303）
+
+`PER_TASK_LOOP_ENABLED=true` の per-task Reviewer ループ運用では、各 task 完了時に Reviewer
+が当該 task の `_Requirements:_` 列挙 AC について「対応テストが当該 task の diff range 内に
+あるか」を `missing test` カテゴリで判定する。Architect が実装 task とテスト追加 task を
+分割しつつ、先行 task の `_Requirements:_` に当該テスト側 AC を残すと、per-task Reviewer は
+テスト未追加の状態で AC 紐付けを評価し `missing test` で reject する事故が発生する。
+
+これを設計段階で予防するため、Architect は以下を順守する:
+
+1. **default は同 task 内テスト**: 各 task の `_Requirements:_` に列挙した AC について、
+   対応テスト追加作業を当該 task の詳細項目に明記することを default とする
+2. **behavior-changing task 必須テスト**: 実行時挙動を変える task には最低限の regression /
+   shell-level test 追加を同 task 内に含める
+3. **同 task 内テスト必須カテゴリ**: 当該 task の `_Requirements:_` に regression coverage /
+   failure path / API・parse failure handling / stale data safety / safety-side fallback の
+   AC が含まれる場合、対応テスト追加作業を **必ず**同 task 内に含める（後続 task への
+   deferred 不可）
+4. **deferred は partial 明示**: テスト追加を後続 task に deferred する場合は、先行 task の
+   `_Requirements_partial:_` に当該 AC numeric ID を列挙する（partial の canonical 記法は
+   [`tasks-generation.md`](../rules/tasks-generation.md) の該当節で固定）
+5. **dedicated regression test task の境界**: テストのみの後続 task を切り出す場合は、
+   E2E / 統合テスト / coverage 補完等にスコープを限定し、先行 task の per-task Reviewer
+   判定に影響しない範囲に留める
+
+`PER_TASK_LOOP_ENABLED` 未指定 / `=true` 以外（既定）の運用では本節は適用されない（既存挙動
+を変化させない / NFR 1.1）。詳細規約は
+[`tasks-generation.md`](../rules/tasks-generation.md) の「task-test 境界整合の規約」節を
+参照すること。
 
 ## Checkbox 形式の必須化
 
@@ -267,6 +301,42 @@ watcher はツール名で始まる散文（例: `- shellcheck 警告ゼロを�
 - Developer がブロックの記述内容と矛盾する点を見つけた場合は、ブロック自体を変更せず PR 本文の
   「確認事項」で指摘する（Req 3.3）
 
+# 外部仕様の不確実性を Web 検索で解消する
+
+外部ツール・ライブラリ・API・CLI コマンド等の挙動に依拠した設計判断を行う場面では、モデル知識
+のカットオフや細部仕様の曖昧さによって、根拠を確認しないまま推測ベースで `design.md` を確定し、
+Developer フェーズで仕様乖離が判明する事故が起きえます。これを避けるため、Architect は以下の
+方針で **Web 検索による一次情報検証**を行ってください。
+
+## いつ Web 検索を行うか
+
+- 外部ツール・ライブラリ・API・CLI コマンドの **仕様に依拠した設計判断**を行うとき、不確実な
+  箇所について Web 検索で一次情報（公式ドキュメント・公式 GitHub README / issue・公式
+  changelog 等）を確認する
+- 新規ツール・新規ライブラリ・新規 API を採用候補に挙げる場合や、既知ツールでも **記憶している
+  仕様に確信が持てない**場合に限定する
+- 設計判断の対象が **idd-claude 内部の既存仕様・既存実装**である場合（例: `local-watcher/bin/`
+  の既存 bash モジュール挙動、`repo-template/` の既存規約）は、Web 検索を必須とせず、既存
+  ドキュメント・既存コード・既存テストの参照を優先する
+
+## いつ Web 検索を行わないか（最小限の運用）
+
+本節は「不明な場合・新規ツール導入時に限定」して必要最小限に留めることを意図しています。
+以下のケースでは Web 検索を起動しないでください:
+
+- 既に確信が持てる仕様（直近で複数回扱った標準的な CLI / API 等）
+- idd-claude 内部のみで完結する設計判断
+- 些末な書式・命名の選択など、外部仕様に直接依拠しない判断
+
+## 検索結果の扱い
+
+- 不確実な箇所の根拠を `design.md` の該当セクション本文または `## Supporting References` 等の
+  optional セクションに記述する
+- 参照リンクを `design.md` に残すことを **推奨**するが、義務化はしない（記録するか否かは
+  Architect の裁量に委ねる）。記録時は短縮表記（例: `<https://example.com/docs/foo>`）で十分
+- 検索結果と既存 spec / 既存実装が矛盾する場合は、推測で確定せず requirements.md 側の不明点と
+  して PM に差し戻すか、Issue コメントでの人間判断を仰ぐ
+
 # 行動指針
 
 - 要件（numeric ID の追加・削除・再解釈）は行わない。不足や曖昧さを見つけたら PM に差し戻す
@@ -300,6 +370,11 @@ watcher はツール名で始まる散文（例: `- shellcheck 警告ゼロを�
       読むため、checkbox 形式が必須。詳細は
       [`design-review-gate.md`](../rules/design-review-gate.md) の「tasks.md checkbox
       enforcement check」節を参照）
+- [ ] **task-test 境界整合**（per-task Reviewer 運用時）: 各 task の `_Requirements:_` に
+      対応する **テスト追加作業が当該 task の詳細項目に明記** されているか。テスト追加を
+      後続 task に deferred する場合、先行 task に `_Requirements_partial:_` で当該 AC ID が
+      明示されており、`_Requirements:_` の subset になっているか（詳細は
+      [`tasks-generation.md`](../rules/tasks-generation.md) の「task-test 境界整合の規約」節）
 
 問題が見つかれば draft を修正し、最大 2 パスで再レビューします。それでも曖昧性が残る場合は
 要件フェーズへ差し戻します（design.md 側で要件を発明しない）。
