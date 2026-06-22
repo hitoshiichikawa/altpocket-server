@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -54,7 +55,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		// No DB wired in. Treat as unavailable rather than crashing so
 		// the load balancer can still strip this instance from the
 		// rotation (Requirement 2.3).
-		s.logReadyFailure(r.Context(), "pinger_unavailable", nil)
+		s.logReadyFailure(r.Context(), "pinger_unavailable")
 		writeReadyUnavailable(w)
 		return
 	}
@@ -63,11 +64,11 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := p.Ping(ctx); err != nil {
-		// We log err.Error() (driver-supplied message) on the server
-		// side only. The response body stays opaque (NFR 2.2). pgx's
-		// error strings do not contain the DSN / password, but we
-		// still avoid echoing them to clients.
-		s.logReadyFailure(r.Context(), "db_ping_failed", err)
+		reason := "db_ping_failed"
+		if errors.Is(err, context.DeadlineExceeded) {
+			reason = "db_ping_timeout"
+		}
+		s.logReadyFailure(r.Context(), reason)
 		writeReadyUnavailable(w)
 		return
 	}
@@ -103,20 +104,18 @@ func writeReadyUnavailable(w http.ResponseWriter) {
 }
 
 // logReadyFailure emits a structured WARN entry for /readyz failures.
-// It deliberately omits secrets: the request ID + a short reason code
-// is enough for operators to correlate spikes with upstream incidents
-// without leaking DSN / password / cookies / tokens
-// (Requirement 3.3, NFR 2.1).
-func (s *Server) logReadyFailure(ctx context.Context, reason string, err error) {
+// It deliberately omits the driver-supplied error string: pgx (and
+// other database drivers) can embed DSN fragments, host names, or SQL
+// text in error messages, and NFR 2.1 forbids leaking those to logs.
+// A short categorical reason code plus the request ID is enough for
+// operators to correlate spikes with upstream incidents without
+// risking secret exposure (Requirement 3.3, NFR 2.1).
+func (s *Server) logReadyFailure(ctx context.Context, reason string) {
 	if s.logger == nil {
 		return
 	}
-	attrs := []any{
+	s.logger.Warn("health.ready.unavailable",
 		slog.String("request_id", s.requestID(ctx)),
 		slog.String("reason", reason),
-	}
-	if err != nil {
-		attrs = append(attrs, slog.String("error", err.Error()))
-	}
-	s.logger.Warn("health.ready.unavailable", attrs...)
+	)
 }

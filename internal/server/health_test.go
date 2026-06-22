@@ -1,13 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"altpocket/internal/config"
+	"altpocket/internal/ratelimit"
 )
 
 // TestHandleHealthAlwaysReturnsOK guards the liveness contract:
@@ -244,3 +249,86 @@ func containsSubstring(haystack, needle string) bool {
 	}
 	return false
 }
+
+// TestHandleReadyLogContainsNoSecrets extends Requirement 2.7 / NFR 2.1
+// coverage to the *log* path: when the DB ping fails with an error
+// whose message contains a DSN-shaped secret (the exact failure mode
+// pgx can produce when the underlying connect attempt embeds host /
+// user / password fragments in its error string), the structured WARN
+// entry emitted for /readyz must not echo any of those fragments.
+//
+// The existing TestHandleReadyResponseBodyContainsNoSecrets only
+// guards the response body. Without this test, a regression that re-
+// adds slog.String("error", err.Error()) would silently leak secrets
+// into operator logs while still passing the body assertion.
+func TestHandleReadyLogContainsNoSecrets(t *testing.T) {
+	sensitive := "postgres://alice:supersecretpw@db.internal:5432/altpocket sslmode=disable"
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	cfg := config.Config{}
+	s := New(cfg, nil, ratelimit.New(60, 60), logger, nil)
+	s.readyPingerFn = func(ctx context.Context) error {
+		return errors.New(sensitive)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+	s.handleReady(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+
+	logged := buf.String()
+	if logged == "" {
+		t.Fatalf("expected a WARN log entry on /readyz failure, got none")
+	}
+	for _, frag := range []string{"supersecretpw", "postgres://", "db.internal", "alice"} {
+		if containsSubstring(logged, frag) {
+			t.Fatalf("structured log leaked sensitive fragment %q: %s", frag, logged)
+		}
+	}
+}
+
+// TestHandleReadyLogReasonDistinguishesTimeout asserts that when the
+// DB ping fails specifically because the 2-second deadline fired, the
+// structured log entry uses the categorical reason "db_ping_timeout"
+// instead of the generic "db_ping_failed". Operators correlating
+// /readyz failure spikes need to tell timeouts apart from connect
+// refusals without having to inspect the (now redacted) underlying
+// error string.
+func TestHandleReadyLogReasonDistinguishesTimeout(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	cfg := config.Config{}
+	s := New(cfg, nil, ratelimit.New(60, 60), logger, nil)
+	s.readyPingerFn = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		s.handleReady(rr, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("handleReady did not return within 5s")
+	}
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 on timeout, got %d", rr.Code)
+	}
+	logged := buf.String()
+	if !containsSubstring(logged, "db_ping_timeout") {
+		t.Fatalf("expected reason=db_ping_timeout in log, got: %s", logged)
+	}
+}
+
