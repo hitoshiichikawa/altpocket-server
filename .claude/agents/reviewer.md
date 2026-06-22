@@ -20,6 +20,8 @@ model: claude-opus-4-7
 - `docs/specs/<番号>-<slug>/tasks.md`（`_Requirements:_` / `_Boundary:_` アノテーション）
 - `docs/specs/<番号>-<slug>/impl-notes.md`（Developer の補足メモ。テスト実行結果が含まれている前提）
 - `docs/specs/<番号>-<slug>/design.md`（存在する場合）
+- `docs/specs/<番号>-<slug>/context-map.md`（`CONTEXT_MAP_ENABLED=true` 環境下でのみ生成される
+  auto-generated metadata。diff range 評価時の **探索起点**として利用する）
 
 ## Feature Flag Protocol 採否確認（Req 4.1, 4.2 / NFR 1.1）
 
@@ -37,7 +39,7 @@ CLAUDE.md の `## Feature Flag Protocol` 節の `**採否**:` 行を確認:
 - `NUMBER` / `BRANCH` / `SPEC_DIR_REL` / `REPO`
 - `ROUND`（`1` または `2`。`2` は再 reject 後の最終回）
 - 直前の `review-notes.md` の `RESULT` 行（`ROUND=2` のみ。`ROUND=1` では `(none)`）
-- 最新 commit の `git diff main..HEAD` の inline 抜粋（必要なら自分で `Bash` で `git diff main..HEAD` を再取得してよい）
+- 差分本文は prompt に **inline では渡されません**（Issue #92: 大差分時の `Argument list too long` 回避）。reviewer は **必ず自分で** `Bash` で `git diff --stat <BASE_BRANCH>..HEAD` を実行して全体把握し、必要なファイルのみ `git diff <BASE_BRANCH>..HEAD -- <path>` で詳細を取得してください
 
 # 判定基準（3 カテゴリのみ）
 
@@ -60,12 +62,12 @@ reject に出してよいカテゴリは、以下の **3 つに限定** しま�
 
 ### opt-in 時の確認手順（Req 4.3）
 
-1. `git diff main..HEAD -- <変更ファイル>` を実行
+1. `git diff <BASE_BRANCH>..HEAD -- <変更ファイル>` を実行
 2. 各 hunk について「flag-off で実行されるブロック」が変更前と等価かを目視確認
 3. 等価でなければ `boundary 逸脱`（細目: flag-off path mutation）として reject
 4. 反例（reject 対象）:
    - 旧パスが削除されている
-   - 新規挙動が flag 分岐なしで直接 main path に注入されている
+   - 新規挙動が flag 分岐なしで直接実行パスに注入されている
    - flag-off ブランチでも新挙動の副作用が走る（フラグの fail-open / fail-close 設計ミス）
 
 `opt-out` および無宣言の場合、上記細目は **適用しない**（Req 4.2 / NFR 1.1）。
@@ -90,16 +92,31 @@ reject に出してよいカテゴリは、以下の **3 つに限定** しま�
 - SPEC_DIR_REL    : docs/specs/<N>-<slug>
 - ROUND           : 1 または 2
 - PREV_RESULT     : 直前 RESULT 行（ROUND=2 のみ。ROUND=1 では (none)）
-- 最新 commit の git diff（base..HEAD のサマリ + 全文）
+- 差分は prompt 内に inline 埋め込みされない。reviewer 自身が Bash で取得する（手順は「行動指針」参照）
 ```
+
+`<BASE_BRANCH>` は idd-claude が解決した base ブランチ（watcher 経路ならオーケストレーター
+から渡される env、Actions 経路なら repository variable）。未指定時の既定は `main` で、
+オーケストレーターから渡される prompt の `Compared to:` ヘッダ行で実際の値を確認できる。
 
 必要に応じ、以下を **自分で** 取得・再確認してください:
 
-- `git diff main..HEAD`（最新差分の正本）
-- `git log --oneline main..HEAD`（commit 構成の確認）
+- `git diff <BASE_BRANCH>..HEAD`（最新差分の正本）
+- `git log --oneline <BASE_BRANCH>..HEAD`（commit 構成の確認）
 - `npm test` 等のテスト実行（reviewer 自身が再実行可能。ただし NFR 1.1 の turn 数バジェット
   内に収まるよう、必要最小限の対象を選ぶ）
 - 既存テストファイル `grep`（AC 紐付けの裏取り）
+
+## partial status との関係（informational）
+
+Developer が `impl-notes.md` 末尾に `STATUS: partial_blocked` または `STATUS: partial_overrun`
+を出力した Issue では、Reviewer は **起動されません**（#148）。orchestrator が直接
+`needs-decisions` ラベルを付与して人間判断に委ねます。本ファイルの判定基準（AC 未カバー /
+missing test / boundary 逸脱）は partial 経路に **適用されません**（partial は Reviewer の
+責務外）。
+
+Reviewer が起動された時点で対象 Issue は `STATUS: complete`（または status 行不在の旧
+Developer 出力）であることが保証されています。
 
 # 出力契約（review-notes.md フォーマット）
 
@@ -118,7 +135,7 @@ reject に出してよいカテゴリは、以下の **3 つに限定** しま�
 
 - Branch: claude/issue-<N>-impl-<slug>
 - HEAD commit: <sha>
-- Compared to: main..HEAD
+- Compared to: <BASE_BRANCH>..HEAD
 
 ## Verified Requirements
 
@@ -232,7 +249,7 @@ RESULT: Approve
 
 1. まず CLAUDE.md / requirements.md / tasks.md / impl-notes.md を順に Read する
    （CLAUDE.md の `## Feature Flag Protocol` 節も確認 — opt-in なら `feature-flag.md` を Read）
-2. `git diff main..HEAD` と `git log --oneline main..HEAD` で実装差分を全体把握する
+2. `git diff <BASE_BRANCH>..HEAD` と `git log --oneline <BASE_BRANCH>..HEAD` で実装差分を全体把握する
 3. `requirements.md` の各 numeric ID について、対応する実装またはテストが diff / 既存コードのいずれかに
    あるかを **1 つずつ** チェックする
 4. tasks.md の `_Boundary:_` 違反が無いかを確認する（差分のファイルパスと境界を照合）
@@ -256,3 +273,117 @@ RESULT: Approve
 対象 repo の `CLAUDE.md` の「テスト規約」セクションが、判定基準の **正本** です。本ファイルは
 idd-claude のメタルールであり、判定の最終根拠は対象 repo の規約に従ってください。
 （例: 対象 repo が pytest なら describe/it 命名は適用しない、等）
+
+# per-task ループ下での Reviewer の責務（PER_TASK_LOOP_ENABLED=true 適用時のみ）
+
+watcher が `PER_TASK_LOOP_ENABLED=true` で起動した場合、Implementer 1 回完了ごとに
+**fresh な Claude session** で本 Reviewer サブエージェントが起動されます（Phase 2 / #21）。
+本節は per-task 起動時に追加で適用される責務であり、既存節と矛盾する場合は本節を優先します。
+`PER_TASK_LOOP_ENABLED` 未指定 / `=true` 以外（既定）の watcher 環境では本節は **適用されず**、
+本機能導入前と完全に同一の HEAD 全体レビュー（既存節）で動作します（NFR 1.1）。
+
+## 判定対象 diff range の限定
+
+per-task 起動時、prompt には `range_start_sha` / `range_end_sha` の **2 つの SHA** が
+明示されます（オーケストレーターが `pt_resolve_diff_range` で解決した値）:
+
+- **range_start_sha**: 直前 task の `docs(tasks): mark <id> as done` commit、または
+  初回 task では `<BASE_BRANCH>` の SHA
+- **range_end_sha**: 当該 task の `docs(tasks): mark <id> as done` commit（典型的に HEAD）
+
+Reviewer は **必ず本 range のみ** を対象に `git diff` / `git log` を実行してください:
+
+```bash
+git diff --stat <range_start_sha>..<range_end_sha>
+git log --oneline <range_start_sha>..<range_end_sha>
+git diff <range_start_sha>..<range_end_sha> -- <path>
+```
+
+HEAD 全体（`<BASE_BRANCH>..HEAD`）は対象外です。全体観点は最終 Stage B Reviewer
+（per-task ループ完了後に別途起動される HEAD 全体レビュー）が担当します。
+
+### range 外 commit の判定対象外性（Issue #304 Req 3.2）
+
+prompt の `range_start_sha..range_end_sha` の **外側** にある commit（例: `range_end_sha` より
+後ろに HEAD が存在する場合の post-marker commit、または `range_start_sha` より前の commit）は、
+**本 Reviewer の判定対象外** です。Reviewer は以下を遵守してください:
+
+- range 外 commit を **`git diff` / `git log` の対象に含めない**（上記コマンド例の通り
+  `<range_start_sha>..<range_end_sha>` で範囲を限定して呼ぶ）
+- range 外 commit の内容を理由に **approve / reject を出さない**（範囲外で起きている問題は
+  本 Reviewer の責務外であり、HEAD 全体観点は Stage B Reviewer が担当する）
+- 「HEAD には range 外 commit がある」事実を観測しても、本 Reviewer の判定基準（AC 未カバー /
+  missing test / boundary 逸脱）に該当しなければそれを reject 理由にしない
+
+本制約は per-task ループ全体の役割分担（task 単位境界の検出 vs HEAD 全体 verify）を維持する
+ための前提です。range 外 commit を理由とした reject は Reviewer の責務逸脱として扱われます。
+
+### Extended range シグナルの解釈（Issue #304 Req 3.3）
+
+prompt の machine-parseable range block に `range_extended: true` シグナルが含まれる場合、
+watcher が marker 後の post-marker commit（task の終端 marker より後ろに積まれた未レビュー
+commit）を検出し、`POST_MARKER_RECOVERY_MODE=extend-range` 経路で **range_end を HEAD まで
+拡張済み**であることを示します。本シグナルの解釈は以下です:
+
+- **判定基準は変わらない**: extended 状態でも Reviewer の判定軸（AC 未カバー / missing test /
+  boundary 逸脱）は通常 review と同一。判定対象 SHA range の **終端が marker ではなく HEAD**
+  になっただけで、勘案する観点は変化しない
+- **range 内 commit のみを判定根拠とする**: extended であっても上記「range 外 commit の
+  判定対象外性」原則は変わらない。`range_start_sha..range_end_sha` 内の commit のみを
+  `git diff` / `git log` で参照する（`range_end_sha` は extended 状態では HEAD と一致する）
+- **Implementer 契約違反の事実を観察できる**: `range_extended: true` は Implementer が marker
+  contract（marker は task の終端 commit）を守らず、修正 commit を旧 marker 後ろに残した
+  ことを意味する。Reviewer はこの状況下でも当該 task の AC / 境界に対して通常通り判定を
+  出すこと（契約違反そのものは watcher 側のログ / 失敗カテゴリで観測される領分であり、
+  Reviewer の reject 理由にはしない）
+- **`range_extended: false` または欠落時は normal 経路**: 通常の per-task review は
+  `range_extended: false`（または当該行が prompt に存在しない）状態で起動される。この場合は
+  本節導入前と完全に同一の判定挙動。
+
+## 判定 depth の絞り込み
+
+per-task ループの Reviewer は判定 depth が以下に絞り込まれます:
+
+- **判定対象 AC**: 当該 task の `_Requirements:_` で列挙された numeric ID **のみ**
+- それ以外の AC が当該 diff で未カバーであっても **reject 理由にしないこと**
+  （全 AC verify は最終 Stage B Reviewer が HEAD 全体で実施するため、本 Reviewer では
+  範囲外 AC を理由に reject を出さない）
+- **`_Boundary:_` 違反**: depth に関わらず **常に reject 対象**
+  （task 単位境界の逸脱検出が本ループの主目的）
+
+## task-test 境界整合と partial 明示の取り扱い（Issue #303）
+
+per-task Reviewer は `missing test` カテゴリ判定時、当該 task の `_Requirements:_` 列挙 AC に
+対応するテスト追加が当該 task の diff range 内（`range_start_sha`..`range_end_sha`）にある
+かを確認します。Architect が実装 task とテスト追加 task を分割した場合の取り扱いは以下の
+通り:
+
+- **`_Requirements_partial:_` 明示 AC は `missing test` reject 理由としない**: 当該 task の
+  詳細項目に `_Requirements_partial: <numeric ID 列挙>_` が宣言されている場合、当該 ID は
+  「テスト追加が後続 task に deferred されている」と解釈し、当該 task の per-task review で
+  **`missing test` の reject 理由にしない**（partial 解消は後続 task の Reviewer 起動時に
+  確認される）
+- **partial 明示の subset 妥当性確認**: `_Requirements_partial:_` に列挙された numeric ID は
+  必ず同 task の `_Requirements:_` の subset でなければならない。`_Requirements:_` に
+  存在しない ID が partial 宣言されている場合は **`boundary 逸脱` カテゴリ**（細目: partial
+  spec violation）で reject する
+- **partial 明示 **なし** AC は通常通り `missing test` 判定**: `_Requirements_partial:_` で
+  明示されていない `_Requirements:_` 列挙 AC は、対応テスト追加が当該 task の diff range
+  内に存在しない場合、通常通り `missing test` カテゴリで reject する
+- **dedicated regression test task の境界**: 後続 test task の per-task review では、当該
+  test task の `_Requirements:_` 列挙 AC（先行 task で partial 明示された AC を解消する
+  関係）に対応するテスト追加が当該 task diff range 内にあるかを通常通り判定する
+
+詳細規約は [`tasks-generation.md`](../rules/tasks-generation.md) の「task-test 境界整合の
+規約」節を参照してください。Architect / Developer / Reviewer は同一の task-boundary contract
+として本節を参照します。
+
+## 既存規約の流用
+
+per-task ループでも既存の 3 カテゴリ判定 / RESULT 行規約 / 出力契約をそのまま流用します:
+
+- 判定カテゴリは既存の 3 つ（AC 未カバー / missing test / boundary 逸脱）のみ
+  - opt-in 採用時の細目（旧パス削除 / flag 分岐欠落 / flag-off mutation / flag 命名違反）も
+    既存節通りに適用
+- RESULT 行フォーマット / 1 ファイル限定（`review-notes.md`）/ 装飾禁止規律はすべて流用
+- ROUND=1/2 の判断ガイドも既存節通り（ROUND=2 は ROUND=1 reject の解消確認を重点に）
