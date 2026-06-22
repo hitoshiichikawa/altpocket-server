@@ -47,6 +47,11 @@ type Server struct {
 	randomStringFn    func(int) (string, error)
 	oauthExchangeFn   func(context.Context, string) (*oauth2.Token, error)
 	idTokenValidateFn func(context.Context, string, string) (*idtoken.Payload, error)
+	// readyPingerFn overrides the DB ping used by /readyz. It exists
+	// for tests so success / failure / timeout branches of the
+	// readiness probe can be exercised without a live PostgreSQL.
+	// When nil, /readyz falls back to s.store.DB (*pgxpool.Pool).
+	readyPingerFn func(context.Context) error
 }
 
 var errInvalidURL = errors.New("invalid_url")
@@ -118,6 +123,7 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/", s.handleHome)
 	r.Get("/register", s.handleRegister)
 	r.Get("/healthz", s.handleHealth)
+	r.Get("/readyz", s.handleReady)
 	r.Get("/manifest.webmanifest", s.handleWebManifest)
 	r.Get("/sw.js", s.handleServiceWorker)
 
@@ -182,11 +188,6 @@ func (s *Server) mcpHTTPHandler() http.Handler {
 		},
 		nil,
 	)
-}
-
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok"))
 }
 
 func (s *Server) handleWebManifest(w http.ResponseWriter, r *http.Request) {
