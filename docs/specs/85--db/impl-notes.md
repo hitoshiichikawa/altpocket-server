@@ -36,8 +36,10 @@
 の漏えい禁止) のリスクが上がるため、
 
 - **レスポンス**: 固定文字列 `"unavailable"` のみ。reason / err は含めない。
-- **ログ (WARN)**: `event=health.ready.unavailable, request_id=..., reason=...,
-  error=<driver msg>` を構造化出力。
+- **ログ (WARN)**: `event=health.ready.unavailable, request_id=..., reason=...`
+  のみを構造化出力。driver 由来のエラー文字列 (`err.Error()`) は DSN 断片・
+  ホスト名・SQL 文を含み得るため、NFR 2.1 / 2.2 を満たすために**ログにも出さない**
+  (実装は `internal/server/health.go:117`〜`120` を参照)。
 
 の分離を採用。これにより前段ロードバランサは 503 を機械判定でき、運用者は
 ログから失敗原因を確認できる。
@@ -113,7 +115,7 @@
 | NFR 1.1 | /healthz は無条件で `WriteHeader+Write([]byte("ok"))` のみ。DB ping せず。50ms 未満は自明 |
 | NFR 1.2 | DB ping のタイムアウト 2 秒 (`readyDBPingTimeout`)、正常時はラウンドトリップ 1 回 |
 | NFR 1.3 | /readyz の処理は単一 goroutine 内で `context.WithTimeout` を使い、他ハンドラに影響しない |
-| NFR 2.1 | レスポンス body は固定文字列、ログには認証情報を含めない (request_id/reason/err.Error のみ) |
+| NFR 2.1 | レスポンス body は固定文字列、ログには認証情報・driver エラー文字列を含めない (`request_id` / `reason` のみ) |
 | NFR 2.2 | `TestHandleReadyResponseBodyContainsNoSecrets` |
 | NFR 3.1 | /healthz の挙動は不変なので production-docker-deploy ドキュメントは変更不要 |
 | NFR 3.2 | /healthz の応答は不変なので scripts/test-api.sh / scripts/test-api.ps1 の期待値は変更不要 |
