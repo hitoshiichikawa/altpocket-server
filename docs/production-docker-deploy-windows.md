@@ -126,7 +126,7 @@ $bytes = New-Object byte[] 32
 
 ### 4.1 DB 起動
 ```powershell
-docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml up -d db
+docker compose --env-file .\deploy\.env.production -f .\deploy\docker-compose.production.yml up -d db
 ```
 
 ### 4.2 マイグレーション
@@ -134,13 +134,13 @@ docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\
 ```powershell
 Get-ChildItem .\migrations\*.sql | Sort-Object Name | ForEach-Object {
   Get-Content $_.FullName -Raw |
-    docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml exec -T db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+    docker compose --env-file .\deploy\.env.production -f .\deploy\docker-compose.production.yml exec -T db sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 }
 ```
 
 ### 4.3 API/Worker/Edge 起動
 ```powershell
-docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml up -d --build api worker edge
+docker compose --env-file .\deploy\.env.production -f .\deploy\docker-compose.production.yml up -d --build api worker edge
 ```
 
 ## 5. 動作確認
@@ -154,14 +154,14 @@ curl https://<WWWドメイン>/healthz
 ### 5.2 API smoke test
 ```powershell
 $env:API_BASE = "https://<APIドメイン>"
-$env:COMPOSE_CMD = "docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml"
+$env:COMPOSE_CMD = "docker compose --env-file .\deploy\.env.production -f .\deploy\docker-compose.production.yml"
 .\scripts\test-api.ps1
 ```
 
 実行ポリシーでブロックされる場合:
 ```powershell
 $env:API_BASE = "https://<APIドメイン>"
-$env:COMPOSE_CMD = "docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml"
+$env:COMPOSE_CMD = "docker compose --env-file .\deploy\.env.production -f .\deploy\docker-compose.production.yml"
 pwsh -ExecutionPolicy Bypass -File .\scripts\test-api.ps1
 ```
 
@@ -176,12 +176,12 @@ pwsh -ExecutionPolicy Bypass -File .\scripts\test-api.ps1
 ## 6. 更新デプロイ（PowerShell）
 ```powershell
 git pull
-docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml up -d --build api worker edge
+docker compose --env-file .\deploy\.env.production -f .\deploy\docker-compose.production.yml up -d --build api worker edge
 ```
 
 ## 7. バックアップ（PowerShell）
 ```powershell
-docker compose --env-file .\deploy\.env.production -f .\docker-compose.yml -f .\deploy\docker-compose.production.yml exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' |
+docker compose --env-file .\deploy\.env.production -f .\deploy\docker-compose.production.yml exec -T db sh -lc 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' |
   Set-Content -Encoding UTF8 ".\backup_$(Get-Date -Format yyyy-MM-dd).sql"
 ```
 

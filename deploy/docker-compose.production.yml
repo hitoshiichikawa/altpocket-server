@@ -1,15 +1,21 @@
+name: altpocket-server
+
 services:
   db:
+    image: postgres:16
     restart: unless-stopped
-    ports: []
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - db_data:/var/lib/postgresql/data
 
   api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
     restart: unless-stopped
-    ports: []
     environment:
       DATABASE_URL: ${DATABASE_URL}
       HTTP_ADDR: ":8080"
@@ -22,8 +28,13 @@ services:
       GOOGLE_EXT_CLIENT_ID: ${GOOGLE_EXT_CLIENT_ID}
       CONTENT_FULL_LIMIT_BYTES: ${CONTENT_FULL_LIMIT_BYTES:-1000000}
       CONTENT_SEARCH_LIMIT_BYTES: ${CONTENT_SEARCH_LIMIT_BYTES:-16384}
+    depends_on:
+      - db
 
   worker:
+    build:
+      context: ..
+      dockerfile: deploy/worker.Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -36,6 +47,8 @@ services:
       GOOGLE_EXT_CLIENT_ID: ${GOOGLE_EXT_CLIENT_ID}
       CONTENT_FULL_LIMIT_BYTES: ${CONTENT_FULL_LIMIT_BYTES:-1000000}
       CONTENT_SEARCH_LIMIT_BYTES: ${CONTENT_SEARCH_LIMIT_BYTES:-16384}
+    depends_on:
+      - db
 
   edge:
     image: caddy:2
@@ -49,10 +62,11 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./deploy/Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
 
 volumes:
+  db_data:
   caddy_data:
   caddy_config:

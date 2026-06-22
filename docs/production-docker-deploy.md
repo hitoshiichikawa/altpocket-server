@@ -65,7 +65,6 @@ openssl rand -hex 32
 # 1) DBだけ先に起動
 docker compose \
   --env-file deploy/.env.production \
-  -f docker-compose.yml \
   -f deploy/docker-compose.production.yml \
   up -d db
 
@@ -73,7 +72,6 @@ docker compose \
 for f in migrations/*.sql; do
   docker compose \
     --env-file deploy/.env.production \
-    -f docker-compose.yml \
     -f deploy/docker-compose.production.yml \
     exec -T db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$f"
 done
@@ -81,7 +79,6 @@ done
 # 3) API/worker/edge 起動
 docker compose \
   --env-file deploy/.env.production \
-  -f docker-compose.yml \
   -f deploy/docker-compose.production.yml \
   up -d --build api worker edge
 ```
@@ -99,7 +96,7 @@ curl -i https://<WWWドメイン>/healthz
 
 ```bash
 API_BASE=https://<APIドメイン> \
-COMPOSE_CMD='docker compose --env-file deploy/.env.production -f docker-compose.yml -f deploy/docker-compose.production.yml' \
+COMPOSE_CMD='docker compose --env-file deploy/.env.production -f deploy/docker-compose.production.yml' \
 ./scripts/test-api.sh
 ```
 
@@ -115,7 +112,6 @@ git pull
 
 docker compose \
   --env-file deploy/.env.production \
-  -f docker-compose.yml \
   -f deploy/docker-compose.production.yml \
   up -d --build api worker edge
 ```
@@ -124,7 +120,6 @@ docker compose \
 ```bash
 docker compose \
   --env-file deploy/.env.production \
-  -f docker-compose.yml \
   -f deploy/docker-compose.production.yml \
   exec -T db pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > backup_$(date +%F).sql
 ```
