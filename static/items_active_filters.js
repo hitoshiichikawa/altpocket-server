@@ -71,9 +71,16 @@
     // 指定 URL から現在の絞り込みタグ集合 (正規化済み) を読み取る。
     // ?tag= 繰り返し + ?tags= 複数形 (カンマ区切り) の両方をサーバ側
     // parseTagFilters と同じ規則で受理する (Req 5.4 既存 URL 互換)。
+    //
+    // SSR が出力するチップの href / clear-all の href は相対 URL
+    // (`/ui/items?tag=...`) なので、`new URL` の第 2 引数に現在ページの
+    // location.href を base として渡す。base を省略すると相対 URL の
+    // パースが失敗し空配列を返してしまい、サイドバー checkbox 同期で
+    // 「全解除状態」と誤判定される (Req 2.3 違反)。
     function readURLTags(targetURL) {
       try {
-        const u = new URL(targetURL);
+        const base = location && location.href ? location.href : undefined;
+        const u = new URL(targetURL, base);
         const out = [];
         const seen = new Set();
         for (const raw of u.searchParams.getAll('tag')) {

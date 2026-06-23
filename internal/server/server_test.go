@@ -119,8 +119,7 @@ func TestSelectedTagSet(t *testing.T) {
 
 // TestBuildClearAllTagsURL guards Req 3.6 / 5.2 / 5.3: clearing all tag
 // filters removes every `tag` / `tags` query parameter while preserving the
-// remaining query parameters (q / sort / per_page). `page` is reset because
-// the unfiltered result set has a different page count.
+// remaining query parameters (q / sort / per_page / page).
 func TestBuildClearAllTagsURL(t *testing.T) {
 	t.Run("removes tag and tags parameters", func(t *testing.T) {
 		u, _ := url.Parse("/ui/items?tag=go&tag=rust&tags=news,web&q=hello&sort=relevance&per_page=20&page=3")
@@ -133,7 +132,7 @@ func TestBuildClearAllTagsURL(t *testing.T) {
 		}
 	})
 
-	t.Run("preserves other query parameters except page", func(t *testing.T) {
+	t.Run("preserves other query parameters including page (Req 5.2)", func(t *testing.T) {
 		u, _ := url.Parse("/ui/items?tag=go&q=hello&sort=relevance&per_page=20&page=3")
 		got, _ := url.Parse(buildClearAllTagsURL(u))
 		if got.Query().Get("q") != "hello" {
@@ -145,10 +144,8 @@ func TestBuildClearAllTagsURL(t *testing.T) {
 		if got.Query().Get("per_page") != "20" {
 			t.Errorf("expected per_page=20 preserved, got %q", got.Query().Get("per_page"))
 		}
-		// `page` is intentionally reset because the unfiltered result set
-		// may have fewer pages than the current page number.
-		if got.Query().Get("page") != "" {
-			t.Errorf("expected page to be cleared, got %q", got.Query().Get("page"))
+		if got.Query().Get("page") != "3" {
+			t.Errorf("expected page=3 preserved, got %q", got.Query().Get("page"))
 		}
 	})
 
@@ -207,7 +204,7 @@ func TestBuildTagRemovedURL(t *testing.T) {
 		}
 	})
 
-	t.Run("preserves q / sort / per_page (Req 5.2) and resets page", func(t *testing.T) {
+	t.Run("preserves q / sort / per_page / page (Req 5.2)", func(t *testing.T) {
 		u, _ := url.Parse("/ui/items?tag=go&tag=rust&q=hello&sort=relevance&per_page=20&page=3")
 		got, _ := url.Parse(buildTagRemovedURL(u, "go", []string{"go", "rust"}))
 		if got.Query().Get("q") != "hello" {
@@ -219,8 +216,8 @@ func TestBuildTagRemovedURL(t *testing.T) {
 		if got.Query().Get("per_page") != "20" {
 			t.Errorf("expected per_page=20 preserved, got %q", got.Query().Get("per_page"))
 		}
-		if got.Query().Get("page") != "" {
-			t.Errorf("expected page to be cleared, got %q", got.Query().Get("page"))
+		if got.Query().Get("page") != "3" {
+			t.Errorf("expected page=3 preserved, got %q", got.Query().Get("page"))
 		}
 	})
 

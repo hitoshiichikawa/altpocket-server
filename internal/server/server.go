@@ -1531,20 +1531,16 @@ func buildActiveTagFilters(tagFilters []string, facetTags []store.Tag, items []s
 }
 
 // buildTagRemovedURL returns a URL with the given normalized tag removed
-// from the current filter set, preserving every other query parameter.
-// Both the canonical `?tag=` repetition and the legacy `?tags=` plural form
-// are stripped and the remaining tags are re-emitted in the canonical form
-// (Req 5.1). When the resulting set is empty no `tag` / `tags` parameter is
-// written (Req 5.3).
+// from the current filter set, preserving every other query parameter
+// including `page` (Req 5.2). Both the canonical `?tag=` repetition and the
+// legacy `?tags=` plural form are stripped and the remaining tags are
+// re-emitted in the canonical form (Req 5.1). When the resulting set is
+// empty no `tag` / `tags` parameter is written (Req 5.3).
 func buildTagRemovedURL(currentURL *url.URL, removeNorm string, current []string) string {
 	u := cloneURL(currentURL)
 	q := u.Query()
 	q.Del("tag")
 	q.Del("tags")
-	// `page` is reset whenever the filter set changes because the new result
-	// set may have fewer pages than the current page number. Leaving the
-	// `page=` parameter in place would risk landing on an empty page.
-	q.Del("page")
 	for _, t := range current {
 		if t == removeNorm {
 			continue
@@ -1556,15 +1552,13 @@ func buildTagRemovedURL(currentURL *url.URL, removeNorm string, current []string
 }
 
 // buildClearAllTagsURL returns a URL with every tag filter parameter
-// removed (Req 3.6, 5.3). All other query parameters are preserved (Req 5.2)
-// except `page` which is reset because the unfiltered result set will have a
-// different page count.
+// removed (Req 3.6, 5.3). All other query parameters are preserved
+// (Req 5.2), including `page`.
 func buildClearAllTagsURL(currentURL *url.URL) string {
 	u := cloneURL(currentURL)
 	q := u.Query()
 	q.Del("tag")
 	q.Del("tags")
-	q.Del("page")
 	u.RawQuery = q.Encode()
 	return u.String()
 }

@@ -182,16 +182,31 @@ function createHistory(initialURL) {
   const stack = [{ state: null, url: initialURL }];
   let index = 0;
   const calls = [];
+  // 実ブラウザの pushState / replaceState は引数の URL を「現在の URL を base」
+  // として絶対 URL に解決した上で履歴に積み、その後 location.href も絶対 URL を
+  // 返す。fake history が相対 URL をそのまま保持してしまうと、本モジュールの
+  // `new URL(rel, location.href)` の base が相対のままになり、SSR の相対 chip
+  // href を扱う回帰テスト (要件 2.3 回帰) が再現できないので、ここで実ブラウザ
+  // 挙動に合わせて絶対化する。
+  function resolveURL(url) {
+    try {
+      return new URL(url, stack[index].url).toString();
+    } catch {
+      return url;
+    }
+  }
   return {
     pushState(state, _title, url) {
-      calls.push({ kind: 'push', state, url });
+      const resolved = resolveURL(url);
+      calls.push({ kind: 'push', state, url: resolved });
       stack.length = index + 1;
-      stack.push({ state, url });
+      stack.push({ state, url: resolved });
       index = stack.length - 1;
     },
     replaceState(state, _title, url) {
-      calls.push({ kind: 'replace', state, url });
-      stack[index] = { state, url };
+      const resolved = resolveURL(url);
+      calls.push({ kind: 'replace', state, url: resolved });
+      stack[index] = { state, url: resolved };
     },
     get currentURL() { return stack[index].url; },
     get calls() { return calls; },
@@ -595,6 +610,34 @@ test('NFR 2.1: チップが存在しない (フィルタなし) 環境では ini
 // 規約を守らないと、検索 debounce やカード上タグクリック由来の保留 fetch との race
 // を防げない。本テストは slot を事前に注入し、後続クリックでそれが abort されるか
 // 確認する。
+
+test('要件 2.3 (回帰): SSR が出力する相対 URL の chip href でもサイドバー checkbox が正しく同期される', async () => {
+  // SSR (internal/server/server.go buildTagRemovedURL) は `url.URL{Path: "/ui/items", RawQuery: ...}`
+  // の String() を返すため、チップ href は `/ui/items?tag=rust` のような相対 URL になる。
+  // `new URL(relative)` は base なしでは TypeError を投げて空配列を返してしまい、
+  // 複数タグから 1 つだけ解除した直後にサイドバー checkbox が全解除状態になる退行を生む。
+  // 本テストは相対 href でも syncControls が新条件 (rust のみ残る) と一致させることを担保する。
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=go&tag=rust',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    chipTags: [
+      { normalized: 'go', removeURL: '/ui/items?tag=rust' },
+      { normalized: 'rust', removeURL: '/ui/items?tag=go' },
+    ],
+    checkboxTags: [
+      { normalized: 'go', checked: true },
+      { normalized: 'rust', checked: true },
+    ],
+  });
+
+  await env.clickChip('go');
+  await flushMicrotasks();
+
+  const goCb = env.checkboxes.find((c) => c.value === 'go');
+  const rustCb = env.checkboxes.find((c) => c.value === 'rust');
+  assert.equal(goCb.checked, false, 'go の checkbox は OFF になる');
+  assert.equal(rustCb.checked, true, 'rust の checkbox は ON のまま残る (relative URL 退行ガード)');
+});
 
 test('AbortController slot を items_tags.js / items_search.js と共有する', async () => {
   // 規約: region 要素上の __itemsFragmentInflight slot に各モジュールが
