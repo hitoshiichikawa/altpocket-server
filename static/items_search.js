@@ -48,7 +48,18 @@
     let timerID = null;
     let composing = false;
     let lastSyncedQuery = readURLQuery() || '';
-    let inflight = null; // AbortController for the active fetch.
+
+    // フラグメント取得の AbortController は items_tags.js と共有する
+    // ため、region 要素上の slot に置く。両モジュールが同じ slot を
+    // 参照することで、片方が新しい fetch を開始したときに他方の保留
+    // fetch も abort される。これにより、後着のレスポンスが先着の
+    // 絞り込み結果を上書きする race（タグクリック後にデバウンス中の
+    // 検索 fetch が古い fragment を再描画してしまう現象）を防ぐ
+    // (Issue #117 のタグ × Issue #114 の検索の cross-module race 対策)。
+    if (!region.__itemsFragmentInflight) {
+      region.__itemsFragmentInflight = { ctrl: null };
+    }
+    const coord = region.__itemsFragmentInflight;
 
     function readURLQuery() {
       try {
@@ -104,12 +115,13 @@
       }
 
       // 直前の保留中リクエストを破棄して最新の入力値だけ反映する
-      // (NFR 1.2)。
-      if (inflight) {
-        try { inflight.abort(); } catch { /* noop */ }
+      // (NFR 1.2)。coord は items_tags.js と共有しているので、タグ
+      // クリック由来の保留 fetch も同時に abort される。
+      if (coord.ctrl) {
+        try { coord.ctrl.abort(); } catch { /* noop */ }
       }
       const ctrl = (typeof win.AbortController === 'function') ? new win.AbortController() : null;
-      inflight = ctrl;
+      coord.ctrl = ctrl;
 
       lastSyncedQuery = isEmpty(value) ? '' : String(value).trim();
 
@@ -131,7 +143,7 @@
       } catch {
         // ネットワーク失敗時は前回結果を維持する (NFR 3.2)。
       } finally {
-        if (inflight === ctrl) inflight = null;
+        if (coord.ctrl === ctrl) coord.ctrl = null;
       }
     }
 
@@ -214,11 +226,11 @@
     });
 
     async function refreshFromCurrentURL() {
-      if (inflight) {
-        try { inflight.abort(); } catch { /* noop */ }
+      if (coord.ctrl) {
+        try { coord.ctrl.abort(); } catch { /* noop */ }
       }
       const ctrl = (typeof win.AbortController === 'function') ? new win.AbortController() : null;
-      inflight = ctrl;
+      coord.ctrl = ctrl;
       try {
         const res = await fetchImpl(location.href, {
           method: 'GET',
@@ -232,7 +244,7 @@
       } catch {
         /* noop */
       } finally {
-        if (inflight === ctrl) inflight = null;
+        if (coord.ctrl === ctrl) coord.ctrl = null;
       }
     }
 
