@@ -139,11 +139,17 @@
   紐付ける形で実装。視覚的に右端に「×」を表示するが、これは `aria-hidden="true"` で
   支援技術には独立した操作要素として認識させない（chip 1 つあたり 1 つのアクセシブル名
   に集約）。視覚的「×」を独立した button にしたほうが UX として良いと判断する場合は差し戻し
-- (e) **`page` パラメータのリセット**: チップ操作・「すべてクリア」のいずれも、新しい
-  絞り込みで `page` クエリパラメータを削除する（リセットして page=1 に戻す）。理由は
-  「新しい絞り込み結果は元より少ない件数になることが多く、`page=3` のまま遷移すると空ページに
-  着地するリスク」があるため。Issue #117 のタグ click では `pageURL` 経由で page を保つ仕様だが、
-  本 Issue では絞り込み解除なので page リセットが自然と判断。明示確認したい
+- (e) **`page` パラメータは保持する**（round-2 iteration で AC 5.2 に揃えて実装変更済）:
+  チップ操作・「すべてクリア」のいずれも、`page` を含むタグ以外の既存クエリを保持する。
+  理由は requirements.md AC 5.2 の「タグ絞り込み以外の既存クエリ（検索キーワード、並び順、
+  1 ページ件数、ページ番号など）を保持する」と明示されているため。初期ドラフトでは「空ページに
+  着地するリスク」を理由に page をリセットする案を採用していたが、その挙動は AC 5.2 と矛盾する
+  ため iteration round-2（commit `e335675`）で `buildTagRemovedURL` / `buildClearAllTagsURL`
+  から `q.Del("page")` を撤去し、対応する `internal/server/server_test.go` のケース
+  （`preserves q / sort / per_page and resets page` / `preserves other query parameters except page`）も
+  「page も保持される」期待に修正した。空ページに着地するリスクは別 AC で扱うべき範疇であり、
+  本 PR は AC 5.2 を優先する。仕様面で「解除時に page リセット」を採用すべきなら spec
+  （requirements.md）側を調整する別 Issue が必要
 - (f) **`r.URL` を直接 `buildTagRemovedURL` に渡す**: query parameter のみ操作するため
   scheme / host / path は触らない。テストでは `/ui/items?...` だけで動くことを確認済み
 

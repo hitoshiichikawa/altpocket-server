@@ -62,8 +62,23 @@ func createUserItemWithDisplayTag(t *testing.T, s *Store, ctx context.Context, u
 	if _, _, err := s.CreateItem(ctx, userID, rawURL, rawURL, hash, inputs, "title-"+hash, ""); err != nil {
 		t.Fatalf("CreateItem %q: %v", hash, err)
 	}
+	// Tags rows are user-independent (the global UNIQUE on normalized_name is
+	// shared across users), so we must NOT issue an unguarded
+	// `DELETE FROM tags WHERE normalized_name = $1` — that would cascade through
+	// item_tags ON DELETE CASCADE and remove other users' / concurrent test
+	// runs' item_tags rows. The `NOT EXISTS` guard keeps the deletion bounded
+	// to orphan tags (no item_tags references remaining) so the cleanup is
+	// safe even on a shared TEST_DATABASE_URL (round-6 of PR #137 / Issue
+	// #115). Note LIFO of t.Cleanup means this runs BEFORE the user cascade
+	// fires, so the guard typically falls through — an acceptable bounded
+	// leak (orphan tags are reused by the next test that picks the same
+	// normalized_name).
 	t.Cleanup(func() {
-		_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, normalized)
+		_, _ = s.DB.Exec(ctx, `
+			DELETE FROM tags
+			WHERE normalized_name = $1
+			  AND NOT EXISTS (SELECT 1 FROM item_tags WHERE tag_id = tags.id)
+		`, normalized)
 	})
 }
 

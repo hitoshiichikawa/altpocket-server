@@ -83,8 +83,9 @@
   全 checkbox / 全カード button が未選択化。
   `items_active_filters.test.mjs / 要件 3.4 / 3.5: 「すべてクリア」でサイドバー
   checkbox とカード上タグの全選択が解除される` で検証
-- **3.6** — `buildClearAllTagsURL` (server.go:1562) が `tag` / `tags` / `page` を
-  `q.Del()`。`TestBuildClearAllTagsURL/removes tag and tags parameters` で検証
+- **3.6** — `buildClearAllTagsURL` (server.go:1697) が `tag` / `tags` を `q.Del()` し、
+  `page` を含むタグ以外の既存クエリは保持する（Req 5.2 / round-2 iteration で AC 整合のため
+  `q.Del("page")` を撤去）。`TestBuildClearAllTagsURL/removes tag and tags parameters` で検証
 
 ### Requirement 4: 既存フィルタ機構との状態同期
 
@@ -113,9 +114,12 @@
   `q.Del("tags")` で旧形式をクリアしてから `q.Add("tag", ...)` で正準 `?tag=<norm>`
   繰り返しを再構築。`TestBuildTagRemovedURL/legacy ?tags=csv is migrated to canonical
   ?tag= repetition (Req 5.1)` で検証
-- **5.2** — 両 helper は `q.Del()` 対象を `tag` / `tags` / `page` のみに限定。
-  `TestBuildTagRemovedURL/preserves q / sort / per_page (Req 5.2) and resets page` および
-  `TestBuildClearAllTagsURL/preserves other query parameters except page` で検証
+- **5.2** — 両 helper は `q.Del()` 対象を `tag` / `tags` のみに限定し、`page` を含む
+  タグ以外の既存クエリ（検索キーワード / 並び順 / 1 ページ件数 / ページ番号）を保持する。
+  `TestBuildTagRemovedURL/preserves q / sort / per_page / page (Req 5.2)` および
+  `TestBuildClearAllTagsURL/preserves other query parameters including page (Req 5.2)` で検証
+  （round-2 iteration で AC 5.2 「ページ番号などを保持する」に整合させるため、初期の
+  `q.Del("page")` を撤去し対応テストの期待も「page も保持される」に修正した）
 - **5.3** — `buildTagRemovedURL` は最後の 1 件削除で `q.Add` が呼ばれず `tag` パラメータが
   消える。`TestBuildTagRemovedURL/last tag removed strips tag parameter entirely
   (Req 2.5 / 5.3)` で検証

@@ -69,11 +69,24 @@ func createItemWithDisplayTag(t *testing.T, s *store.Store, ctx context.Context,
 		t.Fatalf("CreateItem %q: %v", hash, err)
 	}
 	// Item cleanup happens via the user cascade in seedItemsActiveFilterUser's
-	// t.Cleanup, but tags are user-independent and need explicit removal so
-	// concurrent test runs cannot leak normalized_name rows.
+	// t.Cleanup. Tag rows are user-independent (the global UNIQUE on
+	// normalized_name is shared across users), so we must NOT issue an
+	// unguarded `DELETE FROM tags WHERE normalized_name = $1` — that would
+	// cascade through item_tags ON DELETE CASCADE and remove other users' /
+	// concurrent test runs' item_tags rows. The `NOT EXISTS` guard keeps the
+	// deletion bounded to orphan tags (no item_tags references remaining)
+	// so the cleanup is safe even on a shared TEST_DATABASE_URL (round-6 of
+	// PR #137 / Issue #115). Note LIFO of t.Cleanup means this runs BEFORE
+	// the user cascade fires, so the guard typically falls through (the tag
+	// still has references) and the row is left orphan until the next test
+	// reuses the normalized_name — an acceptable bounded leak.
 	normalized := tagInputs[0].NormalizedName
 	t.Cleanup(func() {
-		_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, normalized)
+		_, _ = s.DB.Exec(ctx, `
+			DELETE FROM tags
+			WHERE normalized_name = $1
+			  AND NOT EXISTS (SELECT 1 FROM item_tags WHERE tag_id = tags.id)
+		`, normalized)
 	})
 }
 
@@ -181,7 +194,14 @@ func TestSaveAndEditPathPreservesDisplayName(t *testing.T) {
 			t.Fatalf("CreateItem: %v", err)
 		}
 		t.Cleanup(func() {
-			_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, "go lang")
+			// See createItemWithDisplayTag for the safe-cleanup rationale: the
+			// global tags.normalized_name UNIQUE forbids unguarded deletion
+			// (round-6 of PR #137 / Issue #115).
+			_, _ = s.DB.Exec(ctx, `
+				DELETE FROM tags
+				WHERE normalized_name = $1
+				  AND NOT EXISTS (SELECT 1 FROM item_tags WHERE tag_id = tags.id)
+			`, "go lang")
 		})
 
 		got, err := s.TagsByNormalizedNames(ctx, userID, []string{"go lang"})
@@ -220,7 +240,12 @@ func TestSaveAndEditPathPreservesDisplayName(t *testing.T) {
 			t.Fatalf("PatchItem: %v", err)
 		}
 		t.Cleanup(func() {
-			_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, "rust-lang")
+			// See createItemWithDisplayTag for the safe-cleanup rationale.
+			_, _ = s.DB.Exec(ctx, `
+				DELETE FROM tags
+				WHERE normalized_name = $1
+				  AND NOT EXISTS (SELECT 1 FROM item_tags WHERE tag_id = tags.id)
+			`, "rust-lang")
 		})
 
 		got, err := s.TagsByNormalizedNames(ctx, userID, []string{"rust-lang"})
@@ -247,7 +272,12 @@ func TestSaveAndEditPathPreservesDisplayName(t *testing.T) {
 			t.Fatalf("CreateItem: %v", err)
 		}
 		t.Cleanup(func() {
-			_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, "golang")
+			// See createItemWithDisplayTag for the safe-cleanup rationale.
+			_, _ = s.DB.Exec(ctx, `
+				DELETE FROM tags
+				WHERE normalized_name = $1
+				  AND NOT EXISTS (SELECT 1 FROM item_tags WHERE tag_id = tags.id)
+			`, "golang")
 		})
 
 		got, err := s.TagsByNormalizedNames(ctx, userID, []string{"golang"})
