@@ -147,7 +147,7 @@ func TestHandleUIItemsFullPageZeroResultResolvesDisplayName(t *testing.T) {
 		t.Fatalf("expected empty facet for zero-result filter, got %d entries: %#v", len(facet), facet)
 	}
 
-	named, err := s.TagsByNormalizedNames(ctx, tagFilters)
+	named, err := s.TagsByNormalizedNames(ctx, userID, tagFilters)
 	if err != nil {
 		t.Fatalf("TagsByNormalizedNames: %v", err)
 	}

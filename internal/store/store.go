@@ -665,7 +665,9 @@ func (s *Store) ListTagsWithCount(ctx context.Context, userID string) ([]Tag, er
 }
 
 // TagsByNormalizedNames returns Tag rows whose `normalized_name` is in the
-// supplied slice. Names that do not exist are silently absent from the result.
+// supplied slice and which appear on at least one item owned by userID. Names
+// that do not exist, or that exist only on other users' items, are silently
+// absent from the result.
 //
 // Used by the /ui/items fragment renderer (Issue #115) to resolve active filter
 // chip display names when the full Tags facet query is skipped. AC 1.3
@@ -673,18 +675,21 @@ func (s *Store) ListTagsWithCount(ctx context.Context, userID string) ([]Tag, er
 // when filter results are zero, so the handler queries the tag rows directly
 // rather than depending on items[*].Tags or the facet aggregate.
 //
-// The query is intentionally cheap (single SELECT on `tags.normalized_name`
-// with a UNIQUE index) so fragment-path renders do not regress to the cost of
-// the full facet aggregate (which joins items / item_tags / item_contents).
-func (s *Store) TagsByNormalizedNames(ctx context.Context, normalizedNames []string) ([]Tag, error) {
+// The lookup is intentionally cheap — items / item_tags are already joined by
+// the rest of the items handler — and is scoped by user_id so that another
+// user's tag display name cannot leak into the current viewer's chip even when
+// the same normalized_name exists across users (round-4 review of PR #137).
+func (s *Store) TagsByNormalizedNames(ctx context.Context, userID string, normalizedNames []string) ([]Tag, error) {
 	if len(normalizedNames) == 0 {
 		return nil, nil
 	}
 	rows, err := s.DB.Query(ctx, `
-		SELECT id, name, normalized_name
-		FROM tags
-		WHERE normalized_name = ANY($1)
-	`, normalizedNames)
+		SELECT DISTINCT t.id, t.name, t.normalized_name
+		FROM tags t
+		JOIN item_tags it ON it.tag_id = t.id
+		JOIN items i ON i.id = it.item_id
+		WHERE i.user_id = $1 AND t.normalized_name = ANY($2)
+	`, userID, normalizedNames)
 	if err != nil {
 		return nil, err
 	}

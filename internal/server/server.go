@@ -776,7 +776,7 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		tagsForLookup = t
 	}
 	if len(tagFilters) > 0 {
-		named, _ := s.store.TagsByNormalizedNames(r.Context(), tagFilters)
+		named, _ := s.store.TagsByNormalizedNames(r.Context(), user.ID, tagFilters)
 		// Facet entries (when present) keep priority; the direct lookup is
 		// appended so buildActiveTagFilters' earlier-source-wins dedup uses it
 		// only for filters the facet did not surface (e.g. zero-result tags).
