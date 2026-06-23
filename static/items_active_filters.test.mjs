@@ -300,6 +300,15 @@ function loadModule({
       if (!clearAll) throw new Error('no clear-all configured');
       return document.dispatch('click', { target: clearAll });
     },
+    keydownChip: async (normalized, key) => {
+      const chip = chips.find((c) => c.dataset.tagNormalized === normalized);
+      if (!chip) throw new Error(`no chip for tag=${normalized}`);
+      return document.dispatch('keydown', { target: chip, key });
+    },
+    keydownClearAll: async (key) => {
+      if (!clearAll) throw new Error('no clear-all configured');
+      return document.dispatch('keydown', { target: clearAll, key });
+    },
     dispatchPopstate: async () => {
       const handlers = winListeners.get('popstate') || [];
       for (const fn of handlers) await fn({ type: 'popstate' });
@@ -504,6 +513,84 @@ test('要件 6.2: <a> なので Enter は click にディスパッチされる (
   const ev = await env.clickChip('go');
   await flushMicrotasks();
   assert.equal(ev.defaultPrevented, true, '<a> の click は preventDefault されてフルページ遷移を抑止');
+});
+
+test('要件 6.2 (回帰): role="button" のチップは Space キーでも click 相当に activate される', async () => {
+  // <a role="button"> は ARIA 上 button として読まれるため、Space キーで
+  // activate できる必要がある。`<a>` 要素はブラウザがネイティブに Space を
+  // click にディスパッチしないので、JS 側で keydown を click 相当に変換する。
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=go&tag=rust',
+    fetchHandlers: [fragmentResponse('<x>after-space</x>')],
+    chipTags: [
+      { normalized: 'go', removeURL: 'http://test.invalid/ui/items?tag=rust' },
+      { normalized: 'rust', removeURL: 'http://test.invalid/ui/items?tag=go' },
+    ],
+    checkboxTags: [
+      { normalized: 'go', checked: true },
+      { normalized: 'rust', checked: true },
+    ],
+  });
+
+  const ev = await env.keydownChip('go', ' ');
+  await flushMicrotasks();
+
+  assert.equal(ev.defaultPrevented, true, 'Space の既定動作 (ページスクロール) は抑止');
+  const pushes = env.history.calls.filter((c) => c.kind === 'push');
+  assert.equal(pushes.length, 1, 'Space 押下で pushState が click と同じく 1 回呼ばれる');
+  const u = new URL(pushes[0].url);
+  assert.deepEqual(u.searchParams.getAll('tag'), ['rust'], 'go が解除されて rust のみ残る');
+  assert.equal(env.region.innerHTML, '<x>after-space</x>', 'フラグメント取得も click 相当に発火');
+  const goCb = env.checkboxes.find((c) => c.value === 'go');
+  assert.equal(goCb.checked, false, 'サイドバー checkbox も即時更新される');
+});
+
+test('要件 6.3 (回帰): role="button" の「すべてクリア」も Space キーで activate される', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=go&tag=rust',
+    fetchHandlers: [fragmentResponse('<x>after-space-clear</x>')],
+    clearAllURL: 'http://test.invalid/ui/items',
+    checkboxTags: [
+      { normalized: 'go', checked: true },
+      { normalized: 'rust', checked: true },
+    ],
+  });
+
+  const ev = await env.keydownClearAll(' ');
+  await flushMicrotasks();
+
+  assert.equal(ev.defaultPrevented, true, 'Space の既定動作は抑止');
+  const pushes = env.history.calls.filter((c) => c.kind === 'push');
+  assert.equal(pushes.length, 1, 'Space 押下で pushState が呼ばれる');
+  const u = new URL(pushes[0].url);
+  assert.equal(u.searchParams.get('tag'), null, '全タグ解除で tag 消失');
+  assert.equal(env.region.innerHTML, '<x>after-space-clear</x>');
+  for (const cb of env.checkboxes) {
+    assert.equal(cb.checked, false, `${cb.value} の checkbox も解除`);
+  }
+});
+
+test('要件 6.2 / 6.3 (回帰): Space 以外のキーは chip / clear-all で発火しない', async () => {
+  // 矢印キー・Tab・A〜Z などのキーが意図せず activate にならないこと。
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=go',
+    fetchHandlers: [],
+    chipTags: [
+      { normalized: 'go', removeURL: 'http://test.invalid/ui/items' },
+    ],
+    clearAllURL: 'http://test.invalid/ui/items',
+  });
+
+  // 'a' / 'ArrowDown' / 'Tab' のいずれも no-op であることを確認。
+  for (const k of ['a', 'ArrowDown', 'Tab']) {
+    const ev1 = await env.keydownChip('go', k);
+    const ev2 = await env.keydownClearAll(k);
+    assert.equal(ev1.defaultPrevented, false, `chip: ${k} で preventDefault されない`);
+    assert.equal(ev2.defaultPrevented, false, `clear-all: ${k} で preventDefault されない`);
+  }
+  await flushMicrotasks();
+  assert.equal(env.history.calls.length, 0, 'pushState は 1 度も呼ばれない');
+  assert.equal(env.fetchCalls.length, 0, 'fetch は 1 度も呼ばれない');
 });
 
 test('NFR 1.2 / 1.3: 連続チップクリックで前段の保留 fetch が AbortController で破棄される', async () => {

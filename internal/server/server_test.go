@@ -341,6 +341,27 @@ func TestBuildActiveTagFilters(t *testing.T) {
 			t.Errorf("expected facet display name to win, got %q", got[0].Name)
 		}
 	})
+
+	t.Run("Req 1.3 (regression): fragment-mode zero-result lookup still resolves display name", func(t *testing.T) {
+		// Round-2 review case: the fragment path skips ListTagsWithCountFiltered
+		// for performance, but the active filter chip must still show the
+		// user-entered name (e.g. "Go Lang"). The handler now calls
+		// store.TagsByNormalizedNames in fragment mode and feeds the result
+		// into tagsForLookup, so even when `items` is empty (zero-result
+		// filter) buildActiveTagFilters can resolve the display name from
+		// the direct tag lookup rather than degrading to the normalized form.
+		tagsLookup := []store.Tag{{NormalizedName: "go-lang", Name: "Go Lang"}}
+		got := buildActiveTagFilters([]string{"go-lang"}, tagsLookup, nil, currentURL)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 chip, got %d", len(got))
+		}
+		if got[0].Name != "Go Lang" {
+			t.Errorf("expected display name from direct tag lookup, got %q (regression to normalized form)", got[0].Name)
+		}
+		if got[0].NormalizedName != "go-lang" {
+			t.Errorf("expected NormalizedName=go-lang, got %q", got[0].NormalizedName)
+		}
+	})
 }
 
 func TestNormalizeWhitespace(t *testing.T) {

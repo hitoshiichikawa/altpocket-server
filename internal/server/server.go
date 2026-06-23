@@ -762,13 +762,22 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		t, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
 		tags = t
 		tagsForLookup = t
+	} else if len(tagFilters) > 0 {
+		// Fragment-only renders skip the facet aggregate to keep the
+		// debounce-driven swap cheap, but the active filter chips above the
+		// item list still require the user-entered display name per AC 1.3.
+		// Resolve the active filters' names from the tags table directly so
+		// chips do not degrade to the normalized lowercase form when the
+		// current filter yields zero results (Issue #115 round-2 review).
+		t, _ := s.store.TagsByNormalizedNames(r.Context(), tagFilters)
+		tagsForLookup = t
 	}
 
 	// Active filter chips shown above the item list (Issue #115). The display
-	// name is resolved from the Tags facet (full-page) or the items' own Tags
-	// (fragment) so the chip shows the user-entered name rather than the
-	// normalized lowercase form. Tags that cannot be resolved fall back to
-	// their normalized name (e.g. when the filter yields zero results).
+	// name is resolved from the Tags facet (full-page) / direct tag lookup
+	// (fragment) / the items' own Tags (fallback) so the chip shows the
+	// user-entered name rather than the normalized lowercase form. Tags that
+	// cannot be resolved fall back to their normalized name as a last resort.
 	activeTagFilters := buildActiveTagFilters(tagFilters, tagsForLookup, items, r.URL)
 
 	data := map[string]interface{}{

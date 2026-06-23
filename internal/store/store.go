@@ -664,6 +664,43 @@ func (s *Store) ListTagsWithCount(ctx context.Context, userID string) ([]Tag, er
 	return s.ListTagsWithCountFiltered(ctx, userID, "", nil)
 }
 
+// TagsByNormalizedNames returns Tag rows whose `normalized_name` is in the
+// supplied slice. Names that do not exist are silently absent from the result.
+//
+// Used by the /ui/items fragment renderer (Issue #115) to resolve active filter
+// chip display names when the full Tags facet query is skipped. AC 1.3
+// requires chips to show the original user-entered name (e.g. "Go Lang") even
+// when filter results are zero, so the handler queries the tag rows directly
+// rather than depending on items[*].Tags or the facet aggregate.
+//
+// The query is intentionally cheap (single SELECT on `tags.normalized_name`
+// with a UNIQUE index) so fragment-path renders do not regress to the cost of
+// the full facet aggregate (which joins items / item_tags / item_contents).
+func (s *Store) TagsByNormalizedNames(ctx context.Context, normalizedNames []string) ([]Tag, error) {
+	if len(normalizedNames) == 0 {
+		return nil, nil
+	}
+	rows, err := s.DB.Query(ctx, `
+		SELECT id, name, normalized_name
+		FROM tags
+		WHERE normalized_name = ANY($1)
+	`, normalizedNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []Tag
+	for rows.Next() {
+		var t Tag
+		if err := rows.Scan(&t.ID, &t.Name, &t.NormalizedName); err != nil {
+			return nil, err
+		}
+		tags = append(tags, t)
+	}
+	return tags, rows.Err()
+}
+
 func (s *Store) ListTagsWithCountFiltered(ctx context.Context, userID, q string, selectedTags []string) ([]Tag, error) {
 	where := []string{"i.user_id = $1"}
 	args := []interface{}{userID}

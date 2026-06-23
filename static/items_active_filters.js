@@ -211,6 +211,36 @@
       }
     }
 
+    // チップ / 「すべてクリア」は `<a role="button">` で描画されているため、
+    // 支援技術には button として読み上げられる。ARIA Authoring Practices に
+    // 従い button は Space キーでも activate できる必要があるが、`<a>` 要素は
+    // ブラウザがネイティブに Space を click にディスパッチしないため、本ハンドラ
+    // が Space を click 相当の commit に変換する (Req 6.2 / 6.3)。
+    // Enter は `<a>` ネイティブで click にディスパッチされるため、ここでは
+    // 扱わない (click ハンドラ側で拾われる)。
+    function onDocumentKeydown(e) {
+      // Space (`' '` または `'Spacebar'`) のみを対象。
+      if (e.key !== ' ' && e.key !== 'Spacebar') return;
+      const target = e.target;
+      if (!target || typeof target.closest !== 'function') return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      if (e.defaultPrevented) return;
+
+      const chip = target.closest('[data-active-filter-chip]');
+      if (chip) {
+        // Space のページスクロール既定動作を抑止して click 相当に変換する。
+        e.preventDefault();
+        commit(chip.getAttribute('href'));
+        return;
+      }
+      const clearAll = target.closest('[data-active-filter-clear-all]');
+      if (clearAll) {
+        e.preventDefault();
+        commit(clearAll.getAttribute('href'));
+        return;
+      }
+    }
+
     // popstate (戻る/進む) で URL に応じてフラグメントとサイドバー状態を
     // 再同期する (Req 4.4)。フラグメント差し替え後にサーバ側 SSR が
     // チップ列を URL と整合させて返してくれるため、本モジュールは
@@ -222,6 +252,7 @@
     }
 
     doc.addEventListener('click', onDocumentClick);
+    doc.addEventListener('keydown', onDocumentKeydown);
     win.addEventListener('popstate', onPopState);
 
     return {
