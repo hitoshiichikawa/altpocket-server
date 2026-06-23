@@ -346,36 +346,46 @@
   };
 
   /* =============================================
-     Refetch Buttons (with toast)
+     Refetch / Delete Buttons (delegated click)
+     -------------------------------------------------
+     一覧カードはフラグメント差し替え (#114 検索 / #117
+     タグ絞り込み) で `region.innerHTML` ごと書き換えられる
+     ため、初期描画ノードへ直接 addEventListener する旧
+     パターンは差し替え後に handler を失う。document
+     レベルの delegated click にして closest で目的の
+     ボタンを解決することで、新しいボタンにも自動的に当たる。
      ============================================= */
-  document.querySelectorAll('button.refetch').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.itemId;
+  document.addEventListener('click', (e) => {
+    const target = e.target;
+    if (!target || typeof target.closest !== 'function') return;
+
+    const refetchBtn = target.closest('button.refetch');
+    if (refetchBtn) {
+      if (refetchBtn.disabled) return;
+      const id = refetchBtn.dataset.itemId;
       if (!id) return;
-      btn.disabled = true;
-      try {
-        const res = await fetch(`/v1/items/${id}/refetch`, { method: 'POST', headers });
-        if (res.ok) {
-          toast.success('Refetch queued');
-        } else {
-          toast.error('Failed to queue refetch');
+      refetchBtn.disabled = true;
+      (async () => {
+        try {
+          const res = await fetch(`/v1/items/${id}/refetch`, { method: 'POST', headers });
+          if (res.ok) {
+            toast.success('Refetch queued');
+          } else {
+            toast.error('Failed to queue refetch');
+          }
+        } catch {
+          toast.error('Network error');
+        } finally {
+          refetchBtn.disabled = false;
         }
-      } catch {
-        toast.error('Network error');
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  });
+      })();
+      return;
+    }
 
-  /* =============================================
-     Delete Buttons (with confirmation dialog)
-     ============================================= */
-  document.querySelectorAll('button.delete').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.itemId;
+    const deleteBtn = target.closest('button.delete');
+    if (deleteBtn) {
+      const id = deleteBtn.dataset.itemId;
       if (!id) return;
-
       confirm.show(
         'Delete article?',
         'This action cannot be undone.',
@@ -395,7 +405,8 @@
         'Delete',
         'btn-danger'
       );
-    });
+      return;
+    }
   });
 
   /* =============================================
