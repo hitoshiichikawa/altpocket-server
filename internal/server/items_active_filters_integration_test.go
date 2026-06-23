@@ -19,7 +19,8 @@ import (
 //
 //	TEST_DATABASE_URL=postgres://... go test -tags=integration ./internal/server/...
 //
-// The test database must have schema migrations 001..004 applied.
+// The test database must have schema migrations 001..006 applied
+// (006 adds item_tags.display_name for the per-user tag display name).
 
 func newIntegrationStore(t *testing.T) (*store.Store, func()) {
 	t.Helper()
@@ -56,9 +57,10 @@ func seedItemsActiveFilterUser(t *testing.T, s *store.Store, ctx context.Context
 // that the regression assertions reflect production behavior. Round-5 review
 // (Issue #115 / AC 1.3) flagged that the previous direct-SQL seeding bypassed
 // the save path, where display-name preservation now lives. The store now
-// persists tags.name = display (NFKC + trim, case preserved) and
-// tags.normalized_name = lowercase key, so passing "Go Lang" here results in
-// the chip rendering "Go Lang" rather than the normalized "go lang".
+// persists the per-user display name in item_tags.display_name (NFKC + trim,
+// case preserved) keyed by the shared tags.normalized_name, so passing "Go Lang"
+// here results in the chip rendering "Go Lang" rather than the normalized
+// "go lang" — and only for THIS user (PR #137 codex [high] review).
 func createItemWithDisplayTag(t *testing.T, s *store.Store, ctx context.Context, userID, hash, displayTagName string) {
 	t.Helper()
 	// Build TagInput pairs the same way the HTTP handlers do — via
@@ -293,5 +295,109 @@ func TestSaveAndEditPathPreservesDisplayName(t *testing.T) {
 		if got[0].NormalizedName != "golang" {
 			t.Errorf("tags.normalized_name = %q, want %q", got[0].NormalizedName, "golang")
 		}
+	})
+}
+
+// TestActiveFilterChipsAreMultiTenantIsolated is the end-to-end server-layer
+// regression for the PR #137 codex [high] finding: two users tag items with the
+// same normalized_name but different display names, then each opens the same
+// `?tag=go+lang` filter URL. The active filter chip the handler builds for each
+// user must carry that user's OWN display name — never the other user's. This
+// reproduces the handler's full data path (ListItems + facet + direct lookup +
+// buildActiveTagFilters) per user.
+//
+// Under the previous shared-tags.name design both users' chips would have
+// rendered whichever casing was created first; the per-user
+// item_tags.display_name model isolates them. Gated by TEST_DATABASE_URL.
+func TestActiveFilterChipsAreMultiTenantIsolated(t *testing.T) {
+	s, cleanup := newIntegrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Two distinct users seeded with the same normalized tag, different casing.
+	aliceID := seedNamedUser(t, s, ctx, "chip-iso-alice")
+	bobID := seedNamedUser(t, s, ctx, "chip-iso-bob")
+
+	createItemForUser(t, s, ctx, aliceID, "chip-iso-alice-go", "Go Lang")
+	createItemForUser(t, s, ctx, bobID, "chip-iso-bob-go", "GO LANG")
+
+	tagFilters := []string{"go lang"}
+	currentURL, _ := url.Parse("/ui/items?tag=go+lang")
+
+	// resolveChips reproduces the handler's full-page chip-resolution path for a
+	// single user (handleUIItems, fragmentOnly=false).
+	resolveChips := func(userID string) []ActiveTagFilter {
+		t.Helper()
+		items, _, err := s.ListItems(ctx, userID, 1, 20, "", tagFilters, "newest")
+		if err != nil {
+			t.Fatalf("ListItems(%s): %v", userID, err)
+		}
+		facet, err := s.ListTagsWithCountFiltered(ctx, userID, "", tagFilters)
+		if err != nil {
+			t.Fatalf("ListTagsWithCountFiltered(%s): %v", userID, err)
+		}
+		named, err := s.TagsByNormalizedNames(ctx, userID, tagFilters)
+		if err != nil {
+			t.Fatalf("TagsByNormalizedNames(%s): %v", userID, err)
+		}
+		merged := mergeTagDisplaySources(facet, named)
+		return buildActiveTagFilters(tagFilters, merged, items, currentURL)
+	}
+
+	aliceChips := resolveChips(aliceID)
+	if len(aliceChips) != 1 {
+		t.Fatalf("alice: expected 1 chip, got %d: %#v", len(aliceChips), aliceChips)
+	}
+	if aliceChips[0].Name != "Go Lang" {
+		t.Errorf("LEAK (chip): alice chip = %q, want her own %q", aliceChips[0].Name, "Go Lang")
+	}
+
+	bobChips := resolveChips(bobID)
+	if len(bobChips) != 1 {
+		t.Fatalf("bob: expected 1 chip, got %d: %#v", len(bobChips), bobChips)
+	}
+	if bobChips[0].Name != "GO LANG" {
+		t.Errorf("LEAK (chip): bob chip = %q, want his own %q", bobChips[0].Name, "GO LANG")
+	}
+}
+
+// seedNamedUser is like seedItemsActiveFilterUser but takes an explicit label so
+// a single test can create several distinct users (multi-tenant scenarios).
+func seedNamedUser(t *testing.T, s *store.Store, ctx context.Context, label string) string {
+	t.Helper()
+	var id string
+	err := s.DB.QueryRow(ctx, `
+		INSERT INTO users (google_sub, email, name)
+		VALUES ($1, $2, $3)
+		RETURNING id
+	`, "test-sub-"+t.Name()+"-"+label, t.Name()+"-"+label+"@example.invalid", t.Name()+"-"+label).Scan(&id)
+	if err != nil {
+		t.Fatalf("seed user %q: %v", label, err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.DB.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+	})
+	return id
+}
+
+// createItemForUser is like createItemWithDisplayTag but lets the caller target
+// a specific user (so multi-tenant scenarios can seed each user separately).
+func createItemForUser(t *testing.T, s *store.Store, ctx context.Context, userID, hash, displayTagName string) {
+	t.Helper()
+	tagInputs := normalizeTagInputs([]string{displayTagName})
+	rawURL := "https://example.invalid/" + hash
+	if _, _, err := s.CreateItem(ctx, userID, rawURL, rawURL, hash, tagInputs, "title-"+hash, ""); err != nil {
+		t.Fatalf("CreateItem %q: %v", hash, err)
+	}
+	normalized := tagInputs[0].NormalizedName
+	t.Cleanup(func() {
+		// Bounded orphan-tag cleanup: the global tags.normalized_name UNIQUE is
+		// shared across users, so only delete the row once no item_tags
+		// reference it (see createItemWithDisplayTag for the full rationale).
+		_, _ = s.DB.Exec(ctx, `
+			DELETE FROM tags
+			WHERE normalized_name = $1
+			  AND NOT EXISTS (SELECT 1 FROM item_tags WHERE tag_id = tags.id)
+		`, normalized)
 	})
 }

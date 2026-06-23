@@ -307,3 +307,48 @@ codex レビュー指摘（medium・`internal/server/server.go:765`）への対�
     チップが元の表示名を解決することを担保。
 
 STATUS: complete
+
+## Round-final codex review fix（タグ表示名の per-user 化 / マルチテナント漏洩修正）
+
+codex レビュー指摘（[high] × 3・`internal/store/store.go:338` / `:605` / `:715`）への対応。
+詳細設計は `design.md`、タスク分解は `tasks.md` を参照。
+
+- **症状（根本欠陥）**: タグ表示名をグローバル共有の `tags` テーブル（`normalized_name`
+  UNIQUE）の `name` 列に保存していた。`tags` は全ユーザー共有のため:
+  1. `CreateItem` の `ON CONFLICT (normalized_name)` no-op で、既存の同一 `normalized_name` 行が
+     あると入力表示名が保存されない（AC 1.3 破綻）
+  2. `PatchItem` / `ReplaceItemTags` でも casing 変更が既存 `tags.name` に反映されない
+  3. `TagsByNormalizedNames` は user スコープでも**共有 `tags.name` を返す**ため、同じ
+     normalized 名を複数ユーザーが異なる表示名で共有すると**他ユーザーの表示名が漏洩**する
+     （マルチテナント isolation 崩壊）
+- **リデザイン**: 表示名を per-user な `item_tags.display_name`（`items` は user_id スコープ）へ
+  移設。共有 `tags` は `normalized_name`（フィルタ用グローバル同一性）に専念。`tags.name` は
+  legacy 列に縮退し表示名解決には使わない。
+  - migration: `migrations/006_item_tag_display_name.sql`（`ADD COLUMN IF NOT EXISTS` で冪等 +
+    既存 `tags.name` から backfill / forward-only）
+  - write: `upsertItemTags` ヘルパを新設し CreateItem / PatchItem を統一。`item_tags` を
+    `ON CONFLICT (item_id, tag_id) DO UPDATE SET display_name=EXCLUDED.display_name` で upsert
+  - read: `TagsByNormalizedNames` / `ListTagsWithCountFiltered` は `MIN(it.display_name)` を
+    user スコープで解決。`ListItems` / `GetItemDetail` は `array_agg(it.display_name ORDER BY t.id)`
+- **codex 指摘 → 対応**:
+  - [high] store.go:338（Create が既存行で表示名を捨てる）→ per-item display_name 保存で解消
+  - [high] store.go:605（Patch で casing 変更が反映されない）→ per-item upsert で追従
+  - [high] store.go:715（共有 tags.name 漏洩）→ `item_tags.display_name` を user スコープで解決
+  - [medium] 群（design.md / tasks.md 欠落）→ 本リデザインで両文書を追加
+- **追加テスト（integration, `-tags=integration` + `TEST_DATABASE_URL` gated, 実 DB）**:
+  - `internal/store/tags_lookup_test.go`: `TestTagsByNormalizedNamesMultiTenantIsolation`（2 ユーザー
+    同一 normalized・異なる表示名で各自の表示名のみ） / `TestTagsByNormalizedNamesAlsoSurfacesViaFacet`
+    （facet 経路の分離） / `TestCreateAndPatchAgainstExistingSharedRow`（conflict 時の Create/Patch）
+  - `internal/server/items_active_filters_integration_test.go`:
+    `TestActiveFilterChipsAreMultiTenantIsolated`（server 層 chip 構築 end-to-end の分離）
+  - 既存 `TestSaveAndEditPathPreservesDisplayName` /
+    `TestHandleUIItemsFullPageZeroResultResolvesDisplayName` / `TestTagsByNormalizedNames` は新モデルで green
+- **検証**: 実 Postgres 16 コンテナへ migrations 001..006 を適用し、上記 integration テストおよび
+  `go build ./...` / `go vet ./...` / `go test ./...`（unit）/ `node --test static/*.test.mjs`(61) を
+  green 確認。multi-tenant 回帰テストは旧 shared-name 設計で fail することも確認済み（Red→Green）。
+- **残リスク**: グローバルタグ autocomplete `/api/tags?q=`（`SuggestTags`）は設計上 cross-user な
+  候補列挙であり、引き続き legacy `tags.name`（最初の作成者の表示名）を返す。チップ・カード・
+  サイドバーの per-user 表示面とは別経路で、本 Issue（チップ表示）のスコープ外。per-user 化する
+  場合は別 Issue で `SuggestTags` を user スコープ化する必要がある。
+
+STATUS (redesign): complete

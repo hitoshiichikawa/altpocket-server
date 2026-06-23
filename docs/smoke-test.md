@@ -55,7 +55,7 @@ Set `KEEP_TEST_DATA=1` to keep it for debugging.
 
 ### 前提
 
-- `migrations/001_init.sql` 〜 `005_invalidate_legacy_refresh_tokens.sql` を全て適用済み
+- `migrations/001_init.sql` 〜 `006_item_tag_display_name.sql` を全て適用済み
 - `ENCRYPTION_KEY` を `openssl rand -base64 32` で生成して `.env` に投入済み
 - API（`cmd/api`）が起動済み
 

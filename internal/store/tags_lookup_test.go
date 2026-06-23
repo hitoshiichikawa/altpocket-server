@@ -49,10 +49,12 @@ func seedTagsLookupUser(t *testing.T, s *Store, ctx context.Context, label strin
 // createUserItemWithDisplayTag exercises the real CreateItem path so the test
 // matches production behavior. Round-5 review (Issue #115 / AC 1.3) flagged
 // that direct-SQL seeding bypassed the save path, where display-name
-// preservation now lives. CreateItem persists tags.name = display (NFKC + trim,
-// case preserved) and tags.normalized_name = lowercase key as distinct values.
-// The corresponding tag row is cleaned up after the test so concurrent runs
-// don't leak a normalized_name row.
+// preservation now lives. CreateItem persists the per-user display name in
+// item_tags.display_name (NFKC + trim, case preserved) and the shared
+// tags.normalized_name = lowercase key; the global tags row is keyed only by
+// normalized_name so it is shared across users (PR #137 codex [high] review —
+// the display name is per-user). The corresponding tag row is cleaned up after
+// the test so concurrent runs don't leak a normalized_name row.
 func createUserItemWithDisplayTag(t *testing.T, s *Store, ctx context.Context, userID, hash, displayTagName string) {
 	t.Helper()
 	display := strings.TrimSpace(displayTagName)
@@ -175,6 +177,198 @@ func TestTagsByNormalizedNames(t *testing.T) {
 		}
 		if len(gotOther) != 1 || gotOther[0].Name != "TypeScript" {
 			t.Fatalf("expected (TypeScript) for owning user, got %#v", gotOther)
+		}
+	})
+}
+
+// TestTagsByNormalizedNamesMultiTenantIsolation is the core regression for the
+// PR #137 codex [high] finding (internal/store/store.go: shared tags.name leak).
+// Two users tag items with the SAME normalized_name but DIFFERENT display names
+// ("Go Lang" vs "GO LANG"). Each user's chip lookup must resolve ONLY that
+// user's own display name; neither user's label may leak into the other's
+// result (multi-tenant isolation / AC 1.3).
+//
+// Under the previous design the display name lived on the globally-shared tags
+// row, so whichever user created the row first won the casing for everyone and
+// the other user saw a foreign label. The per-user item_tags.display_name model
+// fixes this; this test fails on the old design and passes on the new one.
+//
+// Gated by TEST_DATABASE_URL (see newTagsLookupStore).
+func TestTagsByNormalizedNamesMultiTenantIsolation(t *testing.T) {
+	s, cleanup := newTagsLookupStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	alice := seedTagsLookupUser(t, s, ctx, "alice")
+	bob := seedTagsLookupUser(t, s, ctx, "bob")
+
+	// Both users tag their own item with the same normalized "go lang" but
+	// different display casing. createUserItemWithDisplayTag goes through the
+	// real CreateItem save path, so this also exercises the conflict branch of
+	// the shared tags upsert (the second CreateItem hits ON CONFLICT on the
+	// shared normalized_name row).
+	createUserItemWithDisplayTag(t, s, ctx, alice, "iso-alice-go", "Go Lang")
+	createUserItemWithDisplayTag(t, s, ctx, bob, "iso-bob-go", "GO LANG")
+
+	gotAlice, err := s.TagsByNormalizedNames(ctx, alice, []string{"go lang"})
+	if err != nil {
+		t.Fatalf("TagsByNormalizedNames(alice): %v", err)
+	}
+	if len(gotAlice) != 1 {
+		t.Fatalf("alice: expected 1 tag, got %d: %#v", len(gotAlice), gotAlice)
+	}
+	if gotAlice[0].Name != "Go Lang" {
+		t.Errorf("LEAK: alice sees display name %q, want her own %q (another user's casing leaked into her chip)", gotAlice[0].Name, "Go Lang")
+	}
+
+	gotBob, err := s.TagsByNormalizedNames(ctx, bob, []string{"go lang"})
+	if err != nil {
+		t.Fatalf("TagsByNormalizedNames(bob): %v", err)
+	}
+	if len(gotBob) != 1 {
+		t.Fatalf("bob: expected 1 tag, got %d: %#v", len(gotBob), gotBob)
+	}
+	if gotBob[0].Name != "GO LANG" {
+		t.Errorf("LEAK: bob sees display name %q, want his own %q (another user's casing leaked into his chip)", gotBob[0].Name, "GO LANG")
+	}
+
+	// Both resolutions must agree on the shared normalized identity (the global
+	// filter key) even though the display names differ per user.
+	if gotAlice[0].NormalizedName != "go lang" || gotBob[0].NormalizedName != "go lang" {
+		t.Errorf("expected shared normalized_name %q for both, got alice=%q bob=%q", "go lang", gotAlice[0].NormalizedName, gotBob[0].NormalizedName)
+	}
+}
+
+// TestTagsByNormalizedNamesAlsoSurfacesViaFacet asserts the sidebar facet path
+// (ListTagsWithCountFiltered) is subject to the same per-user isolation as the
+// direct chip lookup: two users sharing a normalized_name see their own display
+// name in the facet, never the other's (PR #137 codex [high] — store.go:770
+// previously returned the shared tags.name).
+//
+// Gated by TEST_DATABASE_URL.
+func TestTagsByNormalizedNamesAlsoSurfacesViaFacet(t *testing.T) {
+	s, cleanup := newTagsLookupStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	alice := seedTagsLookupUser(t, s, ctx, "facet-alice")
+	bob := seedTagsLookupUser(t, s, ctx, "facet-bob")
+
+	createUserItemWithDisplayTag(t, s, ctx, alice, "facet-alice-go", "Go Lang")
+	createUserItemWithDisplayTag(t, s, ctx, bob, "facet-bob-go", "GO LANG")
+
+	aliceFacet, err := s.ListTagsWithCountFiltered(ctx, alice, "", nil)
+	if err != nil {
+		t.Fatalf("ListTagsWithCountFiltered(alice): %v", err)
+	}
+	bobFacet, err := s.ListTagsWithCountFiltered(ctx, bob, "", nil)
+	if err != nil {
+		t.Fatalf("ListTagsWithCountFiltered(bob): %v", err)
+	}
+
+	findGo := func(tags []Tag) (Tag, bool) {
+		for _, tg := range tags {
+			if tg.NormalizedName == "go lang" {
+				return tg, true
+			}
+		}
+		return Tag{}, false
+	}
+
+	aGo, ok := findGo(aliceFacet)
+	if !ok {
+		t.Fatalf("alice facet missing 'go lang': %#v", aliceFacet)
+	}
+	if aGo.Name != "Go Lang" {
+		t.Errorf("LEAK (facet): alice sees %q, want %q", aGo.Name, "Go Lang")
+	}
+	bGo, ok := findGo(bobFacet)
+	if !ok {
+		t.Fatalf("bob facet missing 'go lang': %#v", bobFacet)
+	}
+	if bGo.Name != "GO LANG" {
+		t.Errorf("LEAK (facet): bob sees %q, want %q", bGo.Name, "GO LANG")
+	}
+}
+
+// TestCreateAndPatchAgainstExistingSharedRow covers the PR #137 codex [high]
+// conflict findings (store.go:338 / store.go:605): when a shared tags row for a
+// normalized_name already exists (e.g. created earlier, possibly by another
+// user), the save path must NOT silently drop the new display name, and an edit
+// must reflect a casing change for the editing user.
+//
+// Gated by TEST_DATABASE_URL.
+func TestCreateAndPatchAgainstExistingSharedRow(t *testing.T) {
+	s, cleanup := newTagsLookupStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	first := seedTagsLookupUser(t, s, ctx, "shared-first")
+	second := seedTagsLookupUser(t, s, ctx, "shared-second")
+
+	// First user creates the shared tags row with a lowercase display name.
+	createUserItemWithDisplayTag(t, s, ctx, first, "shared-first-go", "go lang")
+
+	t.Run("Create against an existing shared row keeps the new user's display name", func(t *testing.T) {
+		// Second user creates an item with the SAME normalized_name but a
+		// distinct display name. The shared tags upsert hits ON CONFLICT, but
+		// the display name lives in item_tags so it must be persisted intact.
+		createUserItemWithDisplayTag(t, s, ctx, second, "shared-second-go", "Go LANG")
+
+		got, err := s.TagsByNormalizedNames(ctx, second, []string{"go lang"})
+		if err != nil {
+			t.Fatalf("TagsByNormalizedNames(second): %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 tag, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Go LANG" {
+			t.Errorf("Create dropped the new display name: got %q, want %q (existing shared row must not win)", got[0].Name, "Go LANG")
+		}
+
+		// And the first user must be unaffected by the second user's create.
+		gotFirst, err := s.TagsByNormalizedNames(ctx, first, []string{"go lang"})
+		if err != nil {
+			t.Fatalf("TagsByNormalizedNames(first): %v", err)
+		}
+		if len(gotFirst) != 1 || gotFirst[0].Name != "go lang" {
+			t.Errorf("first user's display name changed after another user's create: got %#v, want %q", gotFirst, "go lang")
+		}
+	})
+
+	t.Run("Patch reflects a casing change against an existing shared row", func(t *testing.T) {
+		// Seed an item for a third actor with the lowercase tag, then edit it to
+		// an upper-case display name. The shared tags row already exists, so the
+		// old design's ON CONFLICT no-op would have frozen the label. The
+		// per-item display_name must follow the edit.
+		editor := seedTagsLookupUser(t, s, ctx, "shared-editor")
+		hash := "shared-editor-go"
+		rawURL := "https://example.invalid/" + hash
+		var itemID string
+		if err := s.DB.QueryRow(ctx, `
+			INSERT INTO items (user_id, url, canonical_url, canonical_hash, title)
+			VALUES ($1, $2, $2, $3, $4)
+			RETURNING id
+		`, editor, rawURL, hash, "editor-title").Scan(&itemID); err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+		// Initial tag: lowercase.
+		if _, err := s.ReplaceItemTags(ctx, editor, itemID, []TagInput{{Name: "go lang", NormalizedName: "go lang"}}); err != nil {
+			t.Fatalf("ReplaceItemTags(initial): %v", err)
+		}
+		// Edit to a new casing.
+		if _, err := s.ReplaceItemTags(ctx, editor, itemID, []TagInput{{Name: "GoLang!", NormalizedName: "go lang"}}); err != nil {
+			t.Fatalf("ReplaceItemTags(edit): %v", err)
+		}
+		got, err := s.TagsByNormalizedNames(ctx, editor, []string{"go lang"})
+		if err != nil {
+			t.Fatalf("TagsByNormalizedNames(editor): %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 tag, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "GoLang!" {
+			t.Errorf("Patch did not reflect the casing change: got %q, want %q", got[0].Name, "GoLang!")
 		}
 	})
 }
