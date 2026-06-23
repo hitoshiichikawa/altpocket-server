@@ -14,6 +14,12 @@
 //   (要件 3.4 / 5.3 / NFR 1.2)。
 // - 連続クリック / debounce 中のレース対策として AbortController で前段の
 //   保留リクエストを破棄する (OQ-(c)、items_search.js と同じ規約)。
+//   この AbortController は `[data-items-region]` 要素上の
+//   `__itemsFragmentInflight` に置き、`items_search.js` と **共有** する。
+//   タグクリックは検索 debounce 中の保留 fetch を、検索 fetch はタグクリック
+//   起源の保留 fetch を、それぞれ相互に abort する。これにより、後着の
+//   レスポンスが先着の絞り込み結果を上書きする race（URL とボタン状態は
+//   タグ済みなのに一覧だけ古い検索結果に戻る）を防ぐ (要件 2.1 / 5.3)。
 //
 // JS 無効環境では本ファイルが評価されないだけで、サイドバーの form 送信に
 // よる従来の絞り込みはそのまま動く (NFR 2.1)。<button type="button"> なので
@@ -35,7 +41,14 @@
     const history = (opts && opts.history) || win.history;
     const location = (opts && opts.location) || win.location;
 
-    let inflight = null; // AbortController for the active fragment fetch
+    // フラグメント取得の AbortController は items_search.js と共有する
+    // ため、region 要素上の slot に置く。両モジュールが同じ slot を
+    // 参照することで、片方が新しい fetch を開始したときに他方の保留
+    // fetch も abort される。
+    if (!region.__itemsFragmentInflight) {
+      region.__itemsFragmentInflight = { ctrl: null };
+    }
+    const coord = region.__itemsFragmentInflight;
 
     function readURLTags() {
       try {
@@ -93,12 +106,14 @@
 
     async function refreshFragment(targetURL) {
       // 前段の保留中リクエストを破棄して最新の絞り込みのみ反映する
-      // (NFR 1.2, OQ-(c))。
-      if (inflight) {
-        try { inflight.abort(); } catch { /* noop */ }
+      // (NFR 1.2, OQ-(c))。coord は items_search.js と共有しているので、
+      // 検索 debounce 由来の保留 fetch も同時に abort される (要件 2.1 /
+      // 5.3 の race 対策)。
+      if (coord.ctrl) {
+        try { coord.ctrl.abort(); } catch { /* noop */ }
       }
       const ctrl = (typeof win.AbortController === 'function') ? new win.AbortController() : null;
-      inflight = ctrl;
+      coord.ctrl = ctrl;
 
       try {
         const res = await fetchImpl(targetURL, {
@@ -120,7 +135,7 @@
       } catch {
         // ネットワーク失敗時は前回結果を維持する (NFR 1.2)。
       } finally {
-        if (inflight === ctrl) inflight = null;
+        if (coord.ctrl === ctrl) coord.ctrl = null;
       }
     }
 
@@ -206,7 +221,7 @@
 
     return {
       _debug: {
-        getInflight: () => inflight,
+        getInflight: () => coord.ctrl,
         commitToggle,
         syncControls,
         readURLTags,

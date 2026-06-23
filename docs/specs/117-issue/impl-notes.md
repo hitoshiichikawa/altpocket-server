@@ -9,6 +9,8 @@
 | `static/style.css` | 変更 | `.tag.tag-filter-toggle` の hover / focus-visible / `[aria-pressed="true"]` / `is-selected` / `:disabled` スタイル追加。既存デザイントークン (`--color-primary-soft` / `--color-primary` / `--motion-fast` / `--ease-default` / `--space-2` / `--radius-sm`) のみ使用 (NFR 3.1) |
 | `static/items_tags.js` | 新規 | タグボタンのクリック・キーボード活性化を受けて URL `?tag=<normalized>` を toggle、pushState、サイドバー checkbox との双方向同期、フラグメント取得 (`X-Requested-With: ItemsFragment`)、AbortController による前段リクエスト破棄、popstate ハンドリング |
 | `static/items_tags.test.mjs` | 新規 | 上記ロジックの単体テスト (node:test + vm)。AC 番号と 1:1 で対応 |
+| `static/items_search.js` | 変更 | フラグメント取得 AbortController を `[data-items-region]` 上の `__itemsFragmentInflight` slot 経由で `items_tags.js` と共有（PR #136 round 1 iteration: cross-module race 対策）|
+| `static/items_fragment_race.test.mjs` | 新規 | `items_search.js` × `items_tags.js` の cross-module race 回帰テスト。両モジュールを同一 vm context にロードし、片方の新規 fetch が他方の保留 fetch を abort することを検証 |
 | `internal/ui/render_test.go` | 変更 | `TestItemsTagsDivRendering` を新テンプレ契約に追従。`TestItemsTagSelectedState` を新規追加し AC 1.4 / 4.3 を担保 |
 
 ## 実装判断ログ（Open Questions の解釈）
@@ -26,6 +28,8 @@ PM が requirements.md に Open Questions として残した (a)(b)(c) につい
 ### (c) ロード中の連続クリック → **AbortController で前段破棄**
 
 `items_search.js` の `inflight` パターンに揃えました。連続クリックで複数の fetch が同時に飛ぶと、後段の絞り込み結果が前段に上書きされるレース条件が発生するため、最新のクリックの結果だけを必ず表示するように `AbortController` で前段を `.abort()` します。テスト `NFR 1.2 / OQ-(c): 連続クリック時、前段の保留中 fetch が AbortController で破棄される` で担保。
+
+**PR #136 round 1 iteration 追加対応**: 上記 `inflight` は当初 `items_tags.js` 内ローカル変数だったため、検索 debounce 側 (`items_search.js`) の保留 fetch を abort できず、URL とボタン状態はタグ済みなのに一覧だけ古い検索結果に戻る cross-module race が残っていました（要件 2.1 / 5.3 の「絞り込み結果を表示する」違反）。本対応で `[data-items-region]` 要素上の `__itemsFragmentInflight` slot を新設し、`items_tags.js` と `items_search.js` の双方が同じ AbortController を共有するように変更しました。これにより、どちらの起源の新規 fetch も他方の保留 fetch を確実に abort します。`static/items_fragment_race.test.mjs` で双方向の abort と slot 共有を回帰として担保。
 
 ## テスト結果
 
@@ -106,7 +110,7 @@ ok  	altpocket/internal/urlnorm
 | 5.2 サイドバー変更 → カード反映 | `要件 5.2: サイドバーのチェックボックス変更で同名タグボタンの aria-pressed / is-selected が更新される` |
 | 5.3 タグクリックとサイドバー由来の結果一致 | 双方向同期テスト（2.3, 5.2）+ サーバ側は同じ `parseTagFilters` を通るため意味的に同一（既存 `TestParseTagFilters` で担保） |
 | NFR 1.1 300ms 以内反応 | `syncControls(tags)` を `refreshFragment` 前に呼ぶ実装。最初のクリックで即座に aria-pressed を更新する経路はテストで担保（fetch 完了を待たない） |
-| NFR 1.2 ちらつき防止 | `refreshFragment` で fetch 完了後に `region.innerHTML = html` を一度だけ実行。失敗時は何もしない（既存 `items_search.js` と同じ規約）。テスト `NFR 1.2 / OQ-(c)` で AbortController 経路を担保 |
+| NFR 1.2 ちらつき防止 | `refreshFragment` で fetch 完了後に `region.innerHTML = html` を一度だけ実行。失敗時は何もしない（既存 `items_search.js` と同じ規約）。テスト `NFR 1.2 / OQ-(c)` で AbortController 経路を担保。cross-module race は `items_fragment_race.test.mjs` の 3 件で担保（タグ→検索 / 検索→タグ の双方向 abort と slot 共有） |
 | NFR 2.1 JS 無効でも閲覧と既存フォーム送信が動く | `<button type="button">` は form submit を発火しないため、JS 無効環境ではクリックしても何も起きない（要件 1.2 ホバーは CSS のみで成立 / サイドバー form は従来どおり機能）。手動検証で再確認 |
 | NFR 2.2 既存 URL 互換 | `parseTagFilters`（Go 側）が `?tag=` を従来どおり読む。本 PR ではサーバ側の URL 解釈は変更していない。既存 `TestParseTagFilters` で担保 |
 | NFR 3.1 デザイントークン統一 | 追加 CSS は既存トークン（`--color-primary` / `--color-primary-soft` / `--color-primary-hover` / `--motion-fast` / `--ease-default` / `--space-2` / `--radius-sm`）のみ使用 — コードレビューで担保 |
