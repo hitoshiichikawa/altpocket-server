@@ -68,15 +68,39 @@
       return s.toLowerCase();
     }
 
-    // URL の ?tag= 値を「サーバ側の正規化規則で正規化し、空・重複を畳んだ」
-    // リストとして返す。これにより set.has() / トグル判定 / カード表示が
-    // 正規化済み値で一貫する (#117 codex 指摘 1)。
+    // サーバ (internal/server/server.go parseTagFilters) は絞り込みタグを
+    // 2 形式で受理する:
+    //   - ?tag=go&tag=rust  … "tag" の繰り返し (url.Values["tag"])
+    //   - ?tags=go,rust     … "tags" 複数形のカンマ区切り (single value, Split ",")
+    // どちらも normalizeTagNames でマージ・正規化・重複畳み込みされる。
+    // 既存・共有された ?tags= 形式の URL でも JS のトグル判定が成立するよう、
+    // ここで両形式を読み取り、サーバと同じ規則で正規化・重複畳み込みする
+    // (#117 codex 指摘 3 / NFR 2.2 既存絞り込み URL 互換)。
+    function collectRawURLTags(searchParams) {
+      const raws = [];
+      for (const raw of searchParams.getAll('tag')) {
+        raws.push(raw);
+      }
+      // "tags" (複数形) はカンマ区切り。サーバの strings.Split(csv, ",") と
+      // 揃えるため、繰り返し指定があっても全値を結合して分割する。
+      for (const csv of searchParams.getAll('tags')) {
+        for (const part of String(csv).split(',')) {
+          raws.push(part);
+        }
+      }
+      return raws;
+    }
+
+    // URL の絞り込みタグ (?tag= 繰り返し + ?tags= 複数形) を「サーバ側の
+    // 正規化規則で正規化し、空・重複を畳んだ」リストとして返す。これにより
+    // set.has() / トグル判定 / カード表示が正規化済み値で一貫する
+    // (#117 codex 指摘 1 / 指摘 3)。
     function readURLTags() {
       try {
         const u = new URL(location.href);
         const out = [];
         const seen = new Set();
-        for (const raw of u.searchParams.getAll('tag')) {
+        for (const raw of collectRawURLTags(u.searchParams)) {
           const norm = normalizeTag(raw);
           if (norm === '' || seen.has(norm)) continue;
           seen.add(norm);
@@ -89,14 +113,21 @@
     }
 
     // 当該 URL の tag リストを toggle した URL を返す。tag 以外のクエリは
-    // 触らない (要件 3.2)。tag が空配列になったら "tag" パラメータ自体を
+    // 触らない (要件 3.2)。tag が空配列になったら絞り込みパラメータ自体を
     // 落とす (要件 3.3 / 2.5)。
     //
-    // 既存 URL の ?tag= は正規化済み値に畳んでから Set 化する。これにより、
-    // サーバが ?tag=Go を go として選択中にしている状態でカードの go ボタン
-    // (data-tag-normalized="go") をクリックしても、set.has("go") が true に
-    // なって正しく「解除」される (#117 codex 指摘 1)。正規化前は raw "Go" と
-    // "go" が別物扱いされ、解除ではなく ?tag=Go&tag=go の追加になっていた。
+    // 既存 URL の絞り込みタグ (?tag= 繰り返し / ?tags= 複数形) は正規化済み
+    // 値に畳んでから Set 化する。これにより、サーバが ?tag=Go を go として
+    // 選択中にしている状態でカードの go ボタン (data-tag-normalized="go") を
+    // クリックしても、set.has("go") が true になって正しく「解除」される
+    // (#117 codex 指摘 1)。
+    //
+    // 入れ直す際は、テンプレート (templates/items.html の checkbox name="tag")
+    // とサーバの pageURL が踏襲する **正準形式 ?tag= (繰り返し)** に揃える。
+    // 旧来の ?tags= 複数形は **両方とも削除**してから ?tag= で入れ直すため、
+    // ?tags=go を選択中の go をクリックして外しても ?tags=go が残らず
+    // (退行なし)、二重付与 (?tags=go&tag=go) も発生しない
+    // (#117 codex 指摘 3 / NFR 2.2)。
     function buildToggledURL(normalizedName) {
       const u = new URL(location.href);
       const set = new Set(readURLTags());
@@ -105,9 +136,10 @@
       } else {
         set.add(normalizedName);
       }
-      // tag を全部消してから入れ直す（順序を含めて URLSearchParams の
-      // 既存値ごと洗い替える）。入れ直す値は正規化済み (set の中身)。
+      // 旧形式 (?tags=) も含めて絞り込みパラメータを全消去してから、正準形式
+      // ?tag= (繰り返し) で入れ直す。これにより形式が一意に正規化される。
       u.searchParams.delete('tag');
+      u.searchParams.delete('tags');
       for (const t of set) {
         u.searchParams.append('tag', t);
       }

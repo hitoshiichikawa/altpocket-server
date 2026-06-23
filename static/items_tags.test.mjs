@@ -608,6 +608,109 @@ test('codex#1: 同一タグが大小文字で重複 (?tag=Go&tag=go) してい�
   assert.equal(rustBtn.getAttribute('aria-pressed'), 'false');
 });
 
+// --- codex 指摘 3: ?tags= 複数形 URL のタグトグル互換 ------------------
+//
+// サーバ (internal/server/server.go parseTagFilters) は ?tag= 繰り返しと
+// ?tags= 複数形 (カンマ区切り) の両形式を受理する。現実装が ?tag= しか
+// 読まないと、既存の ?tags=go URL で選択中の go をクリックしても
+// ?tags=go&tag=go になり、外しても ?tags=go が残ってサーバ側では絞り込みが
+// 継続する退行が起きる (NFR 2.2 既存絞り込み URL 互換に反する)。
+
+test('codex#3 / NFR 2.2: ?tags=go (複数形) で選択中の go をクリックすると完全に解除される (?tags=go が残らない)', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tags=go',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    buttonTags: ['go'],
+    // SSR ではサーバが ?tags=go を go として絞り込み、go が選択中で描画される。
+    selected: new Set(['go']),
+  });
+
+  await env.clickButton('go');
+  await flushMicrotasks();
+
+  const pushes = env.history.calls.filter((c) => c.kind === 'push');
+  assert.equal(pushes.length, 1);
+  const u = new URL(pushes[0].url);
+  // 解除されたので tag / tags のどちらも残ってはいけない。
+  assert.deepEqual(u.searchParams.getAll('tag'), [], 'tag は残らない');
+  assert.deepEqual(u.searchParams.getAll('tags'), [], 'tags も残らない (退行防止)');
+  // 二重付与 (?tags=go&tag=go) になっていないこと。
+  assert.equal(u.search.includes('tag'), false, '絞り込みパラメータが完全に消える');
+  // カード表示も解除される。
+  assert.equal(env.buttons[0].getAttribute('aria-pressed'), 'false');
+  assert.ok(!env.buttons[0].classList.contains('is-selected'));
+});
+
+test('codex#3 / NFR 2.2: ?tags=go,rust (複数形カンマ区切り) で選択中の rust をクリックすると go のみ残り、正準形式 ?tag= に揃う', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tags=go,rust',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    buttonTags: ['go', 'rust'],
+    selected: new Set(['go', 'rust']),
+  });
+
+  await env.clickButton('rust');
+  await flushMicrotasks();
+
+  const u = new URL(env.history.calls.filter((c) => c.kind === 'push')[0].url);
+  // 残った go は正準形式 ?tag= (繰り返し) で出力され、?tags= は消える。
+  assert.deepEqual(u.searchParams.getAll('tag'), ['go'], 'go が ?tag= 形式で残る');
+  assert.deepEqual(u.searchParams.getAll('tags'), [], '旧形式 ?tags= は残らない');
+});
+
+test('codex#3: ?tag= と ?tags= が混在 (?tag=go&tags=rust) していても両方読み取り、新規追加で重複なくマージされる', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=go&tags=rust',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    buttonTags: ['go', 'rust', 'news'],
+    selected: new Set(['go', 'rust']),
+  });
+
+  await env.clickButton('news');
+  await flushMicrotasks();
+
+  const u = new URL(env.history.calls.filter((c) => c.kind === 'push')[0].url);
+  const tags = u.searchParams.getAll('tag').sort();
+  // go (tag=) + rust (tags=) + news (新規) がマージされ、正準 ?tag= に揃う。
+  assert.deepEqual(tags, ['go', 'news', 'rust']);
+  assert.deepEqual(u.searchParams.getAll('tags'), [], '旧形式 ?tags= は残らない');
+});
+
+test('codex#3: ?tags=Go (大文字・複数形) で正規化済みボタン go をクリックすると解除になる (?tags=Go&tag=go の追加にならない)', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tags=Go',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    buttonTags: ['go'],
+    selected: new Set(['go']),
+  });
+
+  await env.clickButton('go');
+  await flushMicrotasks();
+
+  const u = new URL(env.history.calls.filter((c) => c.kind === 'push')[0].url);
+  // ?tags=Go を go として正規化したうえで解除するので、tag / tags とも残らない。
+  assert.deepEqual(u.searchParams.getAll('tag'), [], 'tag は残らない');
+  assert.deepEqual(u.searchParams.getAll('tags'), [], 'tags も残らない');
+  assert.equal(env.buttons[0].getAttribute('aria-pressed'), 'false');
+});
+
+test('codex#3: ?tags=go,Go (複数形内で大小重複) でも 1 つに畳まれ、popstate で go が選択中表示される', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tags=go,Go',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    buttonTags: ['go', 'rust'],
+    selected: new Set(),
+  });
+
+  await env.dispatchPopstate();
+  await flushMicrotasks();
+
+  const goBtn = env.buttons.find((b) => b.dataset.tagNormalized === 'go');
+  const rustBtn = env.buttons.find((b) => b.dataset.tagNormalized === 'rust');
+  assert.equal(goBtn.getAttribute('aria-pressed'), 'true', 'go,Go は go として畳まれ選択中');
+  assert.equal(rustBtn.getAttribute('aria-pressed'), 'false');
+});
+
 // --- codex 指摘 2: モバイル ボトムシートの選択中表示ズレ --------------
 
 test('codex#2 / 要件 1.4 / 5.2: モバイル ボトムシートの checkbox 変更 (Apply 前) ではカードの選択中表示を更新しない', async () => {
