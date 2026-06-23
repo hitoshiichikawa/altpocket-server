@@ -77,6 +77,17 @@ type Tag struct {
 	Count          int    `json:"count,omitempty"`
 }
 
+// TagInput is the write-side counterpart of Tag used when creating or replacing
+// item tags. Callers compute both the user-facing display Name (NFKC + trim,
+// case preserved) and the canonical NormalizedName key (NFKC + trim + lower),
+// so that the store can persist them as tags.name vs tags.normalized_name
+// respectively (Issue #115 / AC 1.3 — chips must render the original display
+// name rather than the normalized form).
+type TagInput struct {
+	Name           string
+	NormalizedName string
+}
+
 type Item struct {
 	ID               string    `json:"id"`
 	UserID           string    `json:"user_id"`
@@ -272,9 +283,18 @@ func (s *Store) ListItemsForExport(ctx context.Context, userID string) ([]Export
 	return items, rows.Err()
 }
 
-// CreateItem inserts a new item. tagNames should already be normalized for both display and key.
-// title and excerpt are optional prefill values from the extension; empty strings are valid.
-func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canonicalHash string, tagNames []string, title, excerpt string) (string, bool, error) {
+// CreateItem inserts a new item along with its tags. Each TagInput carries the
+// user-facing display Name and the canonical NormalizedName key separately. The
+// display name is persisted PER-ITEM in item_tags.display_name (Issue #115 /
+// AC 1.3), NOT in the globally shared tags.name. Because items are user-scoped,
+// item_tags rows are effectively per-user, so each user sees the exact casing /
+// display name they entered and one user's input can never leak into another
+// user's chips even when they share the same tags.normalized_name (PR #137
+// codex [high] review — multi-tenant isolation). The shared tags table is now
+// keyed only by normalized_name (the global filter identity).
+// title and excerpt are optional prefill values from the extension; empty
+// strings are valid.
+func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canonicalHash string, tagInputs []TagInput, title, excerpt string) (string, bool, error) {
 	var itemID string
 	created := false
 
@@ -308,26 +328,9 @@ func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canon
 		created = true
 	}
 
-	if created && len(tagNames) > 0 {
-		for _, name := range tagNames {
-			var tagID string
-			row = tx.QueryRow(ctx, `
-				INSERT INTO tags (name, normalized_name)
-				VALUES ($1, $2)
-				ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
-				RETURNING id
-			`, name, name)
-			if err = row.Scan(&tagID); err != nil {
-				return "", false, err
-			}
-			_, err = tx.Exec(ctx, `
-				INSERT INTO item_tags (item_id, tag_id)
-				VALUES ($1, $2)
-				ON CONFLICT DO NOTHING
-			`, itemID, tagID)
-			if err != nil {
-				return "", false, err
-			}
+	if created && len(tagInputs) > 0 {
+		if err = upsertItemTags(ctx, tx, itemID, tagInputs); err != nil {
+			return "", false, err
 		}
 	}
 
@@ -336,6 +339,45 @@ func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canon
 	}
 
 	return itemID, created, nil
+}
+
+// upsertItemTags links each TagInput to itemID, persisting the user-entered
+// display name into item_tags.display_name (per-item / per-user) while keying
+// the shared tags row only by normalized_name. Shared by CreateItem and
+// PatchItem so both write paths store the display name the same way.
+//
+// The tags row is upserted on the shared normalized_name; tags.name is written
+// best-effort on first insert but is NOT relied upon for display (it stays as a
+// legacy column). The authoritative display name lives in item_tags.display_name
+// so that a casing change or a same-normalized_name collision across users never
+// overwrites another user's chip label (PR #137 codex [high] review / AC 1.3).
+//
+// On (item_id, tag_id) conflict the display_name IS updated so that re-tagging
+// the same item with a different casing follows the latest user input.
+func upsertItemTags(ctx context.Context, tx pgx.Tx, itemID string, tagInputs []TagInput) error {
+	for _, ti := range tagInputs {
+		var tagID string
+		// ON CONFLICT performs a no-op UPDATE (normalized_name=tags.normalized_name)
+		// purely so RETURNING fires for the existing shared row. We intentionally
+		// do NOT overwrite tags.name here; the display name is per-user and lives
+		// in item_tags.display_name (set below).
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO tags (name, normalized_name)
+			VALUES ($1, $2)
+			ON CONFLICT (normalized_name) DO UPDATE SET normalized_name=tags.normalized_name
+			RETURNING id
+		`, ti.Name, ti.NormalizedName).Scan(&tagID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO item_tags (item_id, tag_id, display_name)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (item_id, tag_id) DO UPDATE SET display_name=EXCLUDED.display_name
+		`, itemID, tagID, ti.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int, q string, tags []string, sort string) ([]ItemListRow, Pagination, error) {
@@ -391,9 +433,9 @@ func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int,
 	selectSQL := fmt.Sprintf(`
 		SELECT i.id, i.user_id, i.url, i.canonical_url, i.canonical_hash, i.title, i.excerpt,
 			i.fetch_status, COALESCE(i.fetch_error,''), i.created_at, i.refetch_requested,
-			COALESCE(array_agg(DISTINCT t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_ids,
-			COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tag_names,
-			COALESCE(array_agg(DISTINCT t.normalized_name) FILTER (WHERE t.normalized_name IS NOT NULL), '{}') AS tag_norms,
+			COALESCE(array_agg(t.id ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_ids,
+			COALESCE(array_agg(it.display_name ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_names,
+			COALESCE(array_agg(t.normalized_name ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_norms,
 			COALESCE(
 				similarity(i.title, $%d) +
 				similarity(i.excerpt, $%d) +
@@ -455,9 +497,9 @@ func (s *Store) GetItemDetail(ctx context.Context, userID, itemID string) (ItemD
 		SELECT i.id, i.user_id, i.url, i.canonical_url, i.canonical_hash, i.title, i.excerpt,
 			i.fetch_status, COALESCE(i.fetch_error,''), i.created_at, i.refetch_requested,
 			COALESCE(c.content_full,''),
-			COALESCE(array_agg(DISTINCT t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_ids,
-			COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tag_names,
-			COALESCE(array_agg(DISTINCT t.normalized_name) FILTER (WHERE t.normalized_name IS NOT NULL), '{}') AS tag_norms
+			COALESCE(array_agg(t.id ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_ids,
+			COALESCE(array_agg(it.display_name ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_names,
+			COALESCE(array_agg(t.normalized_name ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_norms
 		FROM items i
 		LEFT JOIN item_contents c ON c.item_id=i.id
 		LEFT JOIN item_tags it ON it.item_id=i.id
@@ -532,9 +574,11 @@ func (s *Store) RequestRefetch(ctx context.Context, userID, itemID string) error
 }
 
 // PatchItem updates an item's title and/or tags atomically within a transaction.
-// Pass nil for title or tags to skip updating that field.
+// Pass nil for title or tags to skip updating that field. Each TagInput keeps
+// the display Name and the canonical NormalizedName key separated so that the
+// chip rendering preserves the original casing (Issue #115 / AC 1.3).
 // Returns the current title and tags after the update.
-func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *string, tags *[]string) (string, []Tag, error) {
+func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *string, tags *[]TagInput) (string, []Tag, error) {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		return "", nil, err
@@ -571,23 +615,13 @@ func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *str
 			return "", nil, err
 		}
 
-		for _, name := range *tags {
-			var tagID string
-			if err = tx.QueryRow(ctx, `
-				INSERT INTO tags (name, normalized_name)
-				VALUES ($1, $2)
-				ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
-				RETURNING id
-			`, name, name).Scan(&tagID); err != nil {
-				return "", nil, err
-			}
-			if _, err = tx.Exec(ctx, `
-				INSERT INTO item_tags (item_id, tag_id)
-				VALUES ($1, $2)
-				ON CONFLICT DO NOTHING
-			`, itemID, tagID); err != nil {
-				return "", nil, err
-			}
+		// Persist the user-entered display name per-item (item_tags.display_name)
+		// so that a casing change on edit is reflected for THIS user without
+		// touching the shared tags row — and therefore without leaking into
+		// other users that share the same normalized_name (PR #137 codex [high]
+		// review / AC 1.3).
+		if err = upsertItemTags(ctx, tx, itemID, *tags); err != nil {
+			return "", nil, err
 		}
 
 		_, err = tx.Exec(ctx, `
@@ -599,9 +633,10 @@ func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *str
 		}
 	}
 
-	// Fetch current tags
+	// Fetch current tags. The display name comes from this item's own
+	// item_tags.display_name (per-user), not the shared tags.name.
 	rows, err := tx.Query(ctx, `
-		SELECT t.id, t.name, t.normalized_name
+		SELECT t.id, it.display_name, t.normalized_name
 		FROM tags t
 		JOIN item_tags it ON it.tag_id=t.id
 		WHERE it.item_id=$1
@@ -631,9 +666,11 @@ func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *str
 }
 
 // ReplaceItemTags replaces all tags for an item. This is a wrapper around PatchItem
-// that only updates tags, maintaining backward compatibility.
-func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagNames []string) ([]Tag, error) {
-	_, tags, err := s.PatchItem(ctx, userID, itemID, nil, &tagNames)
+// that only updates tags. Each TagInput carries the display Name and the
+// canonical NormalizedName key separately so that chip rendering keeps the
+// original casing (Issue #115 / AC 1.3).
+func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagInputs []TagInput) ([]Tag, error) {
+	_, tags, err := s.PatchItem(ctx, userID, itemID, nil, &tagInputs)
 	return tags, err
 }
 
@@ -664,6 +701,62 @@ func (s *Store) ListTagsWithCount(ctx context.Context, userID string) ([]Tag, er
 	return s.ListTagsWithCountFiltered(ctx, userID, "", nil)
 }
 
+// TagsByNormalizedNames returns Tag rows whose `normalized_name` is in the
+// supplied slice and which appear on at least one item owned by userID. Names
+// that do not exist, or that exist only on other users' items, are silently
+// absent from the result.
+//
+// Used by the /ui/items fragment renderer (Issue #115) to resolve active filter
+// chip display names when the full Tags facet query is skipped. AC 1.3
+// requires chips to show the original user-entered name (e.g. "Go Lang") even
+// when filter results are zero, so the handler queries the tag rows directly
+// rather than depending on items[*].Tags or the facet aggregate.
+//
+// The lookup is intentionally cheap — items / item_tags are already joined by
+// the rest of the items handler — and is scoped by user_id. The display name is
+// resolved from the viewer's OWN item_tags.display_name (per-user), never from
+// the shared tags.name, so another user's display name can never leak into the
+// current viewer's chip even when the same normalized_name exists across users
+// (PR #137 codex [high] review — multi-tenant isolation / AC 1.3).
+//
+// A user may have the same normalized_name on several items with slightly
+// different display names; MIN(display_name) picks one deterministically so the
+// result is one Tag per normalized_name and is stable across requests.
+func (s *Store) TagsByNormalizedNames(ctx context.Context, userID string, normalizedNames []string) ([]Tag, error) {
+	if len(normalizedNames) == 0 {
+		return nil, nil
+	}
+	rows, err := s.DB.Query(ctx, `
+		SELECT t.id, MIN(it.display_name) AS display_name, t.normalized_name
+		FROM tags t
+		JOIN item_tags it ON it.tag_id = t.id
+		JOIN items i ON i.id = it.item_id
+		WHERE i.user_id = $1 AND t.normalized_name = ANY($2)
+		GROUP BY t.id, t.normalized_name
+	`, userID, normalizedNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []Tag
+	for rows.Next() {
+		var t Tag
+		if err := rows.Scan(&t.ID, &t.Name, &t.NormalizedName); err != nil {
+			return nil, err
+		}
+		tags = append(tags, t)
+	}
+	return tags, rows.Err()
+}
+
+// ListTagsWithCountFiltered returns the sidebar tag facet (tag + item count)
+// for the current user's items matching the search/filter. The displayed Name
+// is resolved from the viewer's own item_tags.display_name (per-user), so the
+// sidebar label matches the user's entered casing and never inherits another
+// user's display name even when a normalized_name is shared (PR #137 codex
+// [high] review / AC 1.3). MIN(display_name) picks one deterministically when
+// the user has the tag on several items with differing casing.
 func (s *Store) ListTagsWithCountFiltered(ctx context.Context, userID, q string, selectedTags []string) ([]Tag, error) {
 	where := []string{"i.user_id = $1"}
 	args := []interface{}{userID}
@@ -697,11 +790,11 @@ func (s *Store) ListTagsWithCountFiltered(ctx context.Context, userID, q string,
 			LEFT JOIN tags t ON t.id=it.tag_id
 			WHERE %s
 		)
-		SELECT t.id, t.name, t.normalized_name, COUNT(DISTINCT it.item_id) AS count
+		SELECT t.id, MIN(it.display_name) AS display_name, t.normalized_name, COUNT(DISTINCT it.item_id) AS count
 		FROM filtered_items fi
 		JOIN item_tags it ON it.item_id = fi.id
 		JOIN tags t ON t.id = it.tag_id
-		GROUP BY t.id
+		GROUP BY t.id, t.normalized_name
 		ORDER BY t.normalized_name
 	`, whereSQL)
 

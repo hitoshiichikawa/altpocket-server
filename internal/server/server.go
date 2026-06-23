@@ -649,7 +649,7 @@ func (s *Server) handleUpdateItemTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	itemID := chi.URLParam(r, "id")
-	tags, err := s.store.ReplaceItemTags(r.Context(), user.ID, itemID, normalizeTagNames(req.Tags))
+	tags, err := s.store.ReplaceItemTags(r.Context(), user.ID, itemID, normalizeTagInputs(req.Tags))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
@@ -692,15 +692,17 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 		req.Title = &trimmed
 	}
 
-	// Normalize tags if provided
-	var normalizedTags *[]string
+	// Normalize tags if provided. We pair the original display name with the
+	// canonical normalized key (TagInput) so the chip column can render the
+	// user-entered casing (Issue #115 / AC 1.3).
+	var tagInputs *[]store.TagInput
 	if req.Tags != nil {
-		nt := normalizeTagNames(*req.Tags)
-		normalizedTags = &nt
+		ti := normalizeTagInputs(*req.Tags)
+		tagInputs = &ti
 	}
 
 	itemID := chi.URLParam(r, "id")
-	title, tags, err := s.store.PatchItem(r.Context(), user.ID, itemID, req.Title, normalizedTags)
+	title, tags, err := s.store.PatchItem(r.Context(), user.ID, itemID, req.Title, tagInputs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
@@ -756,30 +758,86 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 	// fragment path skips this query because the sidebar is not re-rendered
 	// on debounce-driven swaps and the user's selected tag chips are kept
 	// intact by client-side JS.
-	var tags any
+	//
+	// Both paths must additionally resolve the active filters' user-entered
+	// display names directly from the tags table when tag filters are present.
+	// The facet aggregate (ListTagsWithCountFiltered) only surfaces tags that
+	// appear in the *filtered* result set, so a tag AND-condition that yields
+	// zero items returns an empty facet. Without the direct lookup the active
+	// filter chips would degrade to the normalized lowercase form for such
+	// zero-result URLs — violating AC 1.3 (chips show the original display
+	// name) and AC 4.5 (direct URL open matches the query). The facet is kept
+	// as the higher-priority source so it still wins for its canonical casing
+	// on non-empty results; the direct lookup only fills the gaps
+	// (Issue #115 round-3 review).
+	var tags []store.Tag
+	var tagsForLookup []store.Tag
 	if !fragmentOnly {
-		t, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
-		tags = t
+		facet, err := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
+		if err != nil {
+			s.logger.Warn("items_tag_facet_failed",
+				slog.String("user_id", user.ID),
+				slog.String("request_id", s.requestID(r.Context())),
+				slog.String("error", err.Error()))
+		}
+		tags = facet
+		tagsForLookup = facet
+	}
+	if len(tagFilters) > 0 {
+		named, err := s.store.TagsByNormalizedNames(r.Context(), user.ID, tagFilters)
+		if err != nil {
+			// Surface the error in logs so chip/sidebar display-name fallback
+			// to the normalized form is observable (round-6 review: AC 1.3 /
+			// 4.5 failures previously degraded silently).
+			s.logger.Warn("items_active_tag_lookup_failed",
+				slog.String("user_id", user.ID),
+				slog.String("request_id", s.requestID(r.Context())),
+				slog.String("error", err.Error()))
+		}
+		// Facet entries (when present) keep priority; the direct lookup is
+		// appended so buildActiveTagFilters' earlier-source-wins dedup uses it
+		// only for filters the facet did not surface (e.g. zero-result tags).
+		tagsForLookup = mergeTagDisplaySources(tagsForLookup, named)
+		// For full-page renders the sidebar Tags facet must also surface the
+		// active filter tags so the checkbox states match the chips and the
+		// canonical URL (Req 1.5 / 4.1). Zero-result tag AND-conditions cause
+		// ListTagsWithCountFiltered to return an empty facet, so without this
+		// merge the user sees a chip and the URL, but no checked checkbox to
+		// uncheck. mergeSidebarFacet appends only tags missing from the facet
+		// with Count=0 to avoid double-counting.
+		if !fragmentOnly {
+			tags = mergeSidebarFacet(tags, named, tagFilters)
+		}
 	}
 
+	// Active filter chips shown above the item list (Issue #115). The display
+	// name is resolved from the Tags facet (full-page) merged with the direct
+	// tag lookup (both paths when filters are present) / the items' own Tags
+	// (fallback) so the chip shows the user-entered name rather than the
+	// normalized lowercase form even for zero-result filters. Tags that cannot
+	// be resolved fall back to their normalized name as a last resort.
+	activeTagFilters := buildActiveTagFilters(tagFilters, tagsForLookup, items, r.URL)
+
 	data := map[string]interface{}{
-		"Title":          "記事一覧",
-		"User":           user,
-		"ActiveNav":      "items",
-		"Items":          items,
-		"Tags":           tags,
-		"SelectedTags":   selectedTagSet(tagFilters),
-		"Page":           pag.Page,
-		"PerPage":        pag.PerPage,
-		"Total":          pag.Total,
-		"TotalPages":     max(1, (pag.Total+pag.PerPage-1)/pag.PerPage),
-		"Query":          q,
-		"Sort":           defaultSort(sort),
-		"PerPageOptions": []int{10, 20, 30, 40, 50},
-		"PrevURL":        pageURL(r.URL, pag.Page-1),
-		"NextURL":        pageURL(r.URL, pag.Page+1),
-		"CSRFToken":      s.csrfFromContext(r.Context()),
-		"QuickAddNotice": quickAddNotice(r.URL.Query().Get("quick_add")),
+		"Title":            "記事一覧",
+		"User":             user,
+		"ActiveNav":        "items",
+		"Items":            items,
+		"Tags":             tags,
+		"SelectedTags":     selectedTagSet(tagFilters),
+		"ActiveTagFilters": activeTagFilters,
+		"ClearAllTagsURL":  buildClearAllTagsURL(r.URL),
+		"Page":             pag.Page,
+		"PerPage":          pag.PerPage,
+		"Total":            pag.Total,
+		"TotalPages":       max(1, (pag.Total+pag.PerPage-1)/pag.PerPage),
+		"Query":            q,
+		"Sort":             defaultSort(sort),
+		"PerPageOptions":   []int{10, 20, 30, 40, 50},
+		"PrevURL":          pageURL(r.URL, pag.Page-1),
+		"NextURL":          pageURL(r.URL, pag.Page+1),
+		"CSRFToken":        s.csrfFromContext(r.Context()),
+		"QuickAddNotice":   quickAddNotice(r.URL.Query().Get("quick_add")),
 	}
 
 	if fragmentOnly {
@@ -1396,8 +1454,8 @@ func (s *Server) createItem(ctx context.Context, userID, rawURL string, rawTags 
 		return "", false, errInvalidURL
 	}
 
-	normTags := normalizeTagNames(rawTags)
-	itemID, created, err := s.store.CreateItem(ctx, userID, rawURL, canonicalURL, canonicalHash, normTags, title, excerpt)
+	tagInputs := normalizeTagInputs(rawTags)
+	itemID, created, err := s.store.CreateItem(ctx, userID, rawURL, canonicalURL, canonicalHash, tagInputs, title, excerpt)
 	if err != nil {
 		return "", false, err
 	}
@@ -1428,11 +1486,39 @@ func normalizeTagNames(rawTags []string) []string {
 	return normTags
 }
 
+// normalizeTagInputs is the write-side counterpart of normalizeTagNames: it
+// preserves the user-entered display Name alongside the canonical
+// NormalizedName key, deduping by normalized key. The first occurrence of a
+// given normalized form wins the display Name (Issue #115 / AC 1.3 — chip must
+// show original "Go Lang" instead of normalized "go lang").
+func normalizeTagInputs(rawTags []string) []store.TagInput {
+	inputs := make([]store.TagInput, 0, len(rawTags))
+	seen := map[string]struct{}{}
+	for _, t := range rawTags {
+		norm := tag.Normalize(t)
+		if norm == "" {
+			continue
+		}
+		if _, ok := seen[norm]; ok {
+			continue
+		}
+		seen[norm] = struct{}{}
+		inputs = append(inputs, store.TagInput{
+			Name:           tag.DisplayName(t),
+			NormalizedName: norm,
+		})
+	}
+	return inputs
+}
+
+// parseTagInput splits a user-entered tag string (comma / semicolon / newline
+// delimited) into raw tokens without normalizing. Display-name preservation is
+// performed downstream by normalizeTagInputs so that the original casing
+// reaches tags.name (Issue #115 / AC 1.3).
 func parseTagInput(v string) []string {
-	parts := strings.FieldsFunc(v, func(r rune) bool {
+	return strings.FieldsFunc(v, func(r rune) bool {
 		return r == ',' || r == ';' || r == '\n' || r == '\r'
 	})
-	return normalizeTagNames(parts)
 }
 
 func parseTagFilters(q url.Values) []string {
@@ -1450,6 +1536,181 @@ func selectedTagSet(tags []string) map[string]bool {
 		selected[t] = true
 	}
 	return selected
+}
+
+// ActiveTagFilter is one chip shown above the items list (Issue #115).
+//
+//   - Name: original display name as entered by the user (or normalized form
+//     if no source can resolve a display name)
+//   - NormalizedName: canonical form used by the server filter and the URL
+//   - RemoveURL: URL with this single tag removed from the filter set,
+//     preserving every other query parameter (q, sort, per_page, page).
+//     Used as the chip's `<a href>` so the SSR fallback works when JS is
+//     disabled (NFR 2.1) and as the canonical target the JS path also
+//     navigates to via history.pushState (Req 5.1 / 5.2).
+type ActiveTagFilter struct {
+	Name           string
+	NormalizedName string
+	RemoveURL      string
+}
+
+// mergeSidebarFacet returns the sidebar tag facet extended with any active
+// filter tags that the facet did not surface (typically zero-result tag
+// AND-conditions, where ListTagsWithCountFiltered returns an empty slice).
+//
+// Direct-lookup tags appended this way carry Count=0 because they were not
+// represented in the filtered result set. Without this merge the sidebar would
+// drop the checkbox for filtered-but-empty tags, so chips would be visible
+// (with the user-entered display name) while the sidebar would render no
+// matching checkbox to uncheck — breaking Req 1.5 / 4.1 ("chip / sidebar
+// checked / URL must agree") for round-6 review of PR #137.
+//
+// The facet's canonical ordering is preserved; appended entries follow in the
+// order the tag filters were supplied so that the UI surfaces them as a
+// trailing group.
+func mergeSidebarFacet(facet, lookup []store.Tag, tagFilters []string) []store.Tag {
+	if len(tagFilters) == 0 || len(lookup) == 0 {
+		return facet
+	}
+	have := make(map[string]struct{}, len(facet))
+	for _, t := range facet {
+		have[t.NormalizedName] = struct{}{}
+	}
+	byNorm := make(map[string]store.Tag, len(lookup))
+	for _, t := range lookup {
+		byNorm[t.NormalizedName] = t
+	}
+	out := make([]store.Tag, 0, len(facet)+len(tagFilters))
+	out = append(out, facet...)
+	for _, norm := range tagFilters {
+		if _, ok := have[norm]; ok {
+			continue
+		}
+		t, ok := byNorm[norm]
+		if !ok {
+			continue
+		}
+		t.Count = 0
+		out = append(out, t)
+		have[norm] = struct{}{}
+	}
+	return out
+}
+
+// mergeTagDisplaySources concatenates two Tag slices used for active-filter
+// chip display-name resolution, with `primary` kept ahead of `secondary`.
+//
+// buildActiveTagFilters resolves display names with an earlier-source-wins
+// dedup, so ordering here encodes priority: the filtered facet (primary) keeps
+// its canonical user-entered casing for tags it surfaced, while the direct
+// TagsByNormalizedNames lookup (secondary) fills in display names for filters
+// the facet did not include — notably zero-result tag AND-conditions where the
+// facet is empty (Issue #115). Either argument may be nil.
+func mergeTagDisplaySources(primary, secondary []store.Tag) []store.Tag {
+	if len(secondary) == 0 {
+		return primary
+	}
+	if len(primary) == 0 {
+		return secondary
+	}
+	merged := make([]store.Tag, 0, len(primary)+len(secondary))
+	merged = append(merged, primary...)
+	merged = append(merged, secondary...)
+	return merged
+}
+
+// buildActiveTagFilters constructs the chip list for the active filter row.
+//
+// Display name resolution priority:
+//  1. The Tags facet (full-page renders) — covers the common case where the
+//     filtered result contains at least one matching tag and the sidebar
+//     facet has been computed.
+//  2. The items' own Tags (fragment renders skip the facet query for
+//     performance) — covers the fragment path where the items returned for
+//     the current page necessarily include each active filter tag.
+//  3. The normalized name itself — fallback for zero-result filters where
+//     neither source resolves the display name.
+//
+// The RemoveURL field is a fully-formed query string with only the target
+// tag removed (and the legacy `?tags=` plural form fully dropped to keep the
+// canonical `?tag=<normalized>` repetition shape per Req 5.1).
+func buildActiveTagFilters(tagFilters []string, facetTags []store.Tag, items []store.ItemListRow, currentURL *url.URL) []ActiveTagFilter {
+	if len(tagFilters) == 0 {
+		return nil
+	}
+	// Build a normalized -> display name lookup. Earlier sources win so that
+	// the facet (which carries the canonical user-entered casing for tags
+	// surfaced through the sidebar) takes priority over the per-item Tags.
+	display := make(map[string]string, len(tagFilters))
+	for _, t := range facetTags {
+		if _, ok := display[t.NormalizedName]; !ok && t.Name != "" {
+			display[t.NormalizedName] = t.Name
+		}
+	}
+	for _, it := range items {
+		for _, t := range it.Tags {
+			if _, ok := display[t.NormalizedName]; !ok && t.Name != "" {
+				display[t.NormalizedName] = t.Name
+			}
+		}
+	}
+
+	out := make([]ActiveTagFilter, 0, len(tagFilters))
+	for _, norm := range tagFilters {
+		name := display[norm]
+		if name == "" {
+			name = norm
+		}
+		out = append(out, ActiveTagFilter{
+			Name:           name,
+			NormalizedName: norm,
+			RemoveURL:      buildTagRemovedURL(currentURL, norm, tagFilters),
+		})
+	}
+	return out
+}
+
+// buildTagRemovedURL returns a URL with the given normalized tag removed
+// from the current filter set, preserving every other query parameter
+// including `page` (Req 5.2). Both the canonical `?tag=` repetition and the
+// legacy `?tags=` plural form are stripped and the remaining tags are
+// re-emitted in the canonical form (Req 5.1). When the resulting set is
+// empty no `tag` / `tags` parameter is written (Req 5.3).
+func buildTagRemovedURL(currentURL *url.URL, removeNorm string, current []string) string {
+	u := cloneURL(currentURL)
+	q := u.Query()
+	q.Del("tag")
+	q.Del("tags")
+	for _, t := range current {
+		if t == removeNorm {
+			continue
+		}
+		q.Add("tag", t)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// buildClearAllTagsURL returns a URL with every tag filter parameter
+// removed (Req 3.6, 5.3). All other query parameters are preserved
+// (Req 5.2), including `page`.
+func buildClearAllTagsURL(currentURL *url.URL) string {
+	u := cloneURL(currentURL)
+	q := u.Query()
+	q.Del("tag")
+	q.Del("tags")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// cloneURL returns a shallow copy of u that callers may mutate (RawQuery,
+// query values) without affecting the caller's pointer.
+func cloneURL(u *url.URL) *url.URL {
+	if u == nil {
+		return &url.URL{}
+	}
+	c := *u
+	return &c
 }
 
 func normalizeWhitespace(v string) string {

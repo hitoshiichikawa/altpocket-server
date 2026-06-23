@@ -430,3 +430,222 @@ func TestItemsTagSelectedState(t *testing.T) {
 		}
 	})
 }
+
+// testActiveFilter is a minimal stand-in for the server.ActiveTagFilter type
+// used to drive the SSR template tests for Issue #115 without depending on
+// the server package.
+type testActiveFilter struct {
+	Name           string
+	NormalizedName string
+	RemoveURL      string
+}
+
+// renderItemsWithActiveFilters renders the full /ui/items page with the
+// supplied ActiveTagFilters list so the template's chip row can be
+// asserted. Items is intentionally non-empty so the chip row is rendered
+// above a normal list (Req 1.1: above the result list).
+func renderItemsWithActiveFilters(t *testing.T, active []testActiveFilter, clearAllURL string) string {
+	t.Helper()
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	r, err := New("../../templates")
+	if err != nil {
+		t.Fatalf("failed to create renderer: %v", err)
+	}
+	data := map[string]interface{}{
+		"Title": "記事一覧",
+		"Items": []testItemRow{{
+			ID:          "item-x",
+			URL:         "https://example.com/x",
+			Title:       "x",
+			Excerpt:     "e",
+			FetchStatus: "completed",
+			CreatedAt:   now,
+		}},
+		"Tags":             []testItemTag{},
+		"SelectedTags":     map[string]bool{},
+		"ActiveTagFilters": active,
+		"ClearAllTagsURL":  clearAllURL,
+		"Page":             1,
+		"PerPage":          30,
+		"Total":            1,
+		"TotalPages":       1,
+		"Query":            "",
+		"Sort":             "newest",
+		"PerPageOptions":   []int{10, 20, 30, 40, 50},
+		"PrevURL":          "",
+		"NextURL":          "",
+	}
+	rr := httptest.NewRecorder()
+	if err := r.Render(rr, "items", data); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	return rr.Body.String()
+}
+
+// TestActiveFiltersRendering covers Issue #115 SSR contract:
+//
+//   - Req 1.1: chip row is rendered above the items list when at least one
+//     filter is active
+//   - Req 1.2: chip row is NOT rendered when there are no active filters
+//   - Req 1.3: each chip carries the display name (.Name)
+//   - Req 1.4: each chip is itself the remove control (the `<a>` element)
+//   - Req 3.1: a "Clear all" control is rendered next to the chip list
+//   - Req 5.1: each chip's href is the canonical RemoveURL produced server-side
+//   - Req 6.1 / 6.4 / 6.5: chips and the clear-all control are reachable by
+//     keyboard (they are `<a href>`) and carry accessible names via
+//     aria-label
+//   - NFR 2.1: the SSR fallback works without JS (the chip and the clear-all
+//     control are `<a href>` elements that perform full-page navigation on
+//     plain click when JS is disabled)
+func TestActiveFiltersRendering(t *testing.T) {
+	t.Run("Req 1.2: zero active filters does not render chip row", func(t *testing.T) {
+		body := renderItemsWithActiveFilters(t, nil, "/ui/items")
+		if strings.Contains(body, `data-active-filters`) {
+			t.Errorf("expected no data-active-filters marker when no filters are active, got body containing it")
+		}
+		if strings.Contains(body, `data-active-filter-chip`) {
+			t.Errorf("expected no chips when no filters are active")
+		}
+		if strings.Contains(body, `active-filter-clear-all`) {
+			t.Errorf("expected no clear-all control when no filters are active")
+		}
+	})
+
+	t.Run("Req 1.1 / 1.3 / 1.4: one active filter renders one chip with display name and remove control", func(t *testing.T) {
+		body := renderItemsWithActiveFilters(t, []testActiveFilter{
+			{Name: "Go", NormalizedName: "go", RemoveURL: "/ui/items"},
+		}, "/ui/items")
+		if !strings.Contains(body, `data-active-filters`) {
+			t.Errorf("expected data-active-filters marker, got:\n%s", body)
+		}
+		if c := strings.Count(body, `data-active-filter-chip`); c != 1 {
+			t.Errorf("expected 1 chip, got %d:\n%s", c, body)
+		}
+		// Display name is rendered.
+		if !strings.Contains(body, `>Go<`) {
+			t.Errorf("expected display name 'Go' to appear in chip, got:\n%s", body)
+		}
+		// Normalized name is exposed for JS sync (data-tag-normalized).
+		if !strings.Contains(body, `data-tag-normalized="go"`) {
+			t.Errorf("expected data-tag-normalized=\"go\", got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 5.1 / NFR 2.1: chip is an <a href> pointing at the RemoveURL", func(t *testing.T) {
+		body := renderItemsWithActiveFilters(t, []testActiveFilter{
+			{Name: "Go", NormalizedName: "go", RemoveURL: "/ui/items?tag=rust"},
+		}, "/ui/items")
+		// The chip's href should be the RemoveURL exactly.
+		if !strings.Contains(body, `href="/ui/items?tag=rust"`) {
+			t.Errorf("expected chip href to be the RemoveURL, got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 6.4: chip carries aria-label with both the tag display name and the 'unset' intent", func(t *testing.T) {
+		body := renderItemsWithActiveFilters(t, []testActiveFilter{
+			{Name: "Go", NormalizedName: "go", RemoveURL: "/ui/items"},
+		}, "/ui/items")
+		// The aria-label must include the display name AND a phrase
+		// conveying the intent that activating the control will unset
+		// the filter. The exact Japanese wording is checked because we
+		// rely on it for screen-reader UX.
+		if !strings.Contains(body, `aria-label="フィルタ解除: Go"`) {
+			t.Errorf("expected accessible name with tag display name and unset intent, got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 3.1: clear-all control is rendered when there is at least one chip", func(t *testing.T) {
+		body := renderItemsWithActiveFilters(t, []testActiveFilter{
+			{Name: "Go", NormalizedName: "go", RemoveURL: "/ui/items"},
+		}, "/ui/items?q=keep")
+		if !strings.Contains(body, `data-active-filter-clear-all`) {
+			t.Errorf("expected data-active-filter-clear-all marker, got:\n%s", body)
+		}
+		if !strings.Contains(body, `href="/ui/items?q=keep"`) {
+			t.Errorf("expected clear-all href to be ClearAllTagsURL, got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 6.5: clear-all control carries an accessible name describing 'unset all'", func(t *testing.T) {
+		body := renderItemsWithActiveFilters(t, []testActiveFilter{
+			{Name: "Go", NormalizedName: "go", RemoveURL: "/ui/items"},
+		}, "/ui/items")
+		if !strings.Contains(body, `aria-label="すべてのフィルタを解除"`) {
+			t.Errorf("expected clear-all aria-label, got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 1.1 / 1.5: multiple active filters render multiple chips in order", func(t *testing.T) {
+		body := renderItemsWithActiveFilters(t, []testActiveFilter{
+			{Name: "Go", NormalizedName: "go", RemoveURL: "/ui/items?tag=rust"},
+			{Name: "Rust", NormalizedName: "rust", RemoveURL: "/ui/items?tag=go"},
+		}, "/ui/items")
+		if c := strings.Count(body, `data-active-filter-chip`); c != 2 {
+			t.Errorf("expected 2 chips, got %d:\n%s", c, body)
+		}
+		// Order is preserved (Go appears before Rust).
+		goIdx := strings.Index(body, `data-tag-normalized="go"`)
+		rustIdx := strings.Index(body, `data-tag-normalized="rust"`)
+		if goIdx < 0 || rustIdx < 0 {
+			t.Fatalf("expected both chips to be rendered, got go=%d rust=%d", goIdx, rustIdx)
+		}
+		if goIdx > rustIdx {
+			t.Errorf("expected go to appear before rust in DOM order, got go=%d rust=%d", goIdx, rustIdx)
+		}
+	})
+
+	t.Run("Req 1.1 (placement): chip row appears above the items list", func(t *testing.T) {
+		body := renderItemsWithActiveFilters(t, []testActiveFilter{
+			{Name: "Go", NormalizedName: "go", RemoveURL: "/ui/items"},
+		}, "/ui/items")
+		filterIdx := strings.Index(body, `data-active-filters`)
+		itemIdx := strings.Index(body, `id="item-title-item-x"`)
+		if filterIdx < 0 || itemIdx < 0 {
+			t.Fatalf("expected both chip row and item card to be rendered, got filter=%d item=%d", filterIdx, itemIdx)
+		}
+		if filterIdx > itemIdx {
+			t.Errorf("expected chip row to appear before item card in DOM order, got filter=%d item=%d", filterIdx, itemIdx)
+		}
+	})
+}
+
+// TestActiveFiltersFragmentRendering covers Req 4.3 / 4.5: the fragment
+// returned by the fragment endpoint must also contain the chip row so the
+// client side `region.innerHTML = html` swap keeps the chip row in sync
+// with the URL.
+func TestActiveFiltersFragmentRendering(t *testing.T) {
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	r, err := New("../../templates")
+	if err != nil {
+		t.Fatalf("failed to create renderer: %v", err)
+	}
+	data := map[string]interface{}{
+		"Items": []testItemRow{{
+			ID:          "item-frag",
+			URL:         "https://example.com/a",
+			Title:       "Fragment記事",
+			Excerpt:     "本文抜粋",
+			FetchStatus: "completed",
+			CreatedAt:   now,
+		}},
+		"ActiveTagFilters": []testActiveFilter{
+			{Name: "Go", NormalizedName: "go", RemoveURL: "/ui/items"},
+		},
+		"ClearAllTagsURL": "/ui/items",
+		"Page":            1,
+		"TotalPages":      1,
+		"PrevURL":         "",
+		"NextURL":         "",
+	}
+	rr := httptest.NewRecorder()
+	if err := r.RenderFragment(rr, "items_list", data); err != nil {
+		t.Fatalf("RenderFragment error: %v", err)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `data-active-filters`) {
+		t.Errorf("expected fragment to include chip row marker, got:\n%s", body)
+	}
+	if !strings.Contains(body, `data-tag-normalized="go"`) {
+		t.Errorf("expected fragment to include chip for go, got:\n%s", body)
+	}
+}

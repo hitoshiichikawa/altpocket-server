@@ -53,6 +53,7 @@ psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/003_extension_refresh_tokens.sql
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/004_mcp_api_keys.sql
 psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/005_invalidate_legacy_refresh_tokens.sql
+psql "postgres://altpocket:altpocket@localhost:5432/altpocket?sslmode=disable" -f migrations/006_item_tag_display_name.sql
 
 docker compose up --build api worker
 ```

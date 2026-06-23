@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"altpocket/internal/store"
 )
 
 func TestPerPageValue(t *testing.T) {
@@ -82,13 +84,65 @@ func TestWantsItemsFragment(t *testing.T) {
 }
 
 func TestParseTagInput(t *testing.T) {
+	// parseTagInput now only splits — normalization and dedup happen downstream
+	// in normalizeTagInputs so the original casing reaches tags.name
+	// (Issue #115 / AC 1.3).
 	got := parseTagInput(" Go,news;go\nweb ")
-	if len(got) != 3 {
-		t.Fatalf("expected 3 tags, got %d", len(got))
+	if len(got) != 4 {
+		t.Fatalf("expected 4 raw tokens (no dedup), got %d: %#v", len(got), got)
 	}
-	if got[0] != "go" || got[1] != "news" || got[2] != "web" {
-		t.Fatalf("unexpected tags: %#v", got)
+	if got[0] != " Go" || got[1] != "news" || got[2] != "go" || got[3] != "web " {
+		t.Fatalf("unexpected raw tokens: %#v", got)
 	}
+}
+
+func TestNormalizeTagInputs(t *testing.T) {
+	// normalizeTagInputs subsumes the previous combined behaviour of
+	// parseTagInput: trim+NFKC for the display Name, lowercase NormalizedName
+	// for the key, dedup by normalized key with first-display-wins (Issue #115
+	// / AC 1.3).
+	t.Run("preserves user casing while normalizing the key", func(t *testing.T) {
+		got := normalizeTagInputs([]string{"Go Lang", "Rust-Lang"})
+		if len(got) != 2 {
+			t.Fatalf("expected 2 inputs, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Go Lang" || got[0].NormalizedName != "go lang" {
+			t.Errorf("got[0] = (%q, %q), want (Go Lang, go lang)", got[0].Name, got[0].NormalizedName)
+		}
+		if got[1].Name != "Rust-Lang" || got[1].NormalizedName != "rust-lang" {
+			t.Errorf("got[1] = (%q, %q), want (Rust-Lang, rust-lang)", got[1].Name, got[1].NormalizedName)
+		}
+	})
+
+	t.Run("dedups by normalized key and keeps the first display", func(t *testing.T) {
+		got := normalizeTagInputs([]string{"Go Lang", "go lang", "GO LANG"})
+		if len(got) != 1 {
+			t.Fatalf("expected 1 input after dedup, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Go Lang" || got[0].NormalizedName != "go lang" {
+			t.Errorf("got[0] = (%q, %q), want first-display (Go Lang, go lang)", got[0].Name, got[0].NormalizedName)
+		}
+	})
+
+	t.Run("drops empty / whitespace-only entries", func(t *testing.T) {
+		got := normalizeTagInputs([]string{"", "   ", " Go ", "\t"})
+		if len(got) != 1 {
+			t.Fatalf("expected 1 input, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Go" || got[0].NormalizedName != "go" {
+			t.Errorf("got[0] = (%q, %q), want (Go, go)", got[0].Name, got[0].NormalizedName)
+		}
+	})
+
+	t.Run("NFKC folds fullwidth chars while preserving case", func(t *testing.T) {
+		got := normalizeTagInputs([]string{"ＧｏＬａｎｇ"})
+		if len(got) != 1 {
+			t.Fatalf("expected 1 input, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "GoLang" || got[0].NormalizedName != "golang" {
+			t.Errorf("got[0] = (%q, %q), want (GoLang, golang)", got[0].Name, got[0].NormalizedName)
+		}
+	})
 }
 
 func TestParseTagFilters(t *testing.T) {
@@ -113,6 +167,333 @@ func TestSelectedTagSet(t *testing.T) {
 	if set["web"] {
 		t.Fatalf("unexpected selected tag: %#v", set)
 	}
+}
+
+// TestBuildClearAllTagsURL guards Req 3.6 / 5.2 / 5.3: clearing all tag
+// filters removes every `tag` / `tags` query parameter while preserving the
+// remaining query parameters (q / sort / per_page / page).
+func TestBuildClearAllTagsURL(t *testing.T) {
+	t.Run("removes tag and tags parameters", func(t *testing.T) {
+		u, _ := url.Parse("/ui/items?tag=go&tag=rust&tags=news,web&q=hello&sort=relevance&per_page=20&page=3")
+		got, _ := url.Parse(buildClearAllTagsURL(u))
+		if v := got.Query()["tag"]; len(v) != 0 {
+			t.Errorf("expected no tag params, got %#v", v)
+		}
+		if v := got.Query()["tags"]; len(v) != 0 {
+			t.Errorf("expected no tags params, got %#v", v)
+		}
+	})
+
+	t.Run("preserves other query parameters including page (Req 5.2)", func(t *testing.T) {
+		u, _ := url.Parse("/ui/items?tag=go&q=hello&sort=relevance&per_page=20&page=3")
+		got, _ := url.Parse(buildClearAllTagsURL(u))
+		if got.Query().Get("q") != "hello" {
+			t.Errorf("expected q=hello preserved, got %q", got.Query().Get("q"))
+		}
+		if got.Query().Get("sort") != "relevance" {
+			t.Errorf("expected sort=relevance preserved, got %q", got.Query().Get("sort"))
+		}
+		if got.Query().Get("per_page") != "20" {
+			t.Errorf("expected per_page=20 preserved, got %q", got.Query().Get("per_page"))
+		}
+		if got.Query().Get("page") != "3" {
+			t.Errorf("expected page=3 preserved, got %q", got.Query().Get("page"))
+		}
+	})
+
+	t.Run("no tag filter present is no-op for tag/tags", func(t *testing.T) {
+		u, _ := url.Parse("/ui/items?q=hello")
+		got, _ := url.Parse(buildClearAllTagsURL(u))
+		if got.Query().Get("q") != "hello" {
+			t.Errorf("expected q=hello preserved, got %q", got.Query().Get("q"))
+		}
+	})
+}
+
+// TestBuildTagRemovedURL guards Req 2.1 / 2.5 / 2.6 / 5.1 / 5.2 / 5.3:
+// removing a single tag preserves the remaining tags in the canonical
+// `?tag=` repetition form, drops the legacy `?tags=` plural form, and
+// removes the `tag` parameter entirely when the resulting set is empty.
+func TestBuildTagRemovedURL(t *testing.T) {
+	t.Run("removes one tag and keeps the others in canonical form", func(t *testing.T) {
+		u, _ := url.Parse("/ui/items?tag=go&tag=rust&tag=news")
+		got, _ := url.Parse(buildTagRemovedURL(u, "rust", []string{"go", "rust", "news"}))
+		tags := got.Query()["tag"]
+		if len(tags) != 2 {
+			t.Errorf("expected 2 remaining tags, got %#v", tags)
+		}
+		if tags[0] != "go" || tags[1] != "news" {
+			t.Errorf("expected [go, news], got %#v", tags)
+		}
+		if v := got.Query()["tags"]; len(v) != 0 {
+			t.Errorf("expected no legacy tags param, got %#v", v)
+		}
+	})
+
+	t.Run("last tag removed strips tag parameter entirely (Req 2.5 / 5.3)", func(t *testing.T) {
+		u, _ := url.Parse("/ui/items?tag=go&q=hello")
+		got, _ := url.Parse(buildTagRemovedURL(u, "go", []string{"go"}))
+		if v := got.Query()["tag"]; len(v) != 0 {
+			t.Errorf("expected tag to be removed, got %#v", v)
+		}
+		if got.Query().Get("q") != "hello" {
+			t.Errorf("expected q=hello preserved, got %q", got.Query().Get("q"))
+		}
+		if strings.Contains(got.RawQuery, "tag=") {
+			t.Errorf("expected raw query to not contain tag= but got %q", got.RawQuery)
+		}
+	})
+
+	t.Run("legacy ?tags=csv is migrated to canonical ?tag= repetition (Req 5.1)", func(t *testing.T) {
+		u, _ := url.Parse("/ui/items?tags=go,rust,news")
+		got, _ := url.Parse(buildTagRemovedURL(u, "rust", []string{"go", "rust", "news"}))
+		tags := got.Query()["tag"]
+		if len(tags) != 2 {
+			t.Errorf("expected 2 remaining tags in canonical form, got %#v", tags)
+		}
+		if got.Query().Get("tags") != "" {
+			t.Errorf("expected legacy ?tags= to be dropped, got %q", got.Query().Get("tags"))
+		}
+	})
+
+	t.Run("preserves q / sort / per_page / page (Req 5.2)", func(t *testing.T) {
+		u, _ := url.Parse("/ui/items?tag=go&tag=rust&q=hello&sort=relevance&per_page=20&page=3")
+		got, _ := url.Parse(buildTagRemovedURL(u, "go", []string{"go", "rust"}))
+		if got.Query().Get("q") != "hello" {
+			t.Errorf("expected q=hello preserved, got %q", got.Query().Get("q"))
+		}
+		if got.Query().Get("sort") != "relevance" {
+			t.Errorf("expected sort=relevance preserved, got %q", got.Query().Get("sort"))
+		}
+		if got.Query().Get("per_page") != "20" {
+			t.Errorf("expected per_page=20 preserved, got %q", got.Query().Get("per_page"))
+		}
+		if got.Query().Get("page") != "3" {
+			t.Errorf("expected page=3 preserved, got %q", got.Query().Get("page"))
+		}
+	})
+
+	t.Run("nil current URL is treated as empty path", func(t *testing.T) {
+		// Defensive: the helper accepts nil to avoid panics in tests using
+		// httptest.NewRequest where the URL field is always populated, but
+		// we still want a deterministic result.
+		got := buildTagRemovedURL(nil, "go", []string{"go"})
+		if got != "" {
+			t.Errorf("expected empty URL string for nil input, got %q", got)
+		}
+	})
+}
+
+// TestBuildActiveTagFilters guards Req 1.1 / 1.3 / 1.5 / 5.4: chips are
+// produced one-to-one with the active tag filter set, the display name is
+// resolved from the Tags facet first and then the items' Tags as fallback,
+// and an unresolved name falls back to the normalized form.
+func TestBuildActiveTagFilters(t *testing.T) {
+	currentURL, _ := url.Parse("/ui/items?tag=go&tag=rust")
+
+	t.Run("Req 1.2: zero filters returns nil", func(t *testing.T) {
+		got := buildActiveTagFilters(nil, nil, nil, currentURL)
+		if len(got) != 0 {
+			t.Errorf("expected no chips, got %#v", got)
+		}
+		got = buildActiveTagFilters([]string{}, nil, nil, currentURL)
+		if len(got) != 0 {
+			t.Errorf("expected no chips for empty slice, got %#v", got)
+		}
+	})
+
+	t.Run("display name resolved from Tags facet (full-page)", func(t *testing.T) {
+		facet := []store.Tag{
+			{NormalizedName: "go", Name: "Go"},
+			{NormalizedName: "rust", Name: "Rust"},
+		}
+		got := buildActiveTagFilters([]string{"go", "rust"}, facet, nil, currentURL)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 chips, got %d", len(got))
+		}
+		if got[0].Name != "Go" || got[0].NormalizedName != "go" {
+			t.Errorf("chip[0] = %#v, want Name=Go NormalizedName=go", got[0])
+		}
+		if got[1].Name != "Rust" || got[1].NormalizedName != "rust" {
+			t.Errorf("chip[1] = %#v, want Name=Rust NormalizedName=rust", got[1])
+		}
+	})
+
+	t.Run("display name falls back to items' Tags when facet is empty (fragment path)", func(t *testing.T) {
+		items := []store.ItemListRow{{
+			Tags: []store.Tag{
+				{NormalizedName: "go", Name: "Go"},
+				{NormalizedName: "rust", Name: "Rust"},
+			},
+		}}
+		got := buildActiveTagFilters([]string{"go", "rust"}, nil, items, currentURL)
+		if len(got) != 2 {
+			t.Fatalf("expected 2 chips, got %d", len(got))
+		}
+		if got[0].Name != "Go" {
+			t.Errorf("expected fallback to per-item Tag name, got %q", got[0].Name)
+		}
+		if got[1].Name != "Rust" {
+			t.Errorf("expected fallback to per-item Tag name, got %q", got[1].Name)
+		}
+	})
+
+	t.Run("unresolved tag falls back to normalized name", func(t *testing.T) {
+		got := buildActiveTagFilters([]string{"unresolved"}, nil, nil, currentURL)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 chip, got %d", len(got))
+		}
+		if got[0].Name != "unresolved" {
+			t.Errorf("expected fallback to normalized name, got %q", got[0].Name)
+		}
+		if got[0].NormalizedName != "unresolved" {
+			t.Errorf("expected NormalizedName=unresolved, got %q", got[0].NormalizedName)
+		}
+	})
+
+	t.Run("Req 1.5: chip order matches the tagFilters input order", func(t *testing.T) {
+		facet := []store.Tag{
+			{NormalizedName: "rust", Name: "Rust"},
+			{NormalizedName: "go", Name: "Go"},
+		}
+		got := buildActiveTagFilters([]string{"go", "rust"}, facet, nil, currentURL)
+		if got[0].NormalizedName != "go" || got[1].NormalizedName != "rust" {
+			t.Errorf("expected order to follow tagFilters [go, rust], got [%s, %s]",
+				got[0].NormalizedName, got[1].NormalizedName)
+		}
+	})
+
+	t.Run("each chip has RemoveURL with itself removed and others preserved (Req 5.1)", func(t *testing.T) {
+		u, _ := url.Parse("/ui/items?tag=go&tag=rust&q=hello")
+		got := buildActiveTagFilters([]string{"go", "rust"}, nil, nil, u)
+		// Chip "go" should produce a URL with only rust remaining.
+		goRemove, _ := url.Parse(got[0].RemoveURL)
+		if tags := goRemove.Query()["tag"]; len(tags) != 1 || tags[0] != "rust" {
+			t.Errorf("expected go's RemoveURL to have only [rust], got %#v", tags)
+		}
+		if goRemove.Query().Get("q") != "hello" {
+			t.Errorf("expected q=hello preserved in RemoveURL, got %q", goRemove.Query().Get("q"))
+		}
+		// Chip "rust" should produce a URL with only go remaining.
+		rustRemove, _ := url.Parse(got[1].RemoveURL)
+		if tags := rustRemove.Query()["tag"]; len(tags) != 1 || tags[0] != "go" {
+			t.Errorf("expected rust's RemoveURL to have only [go], got %#v", tags)
+		}
+	})
+
+	t.Run("facet takes priority over per-item display name", func(t *testing.T) {
+		// Simulate a case where the facet has the canonical user-entered
+		// casing ("Go-Lang") and the per-item Tags have a different value.
+		facet := []store.Tag{{NormalizedName: "go-lang", Name: "Go-Lang"}}
+		items := []store.ItemListRow{{
+			Tags: []store.Tag{{NormalizedName: "go-lang", Name: "golang"}},
+		}}
+		got := buildActiveTagFilters([]string{"go-lang"}, facet, items, currentURL)
+		if got[0].Name != "Go-Lang" {
+			t.Errorf("expected facet display name to win, got %q", got[0].Name)
+		}
+	})
+
+	t.Run("Req 1.3 (regression): fragment-mode zero-result lookup still resolves display name", func(t *testing.T) {
+		// Round-2 review case: the fragment path skips ListTagsWithCountFiltered
+		// for performance, but the active filter chip must still show the
+		// user-entered name (e.g. "Go Lang"). The handler now calls
+		// store.TagsByNormalizedNames in fragment mode and feeds the result
+		// into tagsForLookup, so even when `items` is empty (zero-result
+		// filter) buildActiveTagFilters can resolve the display name from
+		// the direct tag lookup rather than degrading to the normalized form.
+		tagsLookup := []store.Tag{{NormalizedName: "go-lang", Name: "Go Lang"}}
+		got := buildActiveTagFilters([]string{"go-lang"}, tagsLookup, nil, currentURL)
+		if len(got) != 1 {
+			t.Fatalf("expected 1 chip, got %d", len(got))
+		}
+		if got[0].Name != "Go Lang" {
+			t.Errorf("expected display name from direct tag lookup, got %q (regression to normalized form)", got[0].Name)
+		}
+		if got[0].NormalizedName != "go-lang" {
+			t.Errorf("expected NormalizedName=go-lang, got %q", got[0].NormalizedName)
+		}
+	})
+}
+
+func TestMergeTagDisplaySources(t *testing.T) {
+	facet := []store.Tag{{NormalizedName: "go", Name: "Go"}}
+	named := []store.Tag{{NormalizedName: "rust", Name: "Rust"}}
+
+	t.Run("nil secondary returns primary unchanged", func(t *testing.T) {
+		got := mergeTagDisplaySources(facet, nil)
+		if len(got) != 1 || got[0].Name != "Go" {
+			t.Errorf("expected primary unchanged, got %#v", got)
+		}
+	})
+
+	t.Run("nil primary returns secondary unchanged", func(t *testing.T) {
+		got := mergeTagDisplaySources(nil, named)
+		if len(got) != 1 || got[0].Name != "Rust" {
+			t.Errorf("expected secondary unchanged, got %#v", got)
+		}
+	})
+
+	t.Run("primary precedes secondary so earlier-source-wins keeps facet casing", func(t *testing.T) {
+		// Same normalized name in both: facet (primary) carries canonical
+		// casing and must win in buildActiveTagFilters' dedup.
+		primary := []store.Tag{{NormalizedName: "go-lang", Name: "Go-Lang"}}
+		secondary := []store.Tag{{NormalizedName: "go-lang", Name: "go lang"}}
+		got := mergeTagDisplaySources(primary, secondary)
+		if len(got) != 2 {
+			t.Fatalf("expected both entries retained, got %d", len(got))
+		}
+		if got[0].Name != "Go-Lang" {
+			t.Errorf("expected primary first, got %q", got[0].Name)
+		}
+		chips := buildActiveTagFilters([]string{"go-lang"}, got, nil, mustURL("/ui/items?tag=go-lang"))
+		if chips[0].Name != "Go-Lang" {
+			t.Errorf("expected facet casing to win, got %q", chips[0].Name)
+		}
+	})
+}
+
+// TestFullPageZeroResultResolvesDisplayName reproduces the round-3 review
+// regression (Issue #115) at the pure-function level so it is guarded even when
+// TEST_DATABASE_URL is unset. On the full-page path a zero-result tag AND
+// filter leaves the facet (ListTagsWithCountFiltered) empty; without merging in
+// the direct TagsByNormalizedNames lookup the chip degrades to the normalized
+// lowercase form, violating AC 1.3 (chips show the original display name) and
+// AC 4.5 (direct URL open matches the query).
+func TestFullPageZeroResultResolvesDisplayName(t *testing.T) {
+	// facet is empty because the go+rust AND-condition matches zero items.
+	var facet []store.Tag
+	// Direct lookup still resolves the user-entered display names.
+	named := []store.Tag{
+		{NormalizedName: "go lang", Name: "Go Lang"},
+		{NormalizedName: "rust lang", Name: "Rust Lang"},
+	}
+	tagsForLookup := mergeTagDisplaySources(facet, named)
+
+	tagFilters := []string{"go lang", "rust lang"}
+	chips := buildActiveTagFilters(tagFilters, tagsForLookup, nil, mustURL("/ui/items?tag=go+lang&tag=rust+lang"))
+
+	if len(chips) != 2 {
+		t.Fatalf("expected 2 chips, got %d: %#v", len(chips), chips)
+	}
+	byNorm := map[string]string{}
+	for _, c := range chips {
+		byNorm[c.NormalizedName] = c.Name
+	}
+	if got := byNorm["go lang"]; got != "Go Lang" {
+		t.Errorf("chip for 'go lang' = %q, want %q (regression to normalized form)", got, "Go Lang")
+	}
+	if got := byNorm["rust lang"]; got != "Rust Lang" {
+		t.Errorf("chip for 'rust lang' = %q, want %q (regression to normalized form)", got, "Rust Lang")
+	}
+}
+
+func mustURL(raw string) *url.URL {
+	u, err := url.Parse(raw)
+	if err != nil {
+		panic(err)
+	}
+	return u
 }
 
 func TestNormalizeWhitespace(t *testing.T) {
