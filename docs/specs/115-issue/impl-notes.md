@@ -279,4 +279,25 @@ static/items_search.test.mjs static/items_fragment_race.test.mjs`)
 | NFR 3.1 | `style.css` で既存トークン (`--color-primary-soft` / `--color-primary` / `--color-danger` / `--motion-fast` / `--ease-default` / `--space-*` / `--radius-sm` / `--type-caption-*-size`) のみ使用。新規変数を追加せず |
 | NFR 3.2 | チップ列を `items_list.html` 冒頭に配置することで、デスクトップ・モバイル両幅で同一位置（filter-toggle-bar 直下 / 検索バー直下）に表示される設計。media query 不要 |
 
+## Round-3 codex review fix（full-page 経路の 0 件絞り込み表示名解決）
+
+codex レビュー指摘（medium・`internal/server/server.go:765`）への対応:
+
+- **症状**: full-page 初期表示（`fragmentOnly=false`）では `tagsForLookup` に
+  `ListTagsWithCountFiltered`（絞り込み済み facet）の結果だけを入れていた。タグ AND 条件が
+  0 件になる URL を直開きすると facet が空になり、`buildActiveTagFilters` の正規化名 fallback
+  （`if name == ""`）に落ちてチップが**正規化名**で表示されていた。これは AC 1.3（元の表示名を
+  表示・`requirements.md:30`）と AC 4.5（URL 直接入力時に一致表示・`requirements.md:70`）に違反する。
+- **修正**: full-page・fragment いずれの経路でも、タグ絞り込みがあるときは
+  `TagsByNormalizedNames(tagFilters)` で表示名を直接解決し、その結果を facet に**マージ**する
+  （新ヘルパ `mergeTagDisplaySources`）。facet が空の 0 件絞り込みでも表示名が解決され、正規化名
+  落ちを解消する。facet が非空のときは facet（canonical casing）を優先（earlier-source-wins）。
+  fragment 経路は従来どおり TagsByNormalizedNames を使うため挙動不変。
+- **追加テスト**:
+  - `internal/server/server_test.go`: `TestFullPageZeroResultResolvesDisplayName`（0 件絞り込みで
+    facet 空 + 直接 lookup → 元の表示名を解決する純粋関数レベル回帰テスト）/ `TestMergeTagDisplaySources`
+  - `internal/server/items_active_filters_integration_test.go`（`-tags=integration` / `TEST_DATABASE_URL`
+    gated）: 実 DB に対し full-page 経路のデータパスを再現し、0 件 AND 絞り込み URL 直開きでも
+    チップが元の表示名を解決することを担保。
+
 STATUS: complete

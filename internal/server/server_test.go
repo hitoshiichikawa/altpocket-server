@@ -364,6 +364,86 @@ func TestBuildActiveTagFilters(t *testing.T) {
 	})
 }
 
+func TestMergeTagDisplaySources(t *testing.T) {
+	facet := []store.Tag{{NormalizedName: "go", Name: "Go"}}
+	named := []store.Tag{{NormalizedName: "rust", Name: "Rust"}}
+
+	t.Run("nil secondary returns primary unchanged", func(t *testing.T) {
+		got := mergeTagDisplaySources(facet, nil)
+		if len(got) != 1 || got[0].Name != "Go" {
+			t.Errorf("expected primary unchanged, got %#v", got)
+		}
+	})
+
+	t.Run("nil primary returns secondary unchanged", func(t *testing.T) {
+		got := mergeTagDisplaySources(nil, named)
+		if len(got) != 1 || got[0].Name != "Rust" {
+			t.Errorf("expected secondary unchanged, got %#v", got)
+		}
+	})
+
+	t.Run("primary precedes secondary so earlier-source-wins keeps facet casing", func(t *testing.T) {
+		// Same normalized name in both: facet (primary) carries canonical
+		// casing and must win in buildActiveTagFilters' dedup.
+		primary := []store.Tag{{NormalizedName: "go-lang", Name: "Go-Lang"}}
+		secondary := []store.Tag{{NormalizedName: "go-lang", Name: "go lang"}}
+		got := mergeTagDisplaySources(primary, secondary)
+		if len(got) != 2 {
+			t.Fatalf("expected both entries retained, got %d", len(got))
+		}
+		if got[0].Name != "Go-Lang" {
+			t.Errorf("expected primary first, got %q", got[0].Name)
+		}
+		chips := buildActiveTagFilters([]string{"go-lang"}, got, nil, mustURL("/ui/items?tag=go-lang"))
+		if chips[0].Name != "Go-Lang" {
+			t.Errorf("expected facet casing to win, got %q", chips[0].Name)
+		}
+	})
+}
+
+// TestFullPageZeroResultResolvesDisplayName reproduces the round-3 review
+// regression (Issue #115) at the pure-function level so it is guarded even when
+// TEST_DATABASE_URL is unset. On the full-page path a zero-result tag AND
+// filter leaves the facet (ListTagsWithCountFiltered) empty; without merging in
+// the direct TagsByNormalizedNames lookup the chip degrades to the normalized
+// lowercase form, violating AC 1.3 (chips show the original display name) and
+// AC 4.5 (direct URL open matches the query).
+func TestFullPageZeroResultResolvesDisplayName(t *testing.T) {
+	// facet is empty because the go+rust AND-condition matches zero items.
+	var facet []store.Tag
+	// Direct lookup still resolves the user-entered display names.
+	named := []store.Tag{
+		{NormalizedName: "go lang", Name: "Go Lang"},
+		{NormalizedName: "rust lang", Name: "Rust Lang"},
+	}
+	tagsForLookup := mergeTagDisplaySources(facet, named)
+
+	tagFilters := []string{"go lang", "rust lang"}
+	chips := buildActiveTagFilters(tagFilters, tagsForLookup, nil, mustURL("/ui/items?tag=go+lang&tag=rust+lang"))
+
+	if len(chips) != 2 {
+		t.Fatalf("expected 2 chips, got %d: %#v", len(chips), chips)
+	}
+	byNorm := map[string]string{}
+	for _, c := range chips {
+		byNorm[c.NormalizedName] = c.Name
+	}
+	if got := byNorm["go lang"]; got != "Go Lang" {
+		t.Errorf("chip for 'go lang' = %q, want %q (regression to normalized form)", got, "Go Lang")
+	}
+	if got := byNorm["rust lang"]; got != "Rust Lang" {
+		t.Errorf("chip for 'rust lang' = %q, want %q (regression to normalized form)", got, "Rust Lang")
+	}
+}
+
+func mustURL(raw string) *url.URL {
+	u, err := url.Parse(raw)
+	if err != nil {
+		panic(err)
+	}
+	return u
+}
+
 func TestNormalizeWhitespace(t *testing.T) {
 	got := normalizeWhitespace("  hello \n  world\tgo  ")
 	if got != "hello world go" {

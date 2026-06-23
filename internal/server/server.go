@@ -756,28 +756,39 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 	// fragment path skips this query because the sidebar is not re-rendered
 	// on debounce-driven swaps and the user's selected tag chips are kept
 	// intact by client-side JS.
+	//
+	// Both paths must additionally resolve the active filters' user-entered
+	// display names directly from the tags table when tag filters are present.
+	// The facet aggregate (ListTagsWithCountFiltered) only surfaces tags that
+	// appear in the *filtered* result set, so a tag AND-condition that yields
+	// zero items returns an empty facet. Without the direct lookup the active
+	// filter chips would degrade to the normalized lowercase form for such
+	// zero-result URLs — violating AC 1.3 (chips show the original display
+	// name) and AC 4.5 (direct URL open matches the query). The facet is kept
+	// as the higher-priority source so it still wins for its canonical casing
+	// on non-empty results; the direct lookup only fills the gaps
+	// (Issue #115 round-3 review).
 	var tags any
 	var tagsForLookup []store.Tag
 	if !fragmentOnly {
 		t, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
 		tags = t
 		tagsForLookup = t
-	} else if len(tagFilters) > 0 {
-		// Fragment-only renders skip the facet aggregate to keep the
-		// debounce-driven swap cheap, but the active filter chips above the
-		// item list still require the user-entered display name per AC 1.3.
-		// Resolve the active filters' names from the tags table directly so
-		// chips do not degrade to the normalized lowercase form when the
-		// current filter yields zero results (Issue #115 round-2 review).
-		t, _ := s.store.TagsByNormalizedNames(r.Context(), tagFilters)
-		tagsForLookup = t
+	}
+	if len(tagFilters) > 0 {
+		named, _ := s.store.TagsByNormalizedNames(r.Context(), tagFilters)
+		// Facet entries (when present) keep priority; the direct lookup is
+		// appended so buildActiveTagFilters' earlier-source-wins dedup uses it
+		// only for filters the facet did not surface (e.g. zero-result tags).
+		tagsForLookup = mergeTagDisplaySources(tagsForLookup, named)
 	}
 
 	// Active filter chips shown above the item list (Issue #115). The display
-	// name is resolved from the Tags facet (full-page) / direct tag lookup
-	// (fragment) / the items' own Tags (fallback) so the chip shows the
-	// user-entered name rather than the normalized lowercase form. Tags that
-	// cannot be resolved fall back to their normalized name as a last resort.
+	// name is resolved from the Tags facet (full-page) merged with the direct
+	// tag lookup (both paths when filters are present) / the items' own Tags
+	// (fallback) so the chip shows the user-entered name rather than the
+	// normalized lowercase form even for zero-result filters. Tags that cannot
+	// be resolved fall back to their normalized name as a last resort.
 	activeTagFilters := buildActiveTagFilters(tagFilters, tagsForLookup, items, r.URL)
 
 	data := map[string]interface{}{
@@ -1486,6 +1497,28 @@ type ActiveTagFilter struct {
 	Name           string
 	NormalizedName string
 	RemoveURL      string
+}
+
+// mergeTagDisplaySources concatenates two Tag slices used for active-filter
+// chip display-name resolution, with `primary` kept ahead of `secondary`.
+//
+// buildActiveTagFilters resolves display names with an earlier-source-wins
+// dedup, so ordering here encodes priority: the filtered facet (primary) keeps
+// its canonical user-entered casing for tags it surfaced, while the direct
+// TagsByNormalizedNames lookup (secondary) fills in display names for filters
+// the facet did not include — notably zero-result tag AND-conditions where the
+// facet is empty (Issue #115). Either argument may be nil.
+func mergeTagDisplaySources(primary, secondary []store.Tag) []store.Tag {
+	if len(secondary) == 0 {
+		return primary
+	}
+	if len(primary) == 0 {
+		return secondary
+	}
+	merged := make([]store.Tag, 0, len(primary)+len(secondary))
+	merged = append(merged, primary...)
+	merged = append(merged, secondary...)
+	return merged
 }
 
 // buildActiveTagFilters constructs the chip list for the active filter row.
