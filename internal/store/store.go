@@ -326,10 +326,16 @@ func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canon
 	if created && len(tagInputs) > 0 {
 		for _, ti := range tagInputs {
 			var tagID string
+			// ON CONFLICT performs a no-op UPDATE (normalized_name=tags.normalized_name)
+			// purely so that RETURNING fires for the existing row; the existing
+			// display name is intentionally preserved. Overwriting tags.name on
+			// conflict was the historical pattern but it leaked one user's
+			// later input into every other item sharing the same
+			// normalized_name (round-6 review of PR #137 / AC 1.3).
 			row = tx.QueryRow(ctx, `
 				INSERT INTO tags (name, normalized_name)
 				VALUES ($1, $2)
-				ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
+				ON CONFLICT (normalized_name) DO UPDATE SET normalized_name=tags.normalized_name
 				RETURNING id
 			`, ti.Name, ti.NormalizedName)
 			if err = row.Scan(&tagID); err != nil {
@@ -590,10 +596,13 @@ func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *str
 
 		for _, ti := range *tags {
 			var tagID string
+			// See CreateItem for rationale: ON CONFLICT does a no-op update on
+			// normalized_name so RETURNING fires without overwriting the
+			// existing display name (round-6 review of PR #137 / AC 1.3).
 			if err = tx.QueryRow(ctx, `
 				INSERT INTO tags (name, normalized_name)
 				VALUES ($1, $2)
-				ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
+				ON CONFLICT (normalized_name) DO UPDATE SET normalized_name=tags.normalized_name
 				RETURNING id
 			`, ti.Name, ti.NormalizedName).Scan(&tagID); err != nil {
 				return "", nil, err

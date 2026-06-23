@@ -770,19 +770,44 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 	// as the higher-priority source so it still wins for its canonical casing
 	// on non-empty results; the direct lookup only fills the gaps
 	// (Issue #115 round-3 review).
-	var tags any
+	var tags []store.Tag
 	var tagsForLookup []store.Tag
 	if !fragmentOnly {
-		t, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
-		tags = t
-		tagsForLookup = t
+		facet, err := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
+		if err != nil {
+			s.logger.Warn("items_tag_facet_failed",
+				slog.String("user_id", user.ID),
+				slog.String("request_id", s.requestID(r.Context())),
+				slog.String("error", err.Error()))
+		}
+		tags = facet
+		tagsForLookup = facet
 	}
 	if len(tagFilters) > 0 {
-		named, _ := s.store.TagsByNormalizedNames(r.Context(), user.ID, tagFilters)
+		named, err := s.store.TagsByNormalizedNames(r.Context(), user.ID, tagFilters)
+		if err != nil {
+			// Surface the error in logs so chip/sidebar display-name fallback
+			// to the normalized form is observable (round-6 review: AC 1.3 /
+			// 4.5 failures previously degraded silently).
+			s.logger.Warn("items_active_tag_lookup_failed",
+				slog.String("user_id", user.ID),
+				slog.String("request_id", s.requestID(r.Context())),
+				slog.String("error", err.Error()))
+		}
 		// Facet entries (when present) keep priority; the direct lookup is
 		// appended so buildActiveTagFilters' earlier-source-wins dedup uses it
 		// only for filters the facet did not surface (e.g. zero-result tags).
 		tagsForLookup = mergeTagDisplaySources(tagsForLookup, named)
+		// For full-page renders the sidebar Tags facet must also surface the
+		// active filter tags so the checkbox states match the chips and the
+		// canonical URL (Req 1.5 / 4.1). Zero-result tag AND-conditions cause
+		// ListTagsWithCountFiltered to return an empty facet, so without this
+		// merge the user sees a chip and the URL, but no checked checkbox to
+		// uncheck. mergeSidebarFacet appends only tags missing from the facet
+		// with Count=0 to avoid double-counting.
+		if !fragmentOnly {
+			tags = mergeSidebarFacet(tags, named, tagFilters)
+		}
 	}
 
 	// Active filter chips shown above the item list (Issue #115). The display
@@ -1527,6 +1552,49 @@ type ActiveTagFilter struct {
 	Name           string
 	NormalizedName string
 	RemoveURL      string
+}
+
+// mergeSidebarFacet returns the sidebar tag facet extended with any active
+// filter tags that the facet did not surface (typically zero-result tag
+// AND-conditions, where ListTagsWithCountFiltered returns an empty slice).
+//
+// Direct-lookup tags appended this way carry Count=0 because they were not
+// represented in the filtered result set. Without this merge the sidebar would
+// drop the checkbox for filtered-but-empty tags, so chips would be visible
+// (with the user-entered display name) while the sidebar would render no
+// matching checkbox to uncheck — breaking Req 1.5 / 4.1 ("chip / sidebar
+// checked / URL must agree") for round-6 review of PR #137.
+//
+// The facet's canonical ordering is preserved; appended entries follow in the
+// order the tag filters were supplied so that the UI surfaces them as a
+// trailing group.
+func mergeSidebarFacet(facet, lookup []store.Tag, tagFilters []string) []store.Tag {
+	if len(tagFilters) == 0 || len(lookup) == 0 {
+		return facet
+	}
+	have := make(map[string]struct{}, len(facet))
+	for _, t := range facet {
+		have[t.NormalizedName] = struct{}{}
+	}
+	byNorm := make(map[string]store.Tag, len(lookup))
+	for _, t := range lookup {
+		byNorm[t.NormalizedName] = t
+	}
+	out := make([]store.Tag, 0, len(facet)+len(tagFilters))
+	out = append(out, facet...)
+	for _, norm := range tagFilters {
+		if _, ok := have[norm]; ok {
+			continue
+		}
+		t, ok := byNorm[norm]
+		if !ok {
+			continue
+		}
+		t.Count = 0
+		out = append(out, t)
+		have[norm] = struct{}{}
+	}
+	return out
 }
 
 // mergeTagDisplaySources concatenates two Tag slices used for active-filter
