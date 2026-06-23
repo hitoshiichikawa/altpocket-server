@@ -130,4 +130,32 @@ ok  	altpocket/internal/urlnorm
 - 拡張機能（Chrome Extension）からの一覧表示でのタグ絞り込み UI（同上）
 - タグ絞り込みの AND/OR 切り替え UI（同上）
 
+## PR #136 codex レビュー指摘の修正（round 2）
+
+codex レビューの未解決指摘 2 件（どちらも medium）を `static/items_tags.js` に対して修正しました。スコープは指摘 2 件に限定し、無関係なリファクタは行っていません。
+
+### 指摘 1: タグ正規化の不一致（URL 互換バグ）
+
+- **原因**: `readURLTags()` / `buildToggledURL()` が URL の `?tag=` 値を**正規化せず** raw のまま `Set` 化していた。サーバ側 (`internal/tag/tag.go` の `Normalize`) は `?tag=Go` を `go` として絞り込む一方、カードボタンの `data-tag-normalized` は `go`（テンプレートが `NormalizedName` を出力）。`set.has("go")` が raw の `"Go"` に対して false となり、選択中タグの解除のはずが `?tag=Go&tag=go` の**追加**になっていた。
+- **サーバ側正規化ロジックの特定**: `internal/tag/tag.go:9` `Normalize(name) = strings.ToLower(norm.NFKC.String(strings.TrimSpace(name)))`（trim → Unicode NFKC → lowercase）。一覧ハンドラの `parseTagFilters`（`internal/server/server.go:1438`）が各 `tag` クエリ値を `normalizeTagNames` → `tag.Normalize` に通して絞り込んでいる。
+- **対応**: `items_tags.js` に**サーバと完全一致する** `normalizeTag(raw)` を追加（`String(raw).trim()` → `normalize('NFKC')` → `toLowerCase()`。`String.prototype.normalize('NFKC')` は Go の `norm.NFKC.String` と等価）。`readURLTags()` は正規化＋空・重複畳み込み済みのリストを返すよう変更。`buildToggledURL()` は `readURLTags()` 由来の正規化済み Set でトグル判定し、URL 生成も正規化済み値のみを append。カードの選択中表示・チェックボックス同期も正規化済み値に揃え、トグル（追加/解除）・URL 生成・選択中表示すべてが正規化済み値で一貫するようにした。
+
+### 指摘 2: モバイル ボトムシートの選択中表示ズレ
+
+- **原因**: `onSidebarTagChange` が `name="tag"` checkbox の `change` を**どのフォームか区別せず**即座にカードの `aria-pressed` / `is-selected` に反映していた。モバイルのボトムシート（`templates/items.html:80` の別 form、`:118` の Apply ボタンで初めて submit）は change では絞り込みが変わらないため、Apply 前に閉じると URL・一覧は未変更なのにカードだけ選択中表示になり、要件 1.4 / 5.2 の「現在の絞り込み条件」とズレていた。
+- **テンプレート構造の特定**: デスクトップのサイドバー form は `<aside class="sidebar">` 内の `id="filter-form"`（`templates/items.html:24`）で、`app.js` が checkbox change を即時 auto-submit する（`static/app.js:415` `document.querySelector('.search-form')` = 先頭 = デスクトップ form）。モバイルのボトムシート form は `#filter-sheet` 内（`:80`）で id を持たず、Apply（"Apply Filters" submit ボタン `:118`）でのみ submit。
+- **対応**: `isDesktopSidebarForm(form)`（`form.id === 'filter-form'` 判定）を追加し、`onSidebarTagChange` は auto-submit 対象の**デスクトップのサイドバー form の change のみ**にカード表示を追従させ、ボトムシートの Apply 前 change ではカードを更新しないようにした。これによりカードの選択中表示は**実際に適用された絞り込み条件**にのみ追従する。デスクトップの即時反映（Req 5.1）は維持。
+
+### 追加テスト（`static/items_tags.test.mjs`）
+
+- 指摘 1: `?tag=Go`（大文字）でボタン `go` クリックが「解除」になる（`?tag=Go&tag=go` 追加にならない）/ `?tag=Go&tag=RUST` 混在で正規化同期 + 新規追加は正規化済み値のみ増える / `?tag=Go&tag=go` 大小文字重複が 1 つに畳まれて選択中表示。
+- 指摘 2: モバイル ボトムシート checkbox 変更（Apply 前）でカード非反映 / デスクトップ サイドバー変更でカード即時反映（Req 5.1 回帰）。
+- テスト harness（`FakeForm` に id 付与・`mobileTags` / `toggleMobileCheckbox`）を拡張。
+
+### 検証結果（round 2）
+
+- `node --test static/items_tags.test.mjs static/items_search.test.mjs static/items_fragment_race.test.mjs` → **34 件 pass / 0 fail**（items_tags 16 = 既存 12 + 新規 4、items_search 15、items_fragment_race 3）。
+- `go build ./...` → exit 0（green）。
+- JS syntax: `items_tags.js` / `app.js` / `items_search.js` いずれも OK。
+
 STATUS: complete

@@ -102,8 +102,8 @@ class FakeCheckbox extends FakeElement {
 }
 
 class FakeForm extends FakeElement {
-  constructor() {
-    super('form');
+  constructor(attrs = {}) {
+    super('form', attrs);
     this._checkboxes = [];
   }
   addCheckbox(cb) {
@@ -131,10 +131,13 @@ class FakeRegion {
 
 // --- Document/Window factories -----------------------------------------
 
-function createFakeDocument({ buttons, region, sidebarForm }) {
+function createFakeDocument({ buttons, region, sidebarForm, mobileForm }) {
   const docListeners = new Map();
   const allButtons = buttons.slice();
-  const allCheckboxes = sidebarForm ? sidebarForm._checkboxes.slice() : [];
+  const allCheckboxes = [
+    ...(sidebarForm ? sidebarForm._checkboxes : []),
+    ...(mobileForm ? mobileForm._checkboxes : []),
+  ];
 
   return {
     activeElement: null,
@@ -221,20 +224,32 @@ async function flushMicrotasks(rounds = 24) {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
 }
 
-function loadModule({ initialURL, fetchHandlers = [], buttonTags = [], selected = new Set(), sidebarTags = null }) {
+function loadModule({ initialURL, fetchHandlers = [], buttonTags = [], selected = new Set(), sidebarTags = null, mobileTags = null }) {
   const buttons = buttonTags.map((name) => new FakeButton(name, { selected: selected.has(name) }));
   const region = new FakeRegion();
 
-  // サイドバーは指定があれば form + checkbox を作る。
+  // デスクトップのサイドバーは指定があれば form + checkbox を作る。
+  // 実テンプレート (templates/items.html) では auto-submit 対象の
+  // デスクトップ form だけが id="filter-form" を持つ。
   let sidebarForm = null;
   if (sidebarTags) {
-    sidebarForm = new FakeForm();
+    sidebarForm = new FakeForm({ id: 'filter-form' });
     for (const name of sidebarTags) {
       sidebarForm.addCheckbox(new FakeCheckbox(name, { checked: selected.has(name) }));
     }
   }
 
-  const document = createFakeDocument({ buttons, region, sidebarForm });
+  // モバイルのボトムシート form は id を持たない (Apply ボタンで初めて
+  // submit される。change では絞り込みが変わらない)。
+  let mobileForm = null;
+  if (mobileTags) {
+    mobileForm = new FakeForm();
+    for (const name of mobileTags) {
+      mobileForm.addCheckbox(new FakeCheckbox(name, { checked: selected.has(name) }));
+    }
+  }
+
+  const document = createFakeDocument({ buttons, region, sidebarForm, mobileForm });
   const history = createHistory(initialURL);
   const location = createLocation(history);
   const { fetch, calls } = createFetchQueue(fetchHandlers);
@@ -262,8 +277,11 @@ function loadModule({ initialURL, fetchHandlers = [], buttonTags = [], selected 
   const source = readFileSync(resolve(process.cwd(), 'static/items_tags.js'), 'utf8');
   new vm.Script(source, { filename: 'static/items_tags.js' }).runInContext(context);
 
+  // 評価結果 (init() の戻り値) を捕捉する。items_tags.js は IIFE で
+  // init() を呼ぶが戻り値を公開しないため、_debug は context 越しには
+  // 直接取れない。テストでは DOM 経由の観測を主とし、必要なら別途検証する。
   return {
-    buttons, region, history, sidebarForm,
+    buttons, region, history, sidebarForm, mobileForm,
     fetchCalls: calls,
     clickButton: async (name) => {
       const btn = buttons.find((b) => b.dataset.tagNormalized === name);
@@ -276,6 +294,13 @@ function loadModule({ initialURL, fetchHandlers = [], buttonTags = [], selected 
       if (!sidebarForm) throw new Error('no sidebar form configured');
       const cb = sidebarForm._checkboxes.find((c) => c.value === name);
       if (!cb) throw new Error(`no checkbox for tag=${name}`);
+      cb.checked = !cb.checked;
+      return document.dispatch('change', { target: cb });
+    },
+    toggleMobileCheckbox: async (name) => {
+      if (!mobileForm) throw new Error('no mobile form configured');
+      const cb = mobileForm._checkboxes.find((c) => c.value === name);
+      if (!cb) throw new Error(`no mobile checkbox for tag=${name}`);
       cb.checked = !cb.checked;
       return document.dispatch('change', { target: cb });
     },
@@ -517,4 +542,112 @@ test('要件 2.4: pushState の URL が getAll("tag") で複数値を維持で�
   assert.deepEqual(tags, ['go', 'rust']);
   // 既存サーバ実装 (parseTagFilters in internal/server/server.go) は
   // url.Values["tag"] を読むので、上記書式と互換。
+});
+
+// --- codex 指摘 1: タグ正規化の不一致 (URL 互換バグ) -------------------
+
+test('codex#1 / 要件 2.2 / 3.3: URL の ?tag=Go (大文字) で正規化済みボタン go をクリックすると「解除」になる (?tag=Go&tag=go の追加にならない)', async () => {
+  // サーバ側 (internal/tag/tag.go Normalize) は ?tag=Go を go として
+  // 絞り込んでおり、カードボタンは data-tag-normalized="go" を持つ。
+  // 正規化しないと set.has("go") が false になり、解除のはずが
+  // ?tag=Go&tag=go の追加になる退行を回帰検証する。
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=Go',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    buttonTags: ['go'],
+    selected: new Set(['go']),
+  });
+
+  await env.clickButton('go');
+  await flushMicrotasks();
+
+  const pushes = env.history.calls.filter((c) => c.kind === 'push');
+  assert.equal(pushes.length, 1);
+  const u = new URL(pushes[0].url);
+  // 解除なので tag は完全に消える。?tag=Go&tag=go の二重追加にはならない。
+  assert.deepEqual(u.searchParams.getAll('tag'), [], 'tag は解除されて消える');
+  // カード表示も解除される。
+  assert.equal(env.buttons[0].getAttribute('aria-pressed'), 'false');
+  assert.ok(!env.buttons[0].classList.contains('is-selected'));
+});
+
+test('codex#1: URL に大文字混在 (?tag=Go&tag=RUST) があっても正規化済み値で同期され、新規タグ追加は正規化済み値のみを増やす', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=Go&tag=RUST',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    buttonTags: ['go', 'rust', 'news'],
+    // SSR では go / rust が選択中として描画される想定。
+    selected: new Set(['go', 'rust']),
+  });
+
+  await env.clickButton('news');
+  await flushMicrotasks();
+
+  const u = new URL(env.history.calls.filter((c) => c.kind === 'push')[0].url);
+  const tags = u.searchParams.getAll('tag').sort();
+  // 既存 Go / RUST は正規化されて go / rust になり、news が追加される。
+  // 大文字の重複 (Go と go など) は生まれない。
+  assert.deepEqual(tags, ['go', 'news', 'rust']);
+});
+
+test('codex#1: 同一タグが大小文字で重複 (?tag=Go&tag=go) していても 1 つに畳まれて選択中表示される', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=Go&tag=go',
+    fetchHandlers: [fragmentResponse('<x>after</x>')],
+    buttonTags: ['go', 'rust'],
+    selected: new Set(),
+  });
+
+  // popstate 経由で syncControls を駆動し、正規化・重複畳み込みを観測する。
+  await env.dispatchPopstate();
+  await flushMicrotasks();
+
+  const goBtn = env.buttons.find((b) => b.dataset.tagNormalized === 'go');
+  const rustBtn = env.buttons.find((b) => b.dataset.tagNormalized === 'rust');
+  assert.equal(goBtn.getAttribute('aria-pressed'), 'true', 'Go/go は go として選択中');
+  assert.equal(rustBtn.getAttribute('aria-pressed'), 'false');
+});
+
+// --- codex 指摘 2: モバイル ボトムシートの選択中表示ズレ --------------
+
+test('codex#2 / 要件 1.4 / 5.2: モバイル ボトムシートの checkbox 変更 (Apply 前) ではカードの選択中表示を更新しない', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items',
+    fetchHandlers: [],
+    buttonTags: ['go', 'rust'],
+    selected: new Set(),
+    // モバイルのボトムシート form (id なし = Apply 待ち)。
+    mobileTags: ['go', 'rust'],
+  });
+
+  // ボトムシート内の go を ON にする (Apply はまだ押していない)。
+  await env.toggleMobileCheckbox('go');
+  await flushMicrotasks();
+
+  // URL も一覧も未変更なので、カードの選択中表示は変わってはいけない。
+  const goBtn = env.buttons.find((b) => b.dataset.tagNormalized === 'go');
+  const rustBtn = env.buttons.find((b) => b.dataset.tagNormalized === 'rust');
+  assert.equal(goBtn.getAttribute('aria-pressed'), 'false', 'Apply 前はカードを変えない');
+  assert.ok(!goBtn.classList.contains('is-selected'));
+  assert.equal(rustBtn.getAttribute('aria-pressed'), 'false');
+  assert.ok(!rustBtn.classList.contains('is-selected'));
+});
+
+test('codex#2 / 要件 5.1: デスクトップのサイドバー (#filter-form) の checkbox 変更ではカードを即時に追従させる (回帰: 既存挙動を壊さない)', async () => {
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items',
+    fetchHandlers: [],
+    buttonTags: ['go', 'rust'],
+    selected: new Set(),
+    sidebarTags: ['go', 'rust'],
+  });
+
+  await env.toggleCheckbox('go');
+  await flushMicrotasks();
+
+  const goBtn = env.buttons.find((b) => b.dataset.tagNormalized === 'go');
+  const rustBtn = env.buttons.find((b) => b.dataset.tagNormalized === 'rust');
+  assert.equal(goBtn.getAttribute('aria-pressed'), 'true', 'デスクトップは即時反映 (Req 5.1)');
+  assert.ok(goBtn.classList.contains('is-selected'));
+  assert.equal(rustBtn.getAttribute('aria-pressed'), 'false');
 });

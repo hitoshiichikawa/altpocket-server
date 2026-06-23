@@ -50,10 +50,39 @@
     }
     const coord = region.__itemsFragmentInflight;
 
+    // サーバ側 (internal/tag/tag.go の Normalize) と完全一致するタグ正規化。
+    // server: strings.ToLower(NFKC.String(strings.TrimSpace(name)))。
+    // サーバが ?tag=Go を内部で go として絞り込む一方、JS が raw 値 "Go" の
+    // ままトグル判定すると、選択中タグの解除が「再追加」になってしまう
+    // (?tag=Go&tag=go)。URL から読んだ tag・カードボタン・チェックボックスの
+    // value (テンプレートが既に NormalizedName を出力) と JS のトグル比較を
+    // すべて正規化済み値で揃えるための関数 (#117 codex 指摘 1)。
+    function normalizeTag(raw) {
+      if (raw == null) return '';
+      let s = String(raw).trim();
+      if (s === '') return '';
+      // String.prototype.normalize('NFKC') は Go の norm.NFKC.String と等価。
+      if (typeof s.normalize === 'function') {
+        s = s.normalize('NFKC');
+      }
+      return s.toLowerCase();
+    }
+
+    // URL の ?tag= 値を「サーバ側の正規化規則で正規化し、空・重複を畳んだ」
+    // リストとして返す。これにより set.has() / トグル判定 / カード表示が
+    // 正規化済み値で一貫する (#117 codex 指摘 1)。
     function readURLTags() {
       try {
         const u = new URL(location.href);
-        return u.searchParams.getAll('tag');
+        const out = [];
+        const seen = new Set();
+        for (const raw of u.searchParams.getAll('tag')) {
+          const norm = normalizeTag(raw);
+          if (norm === '' || seen.has(norm)) continue;
+          seen.add(norm);
+          out.push(norm);
+        }
+        return out;
       } catch {
         return [];
       }
@@ -62,17 +91,22 @@
     // 当該 URL の tag リストを toggle した URL を返す。tag 以外のクエリは
     // 触らない (要件 3.2)。tag が空配列になったら "tag" パラメータ自体を
     // 落とす (要件 3.3 / 2.5)。
+    //
+    // 既存 URL の ?tag= は正規化済み値に畳んでから Set 化する。これにより、
+    // サーバが ?tag=Go を go として選択中にしている状態でカードの go ボタン
+    // (data-tag-normalized="go") をクリックしても、set.has("go") が true に
+    // なって正しく「解除」される (#117 codex 指摘 1)。正規化前は raw "Go" と
+    // "go" が別物扱いされ、解除ではなく ?tag=Go&tag=go の追加になっていた。
     function buildToggledURL(normalizedName) {
       const u = new URL(location.href);
-      const current = u.searchParams.getAll('tag');
-      const set = new Set(current);
+      const set = new Set(readURLTags());
       if (set.has(normalizedName)) {
         set.delete(normalizedName);
       } else {
         set.add(normalizedName);
       }
       // tag を全部消してから入れ直す（順序を含めて URLSearchParams の
-      // 既存値ごと洗い替える）。
+      // 既存値ごと洗い替える）。入れ直す値は正規化済み (set の中身)。
       u.searchParams.delete('tag');
       for (const t of set) {
         u.searchParams.append('tag', t);
@@ -175,10 +209,29 @@
       commitToggle(name);
     }
 
-    // サイドバーのチェックボックス操作 (既存フロー) でも、カード上の
-    // 同名タグの選択中スタイルを更新する (要件 5.2)。サイドバーは form 送信で
-    // 全体リロードする経路なのでフラグメント取得は呼ばない (既存 app.js
-    // の auto-submit と二重発火しないように、ここでは UI 反映だけ行う)。
+    // デスクトップのサイドバーのチェックボックス操作 (既存フロー) でも、
+    // カード上の同名タグの選択中スタイルを更新する (要件 5.1 / 5.2)。
+    // サイドバーは change で即時に app.js が form を auto-submit し全体
+    // リロードする経路なので、カード表示を即時に追従させても URL・一覧と
+    // ズレない。フラグメント取得は呼ばない (app.js の auto-submit と二重
+    // 発火しないように、ここでは UI 反映だけ行う)。
+    //
+    // モバイルのボトムシート (templates/items.html の #filter-sheet 内 form)
+    // は change では絞り込みが変わらず、Apply ボタンを押して初めて submit
+    // される。Apply 前にカードの aria-pressed / is-selected を変えてしまうと、
+    // URL・一覧は未変更なのにカードだけ選択中表示になり、要件 1.4 / 5.2 が
+    // 言う「現在の絞り込み条件」とズレる。そのため、auto-submit 対象である
+    // デスクトップのサイドバー form (#filter-form) の change にだけ追従し、
+    // ボトムシートの Apply 前の change ではカード表示を更新しない
+    // (#117 codex 指摘 2)。
+    function isDesktopSidebarForm(form) {
+      if (!form) return false;
+      // テンプレート上、auto-submit されるデスクトップ form は
+      // id="filter-form"。モバイルのボトムシート form は id を持たない。
+      const id = (typeof form.getAttribute === 'function') ? form.getAttribute('id') : form.id;
+      return id === 'filter-form';
+    }
+
     function onSidebarTagChange(e) {
       const target = e.target;
       if (!target || target.tagName !== 'INPUT') return;
@@ -188,8 +241,11 @@
       // して、ボタン側 UI に反映する。form 自体は既存 app.js が submit する。
       const form = target.form;
       if (!form) return;
+      // 即時に絞り込みが適用されない (Apply 待ち) モバイルのボトムシートの
+      // change ではカード表示を更新しない (#117 codex 指摘 2)。
+      if (!isDesktopSidebarForm(form)) return;
       const checked = Array.from(form.querySelectorAll('input[type="checkbox"][name="tag"]:checked'))
-        .map((el) => el.value)
+        .map((el) => normalizeTag(el.value))
         .filter((v) => v && v.length > 0);
       // ボタンの aria-pressed / クラスだけを更新（チェックボックス側は
       // ユーザ操作の結果として既に正しい状態）。
@@ -226,6 +282,8 @@
         syncControls,
         readURLTags,
         buildToggledURL,
+        normalizeTag,
+        isDesktopSidebarForm,
       },
     };
   }
