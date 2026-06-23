@@ -757,29 +757,40 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 	// on debounce-driven swaps and the user's selected tag chips are kept
 	// intact by client-side JS.
 	var tags any
+	var tagsForLookup []store.Tag
 	if !fragmentOnly {
 		t, _ := s.store.ListTagsWithCountFiltered(r.Context(), user.ID, q, tagFilters)
 		tags = t
+		tagsForLookup = t
 	}
 
+	// Active filter chips shown above the item list (Issue #115). The display
+	// name is resolved from the Tags facet (full-page) or the items' own Tags
+	// (fragment) so the chip shows the user-entered name rather than the
+	// normalized lowercase form. Tags that cannot be resolved fall back to
+	// their normalized name (e.g. when the filter yields zero results).
+	activeTagFilters := buildActiveTagFilters(tagFilters, tagsForLookup, items, r.URL)
+
 	data := map[string]interface{}{
-		"Title":          "記事一覧",
-		"User":           user,
-		"ActiveNav":      "items",
-		"Items":          items,
-		"Tags":           tags,
-		"SelectedTags":   selectedTagSet(tagFilters),
-		"Page":           pag.Page,
-		"PerPage":        pag.PerPage,
-		"Total":          pag.Total,
-		"TotalPages":     max(1, (pag.Total+pag.PerPage-1)/pag.PerPage),
-		"Query":          q,
-		"Sort":           defaultSort(sort),
-		"PerPageOptions": []int{10, 20, 30, 40, 50},
-		"PrevURL":        pageURL(r.URL, pag.Page-1),
-		"NextURL":        pageURL(r.URL, pag.Page+1),
-		"CSRFToken":      s.csrfFromContext(r.Context()),
-		"QuickAddNotice": quickAddNotice(r.URL.Query().Get("quick_add")),
+		"Title":            "記事一覧",
+		"User":             user,
+		"ActiveNav":        "items",
+		"Items":            items,
+		"Tags":             tags,
+		"SelectedTags":     selectedTagSet(tagFilters),
+		"ActiveTagFilters": activeTagFilters,
+		"ClearAllTagsURL":  buildClearAllTagsURL(r.URL),
+		"Page":             pag.Page,
+		"PerPage":          pag.PerPage,
+		"Total":            pag.Total,
+		"TotalPages":       max(1, (pag.Total+pag.PerPage-1)/pag.PerPage),
+		"Query":            q,
+		"Sort":             defaultSort(sort),
+		"PerPageOptions":   []int{10, 20, 30, 40, 50},
+		"PrevURL":          pageURL(r.URL, pag.Page-1),
+		"NextURL":          pageURL(r.URL, pag.Page+1),
+		"CSRFToken":        s.csrfFromContext(r.Context()),
+		"QuickAddNotice":   quickAddNotice(r.URL.Query().Get("quick_add")),
 	}
 
 	if fragmentOnly {
@@ -1450,6 +1461,122 @@ func selectedTagSet(tags []string) map[string]bool {
 		selected[t] = true
 	}
 	return selected
+}
+
+// ActiveTagFilter is one chip shown above the items list (Issue #115).
+//
+//   - Name: original display name as entered by the user (or normalized form
+//     if no source can resolve a display name)
+//   - NormalizedName: canonical form used by the server filter and the URL
+//   - RemoveURL: URL with this single tag removed from the filter set,
+//     preserving every other query parameter (q, sort, per_page, page).
+//     Used as the chip's `<a href>` so the SSR fallback works when JS is
+//     disabled (NFR 2.1) and as the canonical target the JS path also
+//     navigates to via history.pushState (Req 5.1 / 5.2).
+type ActiveTagFilter struct {
+	Name           string
+	NormalizedName string
+	RemoveURL      string
+}
+
+// buildActiveTagFilters constructs the chip list for the active filter row.
+//
+// Display name resolution priority:
+//  1. The Tags facet (full-page renders) — covers the common case where the
+//     filtered result contains at least one matching tag and the sidebar
+//     facet has been computed.
+//  2. The items' own Tags (fragment renders skip the facet query for
+//     performance) — covers the fragment path where the items returned for
+//     the current page necessarily include each active filter tag.
+//  3. The normalized name itself — fallback for zero-result filters where
+//     neither source resolves the display name.
+//
+// The RemoveURL field is a fully-formed query string with only the target
+// tag removed (and the legacy `?tags=` plural form fully dropped to keep the
+// canonical `?tag=<normalized>` repetition shape per Req 5.1).
+func buildActiveTagFilters(tagFilters []string, facetTags []store.Tag, items []store.ItemListRow, currentURL *url.URL) []ActiveTagFilter {
+	if len(tagFilters) == 0 {
+		return nil
+	}
+	// Build a normalized -> display name lookup. Earlier sources win so that
+	// the facet (which carries the canonical user-entered casing for tags
+	// surfaced through the sidebar) takes priority over the per-item Tags.
+	display := make(map[string]string, len(tagFilters))
+	for _, t := range facetTags {
+		if _, ok := display[t.NormalizedName]; !ok && t.Name != "" {
+			display[t.NormalizedName] = t.Name
+		}
+	}
+	for _, it := range items {
+		for _, t := range it.Tags {
+			if _, ok := display[t.NormalizedName]; !ok && t.Name != "" {
+				display[t.NormalizedName] = t.Name
+			}
+		}
+	}
+
+	out := make([]ActiveTagFilter, 0, len(tagFilters))
+	for _, norm := range tagFilters {
+		name := display[norm]
+		if name == "" {
+			name = norm
+		}
+		out = append(out, ActiveTagFilter{
+			Name:           name,
+			NormalizedName: norm,
+			RemoveURL:      buildTagRemovedURL(currentURL, norm, tagFilters),
+		})
+	}
+	return out
+}
+
+// buildTagRemovedURL returns a URL with the given normalized tag removed
+// from the current filter set, preserving every other query parameter.
+// Both the canonical `?tag=` repetition and the legacy `?tags=` plural form
+// are stripped and the remaining tags are re-emitted in the canonical form
+// (Req 5.1). When the resulting set is empty no `tag` / `tags` parameter is
+// written (Req 5.3).
+func buildTagRemovedURL(currentURL *url.URL, removeNorm string, current []string) string {
+	u := cloneURL(currentURL)
+	q := u.Query()
+	q.Del("tag")
+	q.Del("tags")
+	// `page` is reset whenever the filter set changes because the new result
+	// set may have fewer pages than the current page number. Leaving the
+	// `page=` parameter in place would risk landing on an empty page.
+	q.Del("page")
+	for _, t := range current {
+		if t == removeNorm {
+			continue
+		}
+		q.Add("tag", t)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// buildClearAllTagsURL returns a URL with every tag filter parameter
+// removed (Req 3.6, 5.3). All other query parameters are preserved (Req 5.2)
+// except `page` which is reset because the unfiltered result set will have a
+// different page count.
+func buildClearAllTagsURL(currentURL *url.URL) string {
+	u := cloneURL(currentURL)
+	q := u.Query()
+	q.Del("tag")
+	q.Del("tags")
+	q.Del("page")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// cloneURL returns a shallow copy of u that callers may mutate (RawQuery,
+// query values) without affecting the caller's pointer.
+func cloneURL(u *url.URL) *url.URL {
+	if u == nil {
+		return &url.URL{}
+	}
+	c := *u
+	return &c
 }
 
 func normalizeWhitespace(v string) string {

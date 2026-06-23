@@ -3,6 +3,40 @@
   <div class="notice notice-success">{{.QuickAddNotice}}</div>
 {{end}}
 
+{{/*
+  アクティブフィルタチップ列 (Issue #115)。
+  - SSR で初期描画される (Req 4.5 / NFR 2.1: JS 無効環境でも `<a href>` で動作)
+  - フラグメント取得経路 (X-Requested-With: ItemsFragment) で innerHTML 差し替えされた
+    結果にもチップ列が含まれるので、URL クエリと常に一致する (Req 4.3)
+  - チップ自体が `<a>` なのでネイティブにキーボードフォーカス可能 (Req 6.1 / 6.2)
+  - aria-label で支援技術向けの命名を与える (Req 6.4 / 6.5)
+*/}}
+{{if .ActiveTagFilters}}
+  <div class="active-filters" role="region" aria-label="現在のフィルタ" data-active-filters>
+    <span class="active-filters-label" aria-hidden="true">フィルタ:</span>
+    <ul class="active-filters-list">
+      {{range .ActiveTagFilters}}
+        <li>
+          <a class="chip active-filter-chip"
+             data-active-filter-chip
+             data-tag-normalized="{{.NormalizedName}}"
+             href="{{.RemoveURL}}"
+             role="button"
+             aria-label="フィルタ解除: {{.Name}}">
+            <span class="active-filter-chip-label">{{.Name}}</span>
+            <span class="active-filter-chip-x" aria-hidden="true">×</span>
+          </a>
+        </li>
+      {{end}}
+    </ul>
+    <a class="active-filter-clear-all"
+       data-active-filter-clear-all
+       href="{{.ClearAllTagsURL}}"
+       role="button"
+       aria-label="すべてのフィルタを解除">すべてクリア</a>
+  </div>
+{{end}}
+
 {{if not .Items}}
   <div class="card empty-state">
     <div class="empty-state-title">No articles yet</div>
