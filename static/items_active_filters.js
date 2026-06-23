@@ -9,17 +9,26 @@
 //
 // JS が有効な場合、本モジュールは以下を担当する:
 //
-//   - チップ click を捕捉して preventDefault → history.pushState（戻るで解除前
-//     に戻れる / Req 2.6）→ サイドバー checkbox とカード上タグ button の即時
-//     同期（Req 2.3 / 2.4 / NFR 1.1）→ X-Requested-With: ItemsFragment 経由の
-//     フラグメント取得で一覧を更新（Req 2.2 / NFR 1.2）
+//   - チップ click を捕捉して preventDefault → 現在 URL から該当タグだけを
+//     除いた URL を再構築 → history.pushState（戻るで解除前に戻れる / Req
+//     2.6）→ サイドバー checkbox とカード上タグ button の即時同期（Req 2.3
+//     / 2.4 / NFR 1.1）→ X-Requested-With: ItemsFragment 経由のフラグメント
+//     取得で一覧を更新（Req 2.2 / NFR 1.2）
 //   - 「すべてクリア」click を捕捉して同じ経路で全タグを解除（Req 3.2〜3.6）
 //   - popstate（戻る/進む）で URL に応じてフラグメントを再取得（Req 4.4）
 //
-// チップの href / clear-all の href は SSR 側 (server.go buildTagRemovedURL /
-// buildClearAllTagsURL) で正準形式に整えてあるため、JS は href をそのまま
-// pushState に使い、二重に URL 構築ロジックを持たない。これにより、サーバとの
-// 正準形式の食い違いを起こさない (Req 5.1 / 5.4)。
+// 重要: チップ click / Space activate では SSR の `href` ではなく、`data-tag-
+// normalized` で指定された 1 タグを「現在の `location.href`」から削除した URL
+// を JS 側で再構築して pushState に使う。SSR の href はフラグメント取得が完了
+// するまで前回 URL を反映した古い値のままなので、連続解除中に古い href を
+// そのまま使うと「go 解除 → fetch 待ち → rust 解除」で rust チップの古い
+// href (`?tag=go`) によって解除済みの go が復活する退行が起きる (Req 2.1 /
+// 2.5 / NFR 1.3)。`location.href` は pushState 直後に新 URL を返すため、現在
+// URL から再構築すれば連続解除でも最終状態が正しくなる。
+//
+// URL 再構築はサーバ側 (server.go buildTagRemovedURL / buildClearAllTagsURL)
+// と同じ正準形式 (`?tag=` 繰り返し / 旧 `?tags=csv` は drop) に揃え、他クエリ
+// (page / q / sort / per_page など) を保持する (Req 5.1 / 5.2 / 5.4)。
 //
 // JS 無効環境では本ファイルが評価されないため、`<a href>` のフルページ遷移が
 // そのまま動く (NFR 2.1)。
@@ -161,10 +170,47 @@
       }
     }
 
-    // チップクリック・「すべてクリア」クリック共通のコミット処理。
-    // SSR 側で正準形式に整えた href をそのまま pushState の URL として使い、
-    // 即時に UI を同期した後フラグメントを取得する。
-    function commit(targetHref) {
+    // 現在 URL (location.href) を base に、正準形式 ?tag= 繰り返しで `nextTags`
+    // を再構築した相対 URL (path + search + hash) を返す。
+    // 旧形式 ?tags=csv は一律 drop し、他クエリ (page / q / sort / per_page など)
+    // は保持する (Req 5.1 / 5.2 / 5.4)。
+    function buildTargetURL(nextTags) {
+      const base = location && location.href ? location.href : null;
+      let url;
+      try {
+        url = new URL(base || '/');
+      } catch {
+        return null;
+      }
+      url.searchParams.delete('tag');
+      url.searchParams.delete('tags');
+      for (const t of nextTags) {
+        if (t === '' || t == null) continue;
+        url.searchParams.append('tag', t);
+      }
+      return url.pathname + (url.search || '') + (url.hash || '');
+    }
+
+    // チップ個別解除のターゲット URL を、現在 URL から `normalized` 1 件だけ
+    // 除いた形で再構築する。SSR の chip href は前回 URL を反映した古い値で
+    // ありうるため、連続解除のために必ず現在 URL を基点にする (NFR 1.3)。
+    function buildRemoveTagURL(normalized) {
+      const base = location && location.href ? location.href : null;
+      if (!base) return null;
+      const remaining = readURLTags(base).filter((t) => t !== normalized);
+      return buildTargetURL(remaining);
+    }
+
+    // 「すべてクリア」のターゲット URL は、現在 URL から tag/tags を全削除した
+    // 相対 URL。
+    function buildClearAllURL() {
+      return buildTargetURL([]);
+    }
+
+    // チップ解除・「すべてクリア」共通のコミット処理。
+    // ターゲット URL は呼び出し側で再構築済み。pushState → サイドバー /
+    // カード button の即時同期 → フラグメント取得の順で実行する。
+    function commit(targetHref, nextTags) {
       if (!targetHref) return;
 
       // pushState: 戻るで解除前の絞り込みに戻れる (Req 2.6 / 3.6 / OQ-(b))。
@@ -174,14 +220,35 @@
         // history が使えない環境ではフェッチだけ行う。
       }
 
-      // 即時に UI を更新（フェッチの完了を待たない）(NFR 1.1)。
-      // 新 URL の tag を読み取って syncControls する。これにより、サイドバー
+      // 即時に UI を更新（フェッチの完了を待たない）(NFR 1.1)。サイドバー
       // checkbox とカード上タグ button が新条件と一致する状態に瞬時に
       // 切り替わる (Req 2.3 / 2.4 / 3.4 / 3.5)。
-      const tags = readURLTags(targetHref);
+      const tags = nextTags != null ? nextTags : readURLTags(targetHref);
       syncControls(tags);
 
       void refreshFragment(targetHref);
+    }
+
+    // チップ解除を実行する高レベル API。`data-tag-normalized` 属性から削除対象
+    // タグを取得し、現在 URL から該当タグだけを除く形で commit する。古い SSR
+    // href を経由しないため、フラグメント取得待ち中の連続解除でも最終状態が
+    // 正しく収束する (Req 2.5 / 6.2 / 6.3 / NFR 1.3)。
+    function commitRemoveTag(chip) {
+      if (!chip) return;
+      const normalized = chip.getAttribute('data-tag-normalized') || '';
+      if (normalized === '') return;
+      const base = location && location.href ? location.href : null;
+      if (!base) return;
+      const remaining = readURLTags(base).filter((t) => t !== normalized);
+      const href = buildTargetURL(remaining);
+      commit(href, remaining);
+    }
+
+    // 「すべてクリア」を実行する高レベル API。現在 URL から tag/tags を全削除
+    // する。チップ解除と同じく古い SSR href を使わない (Req 3.2〜3.6 / NFR 1.3)。
+    function commitClearAll() {
+      const href = buildClearAllURL();
+      commit(href, []);
     }
 
     // チップ click / 「すべてクリア」click を delegated でハンドリング
@@ -200,13 +267,13 @@
       const chip = target.closest('[data-active-filter-chip]');
       if (chip) {
         e.preventDefault();
-        commit(chip.getAttribute('href'));
+        commitRemoveTag(chip);
         return;
       }
       const clearAll = target.closest('[data-active-filter-clear-all]');
       if (clearAll) {
         e.preventDefault();
-        commit(clearAll.getAttribute('href'));
+        commitClearAll();
         return;
       }
     }
@@ -230,13 +297,13 @@
       if (chip) {
         // Space のページスクロール既定動作を抑止して click 相当に変換する。
         e.preventDefault();
-        commit(chip.getAttribute('href'));
+        commitRemoveTag(chip);
         return;
       }
       const clearAll = target.closest('[data-active-filter-clear-all]');
       if (clearAll) {
         e.preventDefault();
-        commit(clearAll.getAttribute('href'));
+        commitClearAll();
         return;
       }
     }
@@ -259,6 +326,11 @@
       _debug: {
         getInflight: () => coord.ctrl,
         commit,
+        commitRemoveTag,
+        commitClearAll,
+        buildTargetURL,
+        buildRemoveTagURL,
+        buildClearAllURL,
         syncControls,
         readURLTags,
       },

@@ -620,6 +620,111 @@ test('NFR 1.2 / 1.3: 連続チップクリックで前段の保留 fetch が Abo
   assert.equal(firstSignal.aborted, true, '1 件目の signal が aborted=true になっている');
 });
 
+test('NFR 1.3 (回帰): 連続チップ解除では古い SSR href を経由せず現在 URL から再構築するため、解除済みタグが復活しない', async () => {
+  // 初期 URL: ?tag=go&tag=rust。SSR は go チップに href=?tag=rust、rust チップに
+  // href=?tag=go を出力する（解除後 URL）。go チップを click した直後、
+  // フラグメント取得が完了する前に rust チップを click する。
+  // 旧実装は古い rust チップ href (?tag=go) をそのまま pushState していたため、
+  // 解除済みの go が復活して最終 URL が ?tag=go になってしまった (Req 2.5 /
+  // NFR 1.3 違反)。本テストは、JS が現在の location.href から rust 1 件だけを
+  // 除く形で URL を再構築するため、最終 URL に tag が残らないことを確認する。
+  let firstSignal = null;
+  const firstPending = (_url, options) => {
+    firstSignal = options.signal;
+    return new Promise(() => { /* pending forever */ });
+  };
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=go&tag=rust',
+    fetchHandlers: [firstPending, fragmentResponse('<x>final</x>')],
+    chipTags: [
+      // SSR が出力したまま（fragment 取得待ち中は古い）の href。
+      { normalized: 'go', removeURL: 'http://test.invalid/ui/items?tag=rust' },
+      { normalized: 'rust', removeURL: 'http://test.invalid/ui/items?tag=go' },
+    ],
+    checkboxTags: [
+      { normalized: 'go', checked: true },
+      { normalized: 'rust', checked: true },
+    ],
+  });
+
+  await env.clickChip('go');
+  await flushMicrotasks();
+  // 1 回目クリック直後: URL は ?tag=rust、go の checkbox は OFF。
+  const afterFirst = env.history.calls.filter((c) => c.kind === 'push');
+  assert.equal(afterFirst.length, 1);
+  assert.deepEqual(new URL(afterFirst[0].url).searchParams.getAll('tag'), ['rust']);
+  assert.ok(firstSignal && !firstSignal.aborted, '1 件目 fetch はまだ pending');
+
+  await env.clickChip('rust');
+  await flushMicrotasks();
+  // 2 回目クリック後: 古い rust チップ href (?tag=go) を使わず、現在 URL
+  // (?tag=rust) から rust を除いた形で URL を再構築するため、最終 URL に tag は残らない。
+  const pushes = env.history.calls.filter((c) => c.kind === 'push');
+  assert.equal(pushes.length, 2, 'pushState は 2 回 (1 件目 / 2 件目)');
+  const finalURL = new URL(pushes[1].url);
+  assert.deepEqual(finalURL.searchParams.getAll('tag'), [], '最終 URL に tag は残らない (go が復活しない)');
+  // 1 件目の fetch は 2 件目 click で破棄され、2 件目 fetch が新条件で発火する。
+  assert.equal(firstSignal.aborted, true, '1 件目 fetch signal は aborted');
+  assert.equal(env.fetchCalls.length, 2);
+  // サイドバー checkbox も最終状態と一致 (Req 2.3)。
+  const goCb = env.checkboxes.find((c) => c.value === 'go');
+  const rustCb = env.checkboxes.find((c) => c.value === 'rust');
+  assert.equal(goCb.checked, false, 'go の checkbox は OFF のまま');
+  assert.equal(rustCb.checked, false, 'rust の checkbox も OFF (復活しない)');
+});
+
+test('NFR 1.3 (回帰): Space キー連続解除でも古い SSR href を経由せず最終状態が正しく収束する', async () => {
+  // Req 6.2 はマウスクリックと同等の挙動を Space キーに要求しているため、
+  // 同じ古い href 経由の退行が Space 経路でも発生しないことを確認する。
+  let firstSignal = null;
+  const firstPending = (_url, options) => {
+    firstSignal = options.signal;
+    return new Promise(() => { /* pending forever */ });
+  };
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=go&tag=rust',
+    fetchHandlers: [firstPending, fragmentResponse('<x>final</x>')],
+    chipTags: [
+      { normalized: 'go', removeURL: 'http://test.invalid/ui/items?tag=rust' },
+      { normalized: 'rust', removeURL: 'http://test.invalid/ui/items?tag=go' },
+    ],
+  });
+
+  await env.keydownChip('go', ' ');
+  await flushMicrotasks();
+  await env.keydownChip('rust', ' ');
+  await flushMicrotasks();
+
+  const pushes = env.history.calls.filter((c) => c.kind === 'push');
+  assert.equal(pushes.length, 2);
+  const finalURL = new URL(pushes[1].url);
+  assert.deepEqual(finalURL.searchParams.getAll('tag'), [], 'Space 連続解除でも tag は残らない');
+  assert.equal(firstSignal.aborted, true);
+});
+
+test('NFR 1.3 (回帰): チップ解除は他クエリ (page / q / sort / per_page) を保持する', async () => {
+  // 現在 URL から target URL を再構築するロジックが、tag/tags 以外のクエリを
+  // 落とさないこと (Req 5.2)。
+  const env = loadModule({
+    initialURL: 'http://test.invalid/ui/items?tag=go&tag=rust&q=react&page=3&sort=relevance&per_page=50',
+    fetchHandlers: [fragmentResponse('<x/>')],
+    chipTags: [
+      { normalized: 'go', removeURL: 'http://test.invalid/ui/items?tag=rust&q=react&page=3&sort=relevance&per_page=50' },
+      { normalized: 'rust', removeURL: 'http://test.invalid/ui/items?tag=go&q=react&page=3&sort=relevance&per_page=50' },
+    ],
+    clearAllURL: 'http://test.invalid/ui/items?q=react&page=3&sort=relevance&per_page=50',
+  });
+
+  await env.clickChip('go');
+  await flushMicrotasks();
+  const pushed = new URL(env.history.calls.filter((c) => c.kind === 'push')[0].url);
+  assert.deepEqual(pushed.searchParams.getAll('tag'), ['rust']);
+  assert.equal(pushed.searchParams.get('q'), 'react');
+  assert.equal(pushed.searchParams.get('page'), '3');
+  assert.equal(pushed.searchParams.get('sort'), 'relevance');
+  assert.equal(pushed.searchParams.get('per_page'), '50');
+});
+
 test('NFR 1.1: チップクリックで pushState + UI 同期が fetch 完了を待たずに即時実行される', async () => {
   // pending 状態の fetch でも、pushState とサイドバー checkbox / カード button の
   // 即時更新が完了することを確認する (NFR 1.1: 300ms 以内の視覚反応)。
