@@ -52,47 +52,29 @@ func seedItemsActiveFilterUser(t *testing.T, s *store.Store, ctx context.Context
 	return id
 }
 
-// seedDisplayNameTag inserts a tag whose display name differs from its
-// normalized form (e.g. "Go Lang" / "go lang") so that the chip regression
-// assertion (chip must show "Go Lang", not "go lang") is meaningful. Direct
-// SQL is used rather than CreateItem because CreateItem stores tags with
-// name == normalized_name (ON CONFLICT DO UPDATE SET name=EXCLUDED.name),
-// which would erase the distinct display name.
-func seedDisplayNameTag(t *testing.T, s *store.Store, ctx context.Context, name, normalized string) string {
+// createItemWithDisplayTag exercises the real save path (Store.CreateItem) so
+// that the regression assertions reflect production behavior. Round-5 review
+// (Issue #115 / AC 1.3) flagged that the previous direct-SQL seeding bypassed
+// the save path, where display-name preservation now lives. The store now
+// persists tags.name = display (NFKC + trim, case preserved) and
+// tags.normalized_name = lowercase key, so passing "Go Lang" here results in
+// the chip rendering "Go Lang" rather than the normalized "go lang".
+func createItemWithDisplayTag(t *testing.T, s *store.Store, ctx context.Context, userID, hash, displayTagName string) {
 	t.Helper()
-	var id string
-	err := s.DB.QueryRow(ctx, `
-		INSERT INTO tags (name, normalized_name)
-		VALUES ($1, $2)
-		ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
-		RETURNING id
-	`, name, normalized).Scan(&id)
-	if err != nil {
-		t.Fatalf("seed tag %q: %v", normalized, err)
+	// Build TagInput pairs the same way the HTTP handlers do — via
+	// normalizeTagInputs — so the end-to-end behavior matches handleCreateItem.
+	tagInputs := normalizeTagInputs([]string{displayTagName})
+	rawURL := "https://example.invalid/" + hash
+	if _, _, err := s.CreateItem(ctx, userID, rawURL, rawURL, hash, tagInputs, "title-"+hash, ""); err != nil {
+		t.Fatalf("CreateItem %q: %v", hash, err)
 	}
+	// Item cleanup happens via the user cascade in seedItemsActiveFilterUser's
+	// t.Cleanup, but tags are user-independent and need explicit removal so
+	// concurrent test runs cannot leak normalized_name rows.
+	normalized := tagInputs[0].NormalizedName
 	t.Cleanup(func() {
 		_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, normalized)
 	})
-	return id
-}
-
-// seedItemWithTag inserts an item for the user and links it to a single tag.
-func seedItemWithTag(t *testing.T, s *store.Store, ctx context.Context, userID, hash, tagID string) {
-	t.Helper()
-	var itemID string
-	err := s.DB.QueryRow(ctx, `
-		INSERT INTO items (user_id, url, canonical_url, canonical_hash, title)
-		VALUES ($1, $2, $2, $3, $4)
-		RETURNING id
-	`, userID, "https://example.invalid/"+hash, hash, "title-"+hash).Scan(&itemID)
-	if err != nil {
-		t.Fatalf("seed item %q: %v", hash, err)
-	}
-	if _, err := s.DB.Exec(ctx, `
-		INSERT INTO item_tags (item_id, tag_id) VALUES ($1, $2)
-	`, itemID, tagID); err != nil {
-		t.Fatalf("link item_tag: %v", err)
-	}
 }
 
 // TestHandleUIItemsFullPageZeroResultResolvesDisplayName guards the round-3
@@ -108,6 +90,10 @@ func seedItemWithTag(t *testing.T, s *store.Store, ctx context.Context, userID, 
 // name even for zero-result filters. This test reproduces the handler's
 // full-page data path against the real database and asserts the chips show the
 // original display name rather than the normalized form.
+//
+// Round-5 update: items are now created via Store.CreateItem instead of
+// direct SQL so the test also covers the save path (round-5 reviewer's
+// concern that the previous fixture bypassed it).
 func TestHandleUIItemsFullPageZeroResultResolvesDisplayName(t *testing.T) {
 	s, cleanup := newIntegrationStore(t)
 	defer cleanup()
@@ -116,11 +102,10 @@ func TestHandleUIItemsFullPageZeroResultResolvesDisplayName(t *testing.T) {
 
 	// Two tags with distinct display names. Each tag is on a *separate* item,
 	// so the AND of both ("go lang" AND "rust lang") matches zero items — the
-	// exact condition that emptied the facet and triggered the bug.
-	goTagID := seedDisplayNameTag(t, s, ctx, "Go Lang", "go lang")
-	rustTagID := seedDisplayNameTag(t, s, ctx, "Rust Lang", "rust lang")
-	seedItemWithTag(t, s, ctx, userID, "item-go", goTagID)
-	seedItemWithTag(t, s, ctx, userID, "item-rust", rustTagID)
+	// exact condition that emptied the facet and triggered the bug. The save
+	// path itself now preserves "Go Lang" / "Rust Lang" as tags.name.
+	createItemWithDisplayTag(t, s, ctx, userID, "item-go", "Go Lang")
+	createItemWithDisplayTag(t, s, ctx, userID, "item-rust", "Rust Lang")
 
 	// Active filters as parsed from ?tag=go+lang&tag=rust+lang on a full-page
 	// (non-fragment) request.
@@ -169,4 +154,114 @@ func TestHandleUIItemsFullPageZeroResultResolvesDisplayName(t *testing.T) {
 	if got := byNorm["rust lang"]; got != "Rust Lang" {
 		t.Errorf("chip for rust lang = %q, want original display name %q (regression to normalized form)", got, "Rust Lang")
 	}
+}
+
+// TestSaveAndEditPathPreservesDisplayName guards the round-5 review regression
+// (Issue #115 / AC 1.3): the previous code path normalized tag names to
+// lowercase before storing, so even when the user entered "Go Lang" the chip
+// rendered "go lang" — violating AC 1.3 (chips must show the original display
+// name). The save path now persists tags.name = display (NFKC + trim, case
+// preserved) and tags.normalized_name = lowercase key as distinct values, so
+// both Create and Patch flows surface the user-entered casing.
+//
+// Round-4 reviewer's `TagsByNormalizedNames(userID, ...)` is intentionally
+// reused here so the test covers Create + Edit + display-name lookup in one
+// end-to-end path through the real database.
+func TestSaveAndEditPathPreservesDisplayName(t *testing.T) {
+	s, cleanup := newIntegrationStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	userID := seedItemsActiveFilterUser(t, s, ctx)
+
+	t.Run("CreateItem preserves user-entered casing", func(t *testing.T) {
+		hash := "create-path-go"
+		rawURL := "https://example.invalid/" + hash
+		inputs := normalizeTagInputs([]string{"Go Lang"})
+		if _, _, err := s.CreateItem(ctx, userID, rawURL, rawURL, hash, inputs, "create-title", ""); err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, "go lang")
+		})
+
+		got, err := s.TagsByNormalizedNames(ctx, userID, []string{"go lang"})
+		if err != nil {
+			t.Fatalf("TagsByNormalizedNames: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 tag, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Go Lang" {
+			t.Errorf("tags.name = %q, want %q (round-5 regression — save path must keep original casing)", got[0].Name, "Go Lang")
+		}
+		if got[0].NormalizedName != "go lang" {
+			t.Errorf("tags.normalized_name = %q, want %q", got[0].NormalizedName, "go lang")
+		}
+	})
+
+	t.Run("PatchItem preserves user-entered casing on edit", func(t *testing.T) {
+		// Seed a fresh item with normalized tag, then edit it to a display
+		// name with distinct casing to verify the edit path also preserves
+		// the user-entered form.
+		hash := "patch-path-rust"
+		rawURL := "https://example.invalid/" + hash
+		var itemID string
+		err := s.DB.QueryRow(ctx, `
+			INSERT INTO items (user_id, url, canonical_url, canonical_hash, title)
+			VALUES ($1, $2, $2, $3, $4)
+			RETURNING id
+		`, userID, rawURL, hash, "patch-title").Scan(&itemID)
+		if err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+
+		newTags := normalizeTagInputs([]string{"Rust-Lang"})
+		if _, _, err := s.PatchItem(ctx, userID, itemID, nil, &newTags); err != nil {
+			t.Fatalf("PatchItem: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, "rust-lang")
+		})
+
+		got, err := s.TagsByNormalizedNames(ctx, userID, []string{"rust-lang"})
+		if err != nil {
+			t.Fatalf("TagsByNormalizedNames: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 tag, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Rust-Lang" {
+			t.Errorf("tags.name = %q, want %q (round-5 regression — patch path must keep original casing)", got[0].Name, "Rust-Lang")
+		}
+	})
+
+	t.Run("CreateItem with NFKC fullwidth input folds form while preserving case", func(t *testing.T) {
+		// NFKC normalizes fullwidth letters to halfwidth, but case is preserved
+		// in the display name. AC 1.3 says "正規化前の元の表示名" — Unicode
+		// folding (NFKC) is the standard interpretation of "normalization", and
+		// the case-preserving form is what the user actually sees.
+		hash := "create-nfkc"
+		rawURL := "https://example.invalid/" + hash
+		inputs := normalizeTagInputs([]string{"ＧｏＬａｎｇ"})
+		if _, _, err := s.CreateItem(ctx, userID, rawURL, rawURL, hash, inputs, "nfkc-title", ""); err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		t.Cleanup(func() {
+			_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, "golang")
+		})
+
+		got, err := s.TagsByNormalizedNames(ctx, userID, []string{"golang"})
+		if err != nil {
+			t.Fatalf("TagsByNormalizedNames: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 tag, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "GoLang" {
+			t.Errorf("tags.name = %q, want %q (NFKC fold + case preserved)", got[0].Name, "GoLang")
+		}
+		if got[0].NormalizedName != "golang" {
+			t.Errorf("tags.normalized_name = %q, want %q", got[0].NormalizedName, "golang")
+		}
+	})
 }

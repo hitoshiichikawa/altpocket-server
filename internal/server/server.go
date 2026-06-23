@@ -649,7 +649,7 @@ func (s *Server) handleUpdateItemTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	itemID := chi.URLParam(r, "id")
-	tags, err := s.store.ReplaceItemTags(r.Context(), user.ID, itemID, normalizeTagNames(req.Tags))
+	tags, err := s.store.ReplaceItemTags(r.Context(), user.ID, itemID, normalizeTagInputs(req.Tags))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
@@ -692,15 +692,17 @@ func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
 		req.Title = &trimmed
 	}
 
-	// Normalize tags if provided
-	var normalizedTags *[]string
+	// Normalize tags if provided. We pair the original display name with the
+	// canonical normalized key (TagInput) so the chip column can render the
+	// user-entered casing (Issue #115 / AC 1.3).
+	var tagInputs *[]store.TagInput
 	if req.Tags != nil {
-		nt := normalizeTagNames(*req.Tags)
-		normalizedTags = &nt
+		ti := normalizeTagInputs(*req.Tags)
+		tagInputs = &ti
 	}
 
 	itemID := chi.URLParam(r, "id")
-	title, tags, err := s.store.PatchItem(r.Context(), user.ID, itemID, req.Title, normalizedTags)
+	title, tags, err := s.store.PatchItem(r.Context(), user.ID, itemID, req.Title, tagInputs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
@@ -1427,8 +1429,8 @@ func (s *Server) createItem(ctx context.Context, userID, rawURL string, rawTags 
 		return "", false, errInvalidURL
 	}
 
-	normTags := normalizeTagNames(rawTags)
-	itemID, created, err := s.store.CreateItem(ctx, userID, rawURL, canonicalURL, canonicalHash, normTags, title, excerpt)
+	tagInputs := normalizeTagInputs(rawTags)
+	itemID, created, err := s.store.CreateItem(ctx, userID, rawURL, canonicalURL, canonicalHash, tagInputs, title, excerpt)
 	if err != nil {
 		return "", false, err
 	}
@@ -1459,11 +1461,39 @@ func normalizeTagNames(rawTags []string) []string {
 	return normTags
 }
 
+// normalizeTagInputs is the write-side counterpart of normalizeTagNames: it
+// preserves the user-entered display Name alongside the canonical
+// NormalizedName key, deduping by normalized key. The first occurrence of a
+// given normalized form wins the display Name (Issue #115 / AC 1.3 — chip must
+// show original "Go Lang" instead of normalized "go lang").
+func normalizeTagInputs(rawTags []string) []store.TagInput {
+	inputs := make([]store.TagInput, 0, len(rawTags))
+	seen := map[string]struct{}{}
+	for _, t := range rawTags {
+		norm := tag.Normalize(t)
+		if norm == "" {
+			continue
+		}
+		if _, ok := seen[norm]; ok {
+			continue
+		}
+		seen[norm] = struct{}{}
+		inputs = append(inputs, store.TagInput{
+			Name:           tag.DisplayName(t),
+			NormalizedName: norm,
+		})
+	}
+	return inputs
+}
+
+// parseTagInput splits a user-entered tag string (comma / semicolon / newline
+// delimited) into raw tokens without normalizing. Display-name preservation is
+// performed downstream by normalizeTagInputs so that the original casing
+// reaches tags.name (Issue #115 / AC 1.3).
 func parseTagInput(v string) []string {
-	parts := strings.FieldsFunc(v, func(r rune) bool {
+	return strings.FieldsFunc(v, func(r rune) bool {
 		return r == ',' || r == ';' || r == '\n' || r == '\r'
 	})
-	return normalizeTagNames(parts)
 }
 
 func parseTagFilters(q url.Values) []string {

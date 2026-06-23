@@ -77,6 +77,17 @@ type Tag struct {
 	Count          int    `json:"count,omitempty"`
 }
 
+// TagInput is the write-side counterpart of Tag used when creating or replacing
+// item tags. Callers compute both the user-facing display Name (NFKC + trim,
+// case preserved) and the canonical NormalizedName key (NFKC + trim + lower),
+// so that the store can persist them as tags.name vs tags.normalized_name
+// respectively (Issue #115 / AC 1.3 — chips must render the original display
+// name rather than the normalized form).
+type TagInput struct {
+	Name           string
+	NormalizedName string
+}
+
 type Item struct {
 	ID               string    `json:"id"`
 	UserID           string    `json:"user_id"`
@@ -272,9 +283,13 @@ func (s *Store) ListItemsForExport(ctx context.Context, userID string) ([]Export
 	return items, rows.Err()
 }
 
-// CreateItem inserts a new item. tagNames should already be normalized for both display and key.
-// title and excerpt are optional prefill values from the extension; empty strings are valid.
-func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canonicalHash string, tagNames []string, title, excerpt string) (string, bool, error) {
+// CreateItem inserts a new item along with its tags. Each TagInput carries the
+// user-facing display Name and the canonical NormalizedName key separately so
+// that tags.name keeps the original casing while tags.normalized_name remains
+// the canonical lookup key (Issue #115 / AC 1.3).
+// title and excerpt are optional prefill values from the extension; empty
+// strings are valid.
+func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canonicalHash string, tagInputs []TagInput, title, excerpt string) (string, bool, error) {
 	var itemID string
 	created := false
 
@@ -308,15 +323,15 @@ func (s *Store) CreateItem(ctx context.Context, userID, url, canonicalURL, canon
 		created = true
 	}
 
-	if created && len(tagNames) > 0 {
-		for _, name := range tagNames {
+	if created && len(tagInputs) > 0 {
+		for _, ti := range tagInputs {
 			var tagID string
 			row = tx.QueryRow(ctx, `
 				INSERT INTO tags (name, normalized_name)
 				VALUES ($1, $2)
 				ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
 				RETURNING id
-			`, name, name)
+			`, ti.Name, ti.NormalizedName)
 			if err = row.Scan(&tagID); err != nil {
 				return "", false, err
 			}
@@ -532,9 +547,11 @@ func (s *Store) RequestRefetch(ctx context.Context, userID, itemID string) error
 }
 
 // PatchItem updates an item's title and/or tags atomically within a transaction.
-// Pass nil for title or tags to skip updating that field.
+// Pass nil for title or tags to skip updating that field. Each TagInput keeps
+// the display Name and the canonical NormalizedName key separated so that the
+// chip rendering preserves the original casing (Issue #115 / AC 1.3).
 // Returns the current title and tags after the update.
-func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *string, tags *[]string) (string, []Tag, error) {
+func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *string, tags *[]TagInput) (string, []Tag, error) {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		return "", nil, err
@@ -571,14 +588,14 @@ func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *str
 			return "", nil, err
 		}
 
-		for _, name := range *tags {
+		for _, ti := range *tags {
 			var tagID string
 			if err = tx.QueryRow(ctx, `
 				INSERT INTO tags (name, normalized_name)
 				VALUES ($1, $2)
 				ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
 				RETURNING id
-			`, name, name).Scan(&tagID); err != nil {
+			`, ti.Name, ti.NormalizedName).Scan(&tagID); err != nil {
 				return "", nil, err
 			}
 			if _, err = tx.Exec(ctx, `
@@ -631,9 +648,11 @@ func (s *Store) PatchItem(ctx context.Context, userID, itemID string, title *str
 }
 
 // ReplaceItemTags replaces all tags for an item. This is a wrapper around PatchItem
-// that only updates tags, maintaining backward compatibility.
-func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagNames []string) ([]Tag, error) {
-	_, tags, err := s.PatchItem(ctx, userID, itemID, nil, &tagNames)
+// that only updates tags. Each TagInput carries the display Name and the
+// canonical NormalizedName key separately so that chip rendering keeps the
+// original casing (Issue #115 / AC 1.3).
+func (s *Store) ReplaceItemTags(ctx context.Context, userID, itemID string, tagInputs []TagInput) ([]Tag, error) {
+	_, tags, err := s.PatchItem(ctx, userID, itemID, nil, &tagInputs)
 	return tags, err
 }
 

@@ -84,13 +84,65 @@ func TestWantsItemsFragment(t *testing.T) {
 }
 
 func TestParseTagInput(t *testing.T) {
+	// parseTagInput now only splits — normalization and dedup happen downstream
+	// in normalizeTagInputs so the original casing reaches tags.name
+	// (Issue #115 / AC 1.3).
 	got := parseTagInput(" Go,news;go\nweb ")
-	if len(got) != 3 {
-		t.Fatalf("expected 3 tags, got %d", len(got))
+	if len(got) != 4 {
+		t.Fatalf("expected 4 raw tokens (no dedup), got %d: %#v", len(got), got)
 	}
-	if got[0] != "go" || got[1] != "news" || got[2] != "web" {
-		t.Fatalf("unexpected tags: %#v", got)
+	if got[0] != " Go" || got[1] != "news" || got[2] != "go" || got[3] != "web " {
+		t.Fatalf("unexpected raw tokens: %#v", got)
 	}
+}
+
+func TestNormalizeTagInputs(t *testing.T) {
+	// normalizeTagInputs subsumes the previous combined behaviour of
+	// parseTagInput: trim+NFKC for the display Name, lowercase NormalizedName
+	// for the key, dedup by normalized key with first-display-wins (Issue #115
+	// / AC 1.3).
+	t.Run("preserves user casing while normalizing the key", func(t *testing.T) {
+		got := normalizeTagInputs([]string{"Go Lang", "Rust-Lang"})
+		if len(got) != 2 {
+			t.Fatalf("expected 2 inputs, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Go Lang" || got[0].NormalizedName != "go lang" {
+			t.Errorf("got[0] = (%q, %q), want (Go Lang, go lang)", got[0].Name, got[0].NormalizedName)
+		}
+		if got[1].Name != "Rust-Lang" || got[1].NormalizedName != "rust-lang" {
+			t.Errorf("got[1] = (%q, %q), want (Rust-Lang, rust-lang)", got[1].Name, got[1].NormalizedName)
+		}
+	})
+
+	t.Run("dedups by normalized key and keeps the first display", func(t *testing.T) {
+		got := normalizeTagInputs([]string{"Go Lang", "go lang", "GO LANG"})
+		if len(got) != 1 {
+			t.Fatalf("expected 1 input after dedup, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Go Lang" || got[0].NormalizedName != "go lang" {
+			t.Errorf("got[0] = (%q, %q), want first-display (Go Lang, go lang)", got[0].Name, got[0].NormalizedName)
+		}
+	})
+
+	t.Run("drops empty / whitespace-only entries", func(t *testing.T) {
+		got := normalizeTagInputs([]string{"", "   ", " Go ", "\t"})
+		if len(got) != 1 {
+			t.Fatalf("expected 1 input, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "Go" || got[0].NormalizedName != "go" {
+			t.Errorf("got[0] = (%q, %q), want (Go, go)", got[0].Name, got[0].NormalizedName)
+		}
+	})
+
+	t.Run("NFKC folds fullwidth chars while preserving case", func(t *testing.T) {
+		got := normalizeTagInputs([]string{"ＧｏＬａｎｇ"})
+		if len(got) != 1 {
+			t.Fatalf("expected 1 input, got %d: %#v", len(got), got)
+		}
+		if got[0].Name != "GoLang" || got[0].NormalizedName != "golang" {
+			t.Errorf("got[0] = (%q, %q), want (GoLang, golang)", got[0].Name, got[0].NormalizedName)
+		}
+	})
 }
 
 func TestParseTagFilters(t *testing.T) {

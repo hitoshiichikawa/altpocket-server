@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -45,44 +46,25 @@ func seedTagsLookupUser(t *testing.T, s *Store, ctx context.Context, label strin
 	return id
 }
 
-// seedDisplayTag inserts a tag whose display name differs from its normalized
-// form (e.g. "Go Lang" / "go lang"). ON CONFLICT keeps the canonical display
-// name even when a previous seed registered a different one.
-func seedDisplayTag(t *testing.T, s *Store, ctx context.Context, name, normalized string) string {
+// createUserItemWithDisplayTag exercises the real CreateItem path so the test
+// matches production behavior. Round-5 review (Issue #115 / AC 1.3) flagged
+// that direct-SQL seeding bypassed the save path, where display-name
+// preservation now lives. CreateItem persists tags.name = display (NFKC + trim,
+// case preserved) and tags.normalized_name = lowercase key as distinct values.
+// The corresponding tag row is cleaned up after the test so concurrent runs
+// don't leak a normalized_name row.
+func createUserItemWithDisplayTag(t *testing.T, s *Store, ctx context.Context, userID, hash, displayTagName string) {
 	t.Helper()
-	var id string
-	err := s.DB.QueryRow(ctx, `
-		INSERT INTO tags (name, normalized_name)
-		VALUES ($1, $2)
-		ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name
-		RETURNING id
-	`, name, normalized).Scan(&id)
-	if err != nil {
-		t.Fatalf("seed tag %q: %v", normalized, err)
+	display := strings.TrimSpace(displayTagName)
+	normalized := strings.ToLower(display)
+	inputs := []TagInput{{Name: display, NormalizedName: normalized}}
+	rawURL := "https://example.invalid/" + hash
+	if _, _, err := s.CreateItem(ctx, userID, rawURL, rawURL, hash, inputs, "title-"+hash, ""); err != nil {
+		t.Fatalf("CreateItem %q: %v", hash, err)
 	}
 	t.Cleanup(func() {
 		_, _ = s.DB.Exec(ctx, `DELETE FROM tags WHERE normalized_name = $1`, normalized)
 	})
-	return id
-}
-
-// seedItemLinkedToTag inserts an item for userID and links it to tagID.
-func seedItemLinkedToTag(t *testing.T, s *Store, ctx context.Context, userID, hash, tagID string) {
-	t.Helper()
-	var itemID string
-	err := s.DB.QueryRow(ctx, `
-		INSERT INTO items (user_id, url, canonical_url, canonical_hash, title)
-		VALUES ($1, $2, $2, $3, $4)
-		RETURNING id
-	`, userID, "https://example.invalid/"+hash, hash, "title-"+hash).Scan(&itemID)
-	if err != nil {
-		t.Fatalf("seed item %q: %v", hash, err)
-	}
-	if _, err := s.DB.Exec(ctx, `
-		INSERT INTO item_tags (item_id, tag_id) VALUES ($1, $2)
-	`, itemID, tagID); err != nil {
-		t.Fatalf("link item_tag %q: %v", hash, err)
-	}
 }
 
 // TestTagsByNormalizedNames covers the helper used by the /ui/items active
@@ -108,18 +90,13 @@ func TestTagsByNormalizedNames(t *testing.T) {
 	viewer := seedTagsLookupUser(t, s, ctx, "viewer")
 	other := seedTagsLookupUser(t, s, ctx, "other")
 
-	// "Go Lang" / "go lang" — owned by the viewer (via an item link).
-	goTag := seedDisplayTag(t, s, ctx, "Go Lang", "go lang")
-	seedItemLinkedToTag(t, s, ctx, viewer, "viewer-go", goTag)
-
-	// "Rust-Lang" / "rust-lang" — owned by the viewer.
-	rustTag := seedDisplayTag(t, s, ctx, "Rust-Lang", "rust-lang")
-	seedItemLinkedToTag(t, s, ctx, viewer, "viewer-rust", rustTag)
-
-	// "TypeScript" / "typescript" — owned only by `other`. The viewer must NOT
-	// receive this tag back even when its normalized_name is requested.
-	tsTag := seedDisplayTag(t, s, ctx, "TypeScript", "typescript")
-	seedItemLinkedToTag(t, s, ctx, other, "other-ts", tsTag)
+	// Items are now created via Store.CreateItem so the test exercises the
+	// real save path and validates the round-5 display-name preservation
+	// (Issue #115 / AC 1.3): tags.name keeps the user-entered casing while
+	// tags.normalized_name is the lowercase key.
+	createUserItemWithDisplayTag(t, s, ctx, viewer, "viewer-go", "Go Lang")
+	createUserItemWithDisplayTag(t, s, ctx, viewer, "viewer-rust", "Rust-Lang")
+	createUserItemWithDisplayTag(t, s, ctx, other, "other-ts", "TypeScript")
 
 	t.Run("empty input returns nil without query", func(t *testing.T) {
 		got, err := s.TagsByNormalizedNames(ctx, viewer, nil)
