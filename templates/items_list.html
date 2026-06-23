@@ -26,7 +26,13 @@
     {{if .Tags}}
       <div class="tags">
         {{range .Tags}}
-          <span class="tag">{{.Name}}</span>
+          {{$selected := index $.SelectedTags .NormalizedName}}
+          <button type="button"
+                  class="tag tag-filter-toggle{{if $selected}} is-selected{{end}}"
+                  data-tag-filter-toggle
+                  data-tag-normalized="{{.NormalizedName}}"
+                  aria-pressed="{{if $selected}}true{{else}}false{{end}}"
+                  aria-label="タグで絞り込み: {{.Name}}">{{.Name}}</button>
         {{end}}
       </div>
     {{end}}

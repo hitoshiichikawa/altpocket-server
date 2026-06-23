@@ -269,7 +269,11 @@ func TestItemsTagsDivRendering(t *testing.T) {
 		}
 	})
 
-	t.Run("タグ複数件のカードで .tags と .tag が描画される", func(t *testing.T) {
+	t.Run("タグ複数件のカードで .tags と .tag-filter-toggle ボタンが描画される (Issue #117)", func(t *testing.T) {
+		// Issue #117: タグは <span> から <button class="tag tag-filter-toggle"> に
+		// 変更され、data-tag-normalized / aria-pressed / data-tag-filter-toggle が
+		// 付与される。これらは JS (static/items_tags.js) がクリック絞り込みのため
+		// に依拠する契約なので、テンプレート側で必ず描画されること。
 		body := renderItemsWith(t, []testItemRow{{
 			ID:          "item-tagged",
 			URL:         "https://example.com/b",
@@ -285,11 +289,28 @@ func TestItemsTagsDivRendering(t *testing.T) {
 		if !strings.Contains(body, `<div class="tags">`) {
 			t.Errorf("expected <div class=\"tags\"> to be rendered when item has tags")
 		}
-		if c := strings.Count(body, `<span class="tag">`); c != 2 {
-			t.Errorf("expected 2 <span class=\"tag\"> elements, got %d", c)
+		// 2 件のタグそれぞれに対応する button が描画される。
+		if c := strings.Count(body, `data-tag-filter-toggle`); c != 2 {
+			t.Errorf("expected 2 data-tag-filter-toggle markers, got %d\nbody:\n%s", c, body)
 		}
+		if !strings.Contains(body, `data-tag-normalized="go"`) {
+			t.Errorf("expected data-tag-normalized=\"go\" attribute, got body:\n%s", body)
+		}
+		if !strings.Contains(body, `data-tag-normalized="html"`) {
+			t.Errorf("expected data-tag-normalized=\"html\" attribute, got body:\n%s", body)
+		}
+		// <span class="tag"> は廃止: 後方互換を意図して残しているわけではないため、
+		// この方向で書かれていないことを念のため確認する（混在防止）。
+		if strings.Contains(body, `<span class="tag">`) {
+			t.Errorf("legacy <span class=\"tag\"> must not be rendered (Issue #117): %s", body)
+		}
+		// タグ表示名は人間可読として残る。
 		if !strings.Contains(body, "Go") || !strings.Contains(body, "HTML") {
-			t.Errorf("expected tag names to be present in body")
+			t.Errorf("expected tag display names to be present in body")
+		}
+		// type="button" であること（JS 無効環境でも form を勝手に submit しない / NFR 2.1）。
+		if !strings.Contains(body, `type="button"`) {
+			t.Errorf("expected tag toggle to be a type=\"button\" (no implicit form submit)")
 		}
 	})
 
@@ -317,8 +338,95 @@ func TestItemsTagsDivRendering(t *testing.T) {
 		if c := strings.Count(body, `<div class="tags">`); c != 1 {
 			t.Errorf("expected exactly 1 <div class=\"tags\">, got %d", c)
 		}
-		if c := strings.Count(body, `<span class="tag">`); c != 1 {
-			t.Errorf("expected exactly 1 <span class=\"tag\">, got %d", c)
+		if c := strings.Count(body, `data-tag-filter-toggle`); c != 1 {
+			t.Errorf("expected exactly 1 data-tag-filter-toggle marker, got %d", c)
+		}
+	})
+}
+
+// TestItemsTagSelectedState は Issue #117 の要件 1.4 / 4.3 を担保する。
+//
+//   - 現在の絞り込みに含まれているタグ（SelectedTags が true を返す NormalizedName）には
+//     aria-pressed="true" と is-selected クラスが付与される
+//   - 含まれていないタグには aria-pressed="false" が付与され is-selected は付かない
+//   - これは JS (static/items_tags.js) が初期 SSR DOM 上で「選択中」の判定に依拠する
+//     契約であり、JS 経由で再描画されるフラグメントでも同じ規約で出力される
+func TestItemsTagSelectedState(t *testing.T) {
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+
+	render := func(t *testing.T, selected map[string]bool) string {
+		t.Helper()
+		r, err := New("../../templates")
+		if err != nil {
+			t.Fatalf("failed to create renderer: %v", err)
+		}
+		data := map[string]interface{}{
+			"Title": "記事一覧",
+			"Items": []testItemRow{{
+				ID:          "item-sel",
+				URL:         "https://example.com/sel",
+				Title:       "選択テスト",
+				Excerpt:     "e",
+				FetchStatus: "completed",
+				CreatedAt:   now,
+				Tags: []testItemTag{
+					{Name: "Go", NormalizedName: "go"},
+					{Name: "Rust", NormalizedName: "rust"},
+				},
+			}},
+			"Tags":           []testItemTag{},
+			"SelectedTags":   selected,
+			"Page":           1,
+			"PerPage":        30,
+			"Total":          1,
+			"TotalPages":     1,
+			"Query":          "",
+			"Sort":           "newest",
+			"PerPageOptions": []int{10, 20, 30, 40, 50},
+			"PrevURL":        "",
+			"NextURL":        "",
+		}
+		rr := httptest.NewRecorder()
+		if err := r.Render(rr, "items", data); err != nil {
+			t.Fatalf("render error: %v", err)
+		}
+		return rr.Body.String()
+	}
+
+	t.Run("選択中のタグに aria-pressed=true と is-selected が付く (要件 1.4)", func(t *testing.T) {
+		body := render(t, map[string]bool{"go": true})
+		// "go" は選択中 → aria-pressed="true" + is-selected
+		if !strings.Contains(body, `data-tag-normalized="go"`) {
+			t.Fatalf("expected go button to be rendered")
+		}
+		// aria-pressed="true" がいずれかの button に現れる
+		if !strings.Contains(body, `aria-pressed="true"`) {
+			t.Errorf("expected at least one aria-pressed=\"true\" in body:\n%s", body)
+		}
+		if !strings.Contains(body, `is-selected`) {
+			t.Errorf("expected is-selected class on selected tag button:\n%s", body)
+		}
+	})
+
+	t.Run("非選択タグには aria-pressed=false が付き is-selected は付かない (要件 1.4 反対側)", func(t *testing.T) {
+		body := render(t, map[string]bool{})
+		// 非選択タグのみ → "is-selected" は登場しない
+		if strings.Contains(body, `is-selected`) {
+			t.Errorf("did not expect is-selected when no tags are selected:\n%s", body)
+		}
+		// 全ての button に aria-pressed="false" が付く（2 件 = 2 個）
+		if c := strings.Count(body, `aria-pressed="false"`); c != 2 {
+			t.Errorf("expected aria-pressed=\"false\" on both tags, got %d:\n%s", c, body)
+		}
+	})
+
+	t.Run("複数選択中のタグそれぞれに aria-pressed=true が付く (要件 1.4 / 2.3 整合)", func(t *testing.T) {
+		body := render(t, map[string]bool{"go": true, "rust": true})
+		if c := strings.Count(body, `aria-pressed="true"`); c != 2 {
+			t.Errorf("expected aria-pressed=\"true\" on both selected tags, got %d:\n%s", c, body)
+		}
+		if c := strings.Count(body, `is-selected`); c != 2 {
+			t.Errorf("expected is-selected on both selected tags, got %d:\n%s", c, body)
 		}
 	})
 }
