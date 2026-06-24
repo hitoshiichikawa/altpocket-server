@@ -49,12 +49,51 @@ func New(ds DataSource, userID string) *mcp.Server {
 	return s
 }
 
+// mcpStatusFilter converts the MCP tool's Status input string into the
+// statuses slice consumed by Store.ListItems / Store.ListRecentItems.
+//
+// Mapping (canonical 値集合との完全一致のみで分岐):
+//
+//	""             → nil                          (既定: 全状態 / Req 6.3 / Req 5.2)
+//	"unread"       → []string{"unread"}            (Req 5.3)
+//	"read"         → []string{"read"}              (Req 5.3)
+//	"archived"     → []string{"archived"}          (Req 5.3)
+//	"all"          → []string{"unread", "read"}    (archived 除外 / Req 3.4 と web/MCP を揃える)
+//	"unread,read"  → nil                          (区切り文字埋め込みの複数指定 / Req 5.3 複数指定フォールバック)
+//	"unread read"  → nil                          (スペース区切りも同様)
+//	"foo" / その他 → nil                          (不明値 / Req 6.3 / 破壊しない)
+//
+// 実装上は canonical 値集合 {"", "unread", "read", "archived", "all"} との完全一致のみで
+// 分岐し、それ以外は一律 nil。split 実装は導入しない（複数指定と不明値を同一の nil
+// 帰着で扱うことで実装と回帰検証を最小化する / design.md "mcpStatusFilter" 節）。
+//
+// 単一文字列以外の入力（JSON 配列、繰り返しクエリキー、非文字列型）は MCP の JSON
+// Schema 検証によって handler 到達前に validation error として拒否されるため、本関数
+// には到達しない（design.md "複数指定の取扱" error mode (A)）。
+func mcpStatusFilter(s string) []string {
+	switch s {
+	case "":
+		return nil
+	case "unread":
+		return []string{store.ItemStatusUnread}
+	case "read":
+		return []string{store.ItemStatusRead}
+	case "archived":
+		return []string{store.ItemStatusArchived}
+	case "all":
+		return []string{store.ItemStatusUnread, store.ItemStatusRead}
+	default:
+		return nil
+	}
+}
+
 // --- list_items tool ---
 
 type ListItemsInput struct {
 	Page    int    `json:"page,omitempty" jsonschema:"ページ番号（デフォルト: 1）"`
 	PerPage int    `json:"per_page,omitempty" jsonschema:"1ページあたりの件数（デフォルト: 30, 最大: 50）"`
 	Sort    string `json:"sort,omitempty" jsonschema:"並び替え: newest または oldest（デフォルト: newest）"`
+	Status  string `json:"status,omitempty" jsonschema:"状態フィルタ: unread / read / archived / all（既定: 全状態）"`
 }
 
 func listItemsHandler(ds DataSource, userID string) mcp.ToolHandlerFor[ListItemsInput, any] {
@@ -72,7 +111,9 @@ func listItemsHandler(ds DataSource, userID string) mcp.ToolHandlerFor[ListItems
 			sort = "newest"
 		}
 
-		items, pag, err := ds.ListItems(ctx, userID, page, perPage, "", nil, sort)
+		statuses := mcpStatusFilter(args.Status)
+
+		items, pag, err := ds.ListItems(ctx, userID, page, perPage, "", nil, statuses, sort)
 		if err != nil {
 			return errorResult("データベース接続エラー: " + err.Error()), nil, nil
 		}
@@ -91,6 +132,7 @@ type SearchItemsInput struct {
 	Tags    []string `json:"tags,omitempty" jsonschema:"タグによる絞り込み（AND結合）"`
 	Page    int      `json:"page,omitempty" jsonschema:"ページ番号（デフォルト: 1）"`
 	PerPage int      `json:"per_page,omitempty" jsonschema:"1ページあたりの件数（デフォルト: 30, 最大: 50）"`
+	Status  string   `json:"status,omitempty" jsonschema:"状態フィルタ: unread / read / archived / all（既定: 全状態）"`
 }
 
 func searchItemsHandler(ds DataSource, userID string) mcp.ToolHandlerFor[SearchItemsInput, any] {
@@ -113,7 +155,9 @@ func searchItemsHandler(ds DataSource, userID string) mcp.ToolHandlerFor[SearchI
 			sort = "relevance"
 		}
 
-		items, pag, err := ds.ListItems(ctx, userID, page, perPage, args.Query, args.Tags, sort)
+		statuses := mcpStatusFilter(args.Status)
+
+		items, pag, err := ds.ListItems(ctx, userID, page, perPage, args.Query, args.Tags, statuses, sort)
 		if err != nil {
 			return errorResult("データベース接続エラー: " + err.Error()), nil, nil
 		}
@@ -161,6 +205,7 @@ func getItemHandler(ds DataSource, userID string) mcp.ToolHandlerFor[GetItemInpu
 			"content_full":  contentFull,
 			"tags":          tags,
 			"fetch_status":  detail.FetchStatus,
+			"status":        detail.Status,
 			"created_at":    detail.CreatedAt.Format(time.RFC3339),
 		}), nil, nil
 	}
@@ -197,7 +242,11 @@ func listTagsHandler(ds DataSource, userID string) mcp.ToolHandlerFor[ListTagsIn
 func recentArticlesHandler(ds DataSource, userID string) mcp.ResourceHandler {
 	return func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		since := time.Now().Add(-24 * time.Hour)
-		items, err := ds.ListRecentItems(ctx, userID, since)
+		// recent-articles is a Resource (ReadResourceRequest) and does not
+		// accept structured input arguments. Always pass statuses=nil (whole-set)
+		// per design.md "`recent-articles` Resource の status 引数取扱" section.
+		// Req 5.2 (固定既定値) is satisfied by the "nil = 全状態" choice.
+		items, err := ds.ListRecentItems(ctx, userID, since, nil)
 		if err != nil {
 			return nil, fmt.Errorf("データベース接続エラー: %w", err)
 		}
@@ -241,6 +290,7 @@ func formatItemList(items []store.ItemListRow) []map[string]any {
 			"excerpt":      item.Excerpt,
 			"tags":         tags,
 			"fetch_status": item.FetchStatus,
+			"status":       item.Status,
 			"created_at":   item.CreatedAt.Format(time.RFC3339),
 		})
 	}
