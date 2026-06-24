@@ -307,7 +307,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: McpServer_
   - _Depends: 2_
 
-- [ ] 6. SSR テンプレート: 状態タブ markup + items_list の data-status / status-badge + 既存フォームに status hidden 保持
+- [x] 6. SSR テンプレート: 状態タブ markup + items_list の data-status / status-badge + 既存フォームに status hidden 保持
   - `templates/items.html`:
     - 検索バー直下、`<section class="split">` の手前に `<nav class="status-tabs" role="tablist"
       aria-label="アイテム状態">` を追加。Unread / All / Archived の 3 タブを `<a role="tab"
