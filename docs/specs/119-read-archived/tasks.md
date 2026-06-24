@@ -24,23 +24,28 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       を実装（所有チェック + UPDATE + 旧 status 取得 / `pgx.ErrNoRows` で 404 collapse）
       - **旧 status 取得の SQL pattern**: 通常の `UPDATE ... RETURNING status` は **更新後**
         の値を返してしまうため、NFR 3.1（遷移前後ログ）には CTE を用いて更新前行を捕捉する。
-        実装例:
+        実装例（**UPDATE が `prev` CTE に依存する** 形にして、`FOR UPDATE` で行を取った後に
+        必ず UPDATE が走るよう順序を強制する。PostgreSQL の data-modifying CTE では同一ステートメント
+        内の sub-CTE 間の評価順は依存関係でのみ確定するため、依存無しで並べると `FOR UPDATE` の
+        ロック取得前に `UPDATE` 側が再 SELECT してしまい `prev` の値が不正確になる可能性がある /
+        設計 #6）:
         ```sql
         WITH prev AS (
-          SELECT status FROM items
+          SELECT id, status FROM items
           WHERE id = $1 AND user_id = $2
           FOR UPDATE
-        ),
-        upd AS (
-          UPDATE items SET status = $3
-          WHERE id = $1 AND user_id = $2
-          RETURNING id
         )
-        SELECT prev.status FROM prev, upd;
+        UPDATE items
+        SET status = $3
+        FROM prev
+        WHERE items.id = prev.id
+        RETURNING prev.status;
         ```
       - 上記 1 クエリで「行が存在しない / 他ユーザー所有」を `pgx.ErrNoRows` として
-        collapse でき、prev は更新前 status を返す（PostgreSQL 16 で動作）
-      - `FOR UPDATE` で同一行への並行更新を直列化し、prev / next の取り違えを防ぐ
+        collapse でき、`prev.status` は更新前 status を返す（PostgreSQL 16 で動作）
+      - `FROM prev WHERE items.id = prev.id` で UPDATE を `prev` CTE に明示的に依存させることで、
+        `FOR UPDATE` によるロック取得 → UPDATE 実行の順序を保証する。`prev` が空（行未存在）の
+        場合は UPDATE 対象行もゼロとなり `pgx.QueryRow` が `pgx.ErrNoRows` を返す
     - `ListItems` シグネチャを `(ctx, userID, page, perPage, q, tags, statuses, sort)` に
       拡張。`statuses` が非空なら `i.status = ANY($N)` を WHERE に追加。SELECT に `i.status`
       を含める
@@ -88,8 +93,12 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       後方互換: 既存 `/v1/items` クライアントは status 未送信で全状態を取得し続ける）
     - `handleUIItems`: `statuses := parseStatusFilter(r.URL.Query(), []string{store.ItemStatusUnread})`
       を渡す（Req 3.1: Web UI 初期表示で unread のみ）
-    - `handleUIItems` のテンプレート data に `"StatusTab"` / `"StatusTabURLs"` を追加（次タスクで
-      テンプレート側を実装）
+    - `handleUIItems` のテンプレート data に `"StatusTab"` / `"StatusTabURLs"` / **`"StatusQuery"`**
+      を追加（次タスクでテンプレート側を実装）。`StatusQuery` は現在 URL の `?status=` 生値
+      （未指定時は空文字）で、検索 form / sort form / per-page form の hidden input に注入する
+    - 既存の **clear filters / sort / per-page link builder** が `?status=` を温存することを確認し、
+      温存していない場合は server 側のヘルパー（`buildActiveTagFilters` 周辺の URL ビルダー）に
+      `?status=` の引き継ぎを追加する（Req 3.6 の併用、設計 #5）
   - `internal/server/items_status_test.go` を新規作成（テスト計画 / Req カバレッジ対応表）:
     - `Test_parseStatusFilter_TableDriven`: `""` / `"unread"` / `"all"` / `"archived"` / `"read"` /
       不明値 / 大文字混在 を、`defaultIfEmpty=nil` と `defaultIfEmpty=["unread"]` の 2 系列で
@@ -105,10 +114,19 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `TestHandleSetItemStatusOtherUserItemReturns404`: handler 経路で実際に他ユーザー所有 item に
       対する PATCH を試行し、404 が返ることを確認（fake / mock の store で `pgx.ErrNoRows` を
       シミュレートする。NFR 2.1 のサーバ層拒否を回帰検証）
+    - `TestHandleSetItemStatusLogsTransitionFields`: 成功時の `slog.Info("items.status.update", ...)`
+      に `user_id` / `item_id` / `prev` / `next` の 4 フィールドが正しい値で含まれ、かつ
+      Cookie / session token / Authorization ヘッダ / 本文の生値が出力**されない**ことを assert
+      する（`slog` の handler を test 用 buffer に差し替えて JSON line を観察。NFR 3.1 の機密
+      非出力と遷移ログの両方を回帰検証 / 設計 #9）
+    - `TestHandleUIItemsTemplateDataIncludesStatusQuery`: `handleUIItems` が `?status=` を
+      `StatusQuery` テンプレート data として渡し、検索 form / sort form の hidden input ビルダー
+      および clear-filters / pagination URL ビルダーが `?status=` を温存することを assert
+      （Req 3.6 / 3.8 の併用永続を回帰検証 / 設計 #5）
   - `extension_contract_test.go` は **変更しない**（成功時の JSON フィールド構造は assert
     していないため）
-  - **テスト追加（同 task 内）**: 上記 8 種の handler / parser テストを本タスクで完結させる
-    （Req 1.4 / 1.5 / 2.3〜2.6 / 3.1 / 3.3〜3.5 / 6.2 / NFR 2.1 / NFR 3.1 の同 task 内テスト必須カテゴリに該当）
+  - **テスト追加（同 task 内）**: 上記 10 種の handler / parser テストを本タスクで完結させる
+    （Req 1.4 / 1.5 / 2.3〜2.6 / 3.1 / 3.3〜3.6 / 3.8 / 6.2 / NFR 2.1 / NFR 3.1 の同 task 内テスト必須カテゴリに該当）
   - _Requirements: 1.4, 1.5, 1.6, 2.3, 2.4, 2.5, 2.6, 3.1, 3.3, 3.4, 3.5, 3.6, 6.2, NFR 2.1, NFR 3.1_
   - _Boundary: Server_
   - _Depends: 2_
@@ -121,8 +139,14 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - 内部ヘルパー `mcpStatusFilter(s string) []string` を追加（**既定 `nil`（全状態 / Req 6.3
       後方互換）**、`unread`/`read`/`archived`/`all` を受理、不明値・複数指定は `nil`
       フォールバック / design.md「既定値・受付値の確定」参照）
-    - `listItemsHandler` / `searchItemsHandler` / `recentArticlesHandler` で `mcpStatusFilter(args.Status)`
-      の結果を store に渡す
+    - `listItemsHandler` / `searchItemsHandler` で `mcpStatusFilter(args.Status)` の結果を
+      store に渡す
+    - `recentArticlesHandler` は **MCP Resource**（`*mcp.ReadResourceRequest` を受け取り、
+      `ListItemsInput` / `SearchItemsInput` のような構造化 input 引数を持たない）であるため、
+      `args.Status` は存在しない。`ListRecentItems` 呼び出しでは固定で `nil`（全状態）を渡す。
+      Req 5.3（クライアントが状態を引数で指定）は input 引数を持つ Tool 側（list_items /
+      search_items）で満たし、Req 5.2（既定値を本仕様内の 1 値に固定）は recent-articles では
+      `nil`（全状態）で満たす（design.md「`recent-articles` Resource の status 引数取扱」節を参照）
     - `formatItemList` / `getItemHandler` の出力 JSON に `"status": item.Status` / `"status": detail.Status` を追加
   - `internal/mcpserver/server_test.go`（テスト計画 / Req カバレッジ対応表）:
     - fake DataSource を新シグネチャに更新（`statuses []string` をキャプチャできる recorder 化）
@@ -151,31 +175,45 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: McpServer_
   - _Depends: 2_
 
-- [ ] 6. SSR テンプレート: 状態タブ markup + items_list の data-status / status-badge
+- [ ] 6. SSR テンプレート: 状態タブ markup + items_list の data-status / status-badge + 既存フォームに status hidden 保持
   - `templates/items.html`:
     - 検索バー直下、`<section class="split">` の手前に `<nav class="status-tabs" role="tablist"
       aria-label="アイテム状態">` を追加。Unread / All / Archived の 3 タブを `<a role="tab"
       aria-selected="..." href="{{index .StatusTabURLs "unread"}}">` 形式で描画
     - active タブには `class="is-active"` と `aria-selected="true"` を付与（`{{if eq .StatusTab "unread"}}...{{end}}`）
+    - **`?status=` を併用 UI で保持する hidden input / URL 構築（Req 3.6 / 3.8 / 設計 #5）**:
+      - 検索 GET form（`<form method="get" ...>` で `q` を送るやつ）に `<input type="hidden"
+        name="status" value="{{.StatusQuery}}">` を追加（`.StatusQuery` はハンドラが渡す現在
+        選択中の `?status=` 値、未指定時は空文字で hidden を省略してもよい）
+      - sort セレクタ / per-page セレクタの form にも同じ hidden を追加
+      - 「Clear filters」リンク（タグ・検索 chip の解除）の `href` ビルダー（既存
+        `buildActiveTagFilters` / `clearAllFiltersURL` 系）が `?status=` を温存することを確認し、
+        必要なら server.go 側で温存ロジックを追加（タスク 4 の `handleUIItems` 拡張で対応）
   - `templates/items_list.html`:
     - `<article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}"
       data-status="{{.Status}}" ...>` のように `data-status` を追加
     - meta 行に `<span class="item-status-badge" data-status="{{.Status}}" role="status"
       aria-label="状態: {{.Status}}">{{.Status}}</span>` を追加（NFR 4: テキストラベル併用）
+    - ページネーション link の `href` ビルダーも `?status=` を温存することを確認（既存
+      pagination URL ビルダーがクエリ全体を引き継ぐ pattern なら追加作業不要）
   - SSR でタブの aria-selected と URL クエリの整合性を取れることをハンドラ側 data 渡しで確認
-    （server タスク 4 の `StatusTabURLs` / `StatusTab` data 整備済み前提）
+    （server タスク 4 の `StatusTabURLs` / `StatusTab` / `StatusQuery` data 整備済み前提）
   - JS 無効環境でもタブが `<a href>` でフルページ遷移として動作することを目視確認
   - **テスト追加（同 task 内）**: テンプレート差分の単体テストは Go 側の既存 renderer test の
     枠を使わず、次タスク 7 のボタン追加・タスク 9 のスタイル追加と合わせた目視確認に統一する
-    （SSR テンプレートのみの単独 regression test は本リポジトリで歴史的に低価値のため省略）
+    （SSR テンプレートのみの単独 regression test は本リポジトリで歴史的に低価値のため省略）。
+    `?status=` 温存の挙動はタスク 4 の `handleUIItems` テスト（後述）で hidden input / URL
+    builder 経由の挙動を回帰検証する
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 4.1, 4.4_
   - _Boundary: Templates_
   - _Depends: 4_
 
 - [ ] 7. SSR テンプレート: item-card の既読/アーカイブボタン追加（archive 解除も含む）
-  - `templates/items_list.html` の `.item-actions` 内に以下を追加:
+  - `templates/items_list.html` の `.item-actions` 内に以下を追加（**`unread` を主軸に分岐**し、
+    `read` / `archived` を「未読に戻す」側に集約する。JS の `next = currentStatus === 'unread' ? 'read' : 'unread'`
+    と一致させる。Req 2.3 / 2.4 / 2.6 の整合）:
     - `<button type="button" class="btn-secondary mark-read-toggle" data-item-id="{{.ID}}"
-      data-current-status="{{.Status}}" aria-label="{{if eq .Status "read"}}未読に戻す{{else if eq .Status "archived"}}未読に戻す{{else}}既読にする{{end}}">{{if eq .Status "read"}}Mark unread{{else if eq .Status "archived"}}Mark unread{{else}}Mark read{{end}}</button>`
+      data-current-status="{{.Status}}" aria-label="{{if eq .Status "unread"}}既読にする{{else}}未読に戻す{{end}}">{{if eq .Status "unread"}}Mark read{{else}}Mark unread{{end}}</button>`
     - `<button type="button" class="btn-secondary archive-toggle" data-item-id="{{.ID}}"
       data-current-status="{{.Status}}" aria-label="{{if eq .Status "archived"}}アーカイブ解除{{else}}アーカイブする{{end}}">{{if eq .Status "archived"}}Unarchive{{else}}Archive{{end}}</button>`
   - `templates/item_detail.html` の actions 列にも同じ 2 ボタンを追加（任意・同 PATCH 経路を共有）
@@ -189,8 +227,9 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
 
 - [ ] 8. static JS: 状態切替ボタンの delegated click + 失敗時巻き戻し
   - `static/app.js` の既存 delegated click handler（refetch / delete の隣）に追加:
-    - `button.mark-read-toggle`: `currentStatus` を読み、`next = currentStatus === 'read' ? 'unread' : 'read'`
-      （`archived` なら `unread`）を算出。`fetch('/v1/items/' + id + '/status', {method:'PATCH',
+    - `button.mark-read-toggle`: `currentStatus` を読み、**`next = currentStatus === 'unread' ? 'read' : 'unread'`**
+      を算出する（`unread` → `read` / `read` → `unread` / `archived` → `unread` の 3 ケースを
+      1 式で満たす。Req 2.3 / 2.4 / 2.6）。`fetch('/v1/items/' + id + '/status', {method:'PATCH',
       headers: {...headers, 'Content-Type':'application/json'}, body: JSON.stringify({status: next})})` を呼ぶ
     - 成功時: card の `data-status` 属性を更新、ボタンの label / aria-label を新状態に合わせて
       書き換え、`item-status-badge` のテキストを更新。現在の status タブ条件で非表示にすべき
@@ -201,27 +240,43 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     では新規 shortcut なし）
   - **テスト追加（同 task 内）**: `static/items_status.test.mjs` を新規追加し、`node --test`
     で以下を検証（既存 `items_active_filters.test.mjs` のパターンを参考にする）:
-    - mark-read-toggle click で fetch が `/v1/items/<id>/status` PATCH を呼ぶ
-    - 成功時に `data-status` が更新される
-    - 失敗時に元の `data-status` が維持される
-    - archive-toggle click で next が `archived`、archived 時は `unread` になる
+    - `mark-read-toggle` を `data-current-status="unread"` カードで click → fetch が
+      `/v1/items/<id>/status` PATCH を呼び、body が `{"status":"read"}`（Req 2.3）
+    - `mark-read-toggle` を `data-current-status="read"` カードで click → body が
+      `{"status":"unread"}`（Req 2.4）
+    - **`mark-read-toggle` を `data-current-status="archived"` カードで click → body が
+      `{"status":"unread"}`** を直接 assert（Req 2.6 のアーカイブ解除を回帰検証）
+    - 成功時に `data-status` が更新される（Req 2.8）
+    - 失敗時に元の `data-status` が維持される（Req 2.7）
+    - `archive-toggle` を `data-current-status="unread"` カードで click → body が
+      `{"status":"archived"}`（Req 2.5）
+    - `archive-toggle` を `data-current-status="archived"` カードで click → body が
+      `{"status":"unread"}`（Req 2.6 のもう一方の経路）
   - _Requirements: 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, NFR 1.3_
   - _Boundary: Static_
   - _Depends: 4, 7_
 
-- [ ] 9. static JS: items_status.js（タブ切替 + fragment 取得 + popstate）
+- [ ] 9. static JS: items_status.js（タブ切替 + fragment 取得 + popstate + タブ active 同期）
   - `static/items_status.js` を新規作成。`static/items_active_filters.js` の pattern に揃える:
     - `[data-items-region]` 上の `__itemsFragmentInflight` slot を共有して AbortController を持つ
     - `<nav.status-tabs a[role="tab"]>` の click を delegated 捕捉 → `?status=` を書き換えた
       相対 URL を計算 → `history.pushState` → `X-Requested-With: ItemsFragment` で fragment 取得
-    - popstate で `?status=` を読み取って fragment 取得（Req 3.8 の URL クエリ永続を戻る/進むに追従）
+    - **タブ active 状態の手動同期**: status-tabs は `items.html` 側にあり、fragment 取得で
+      置換される `items_list.html` には含まれない。fragment 取得直後（および click 直後）に
+      JS が `nav.status-tabs a[role="tab"]` を走査し、新 `?status=` 値に一致するタブに
+      `aria-selected="true"` / `class="is-active"` を付与し、他のタブからは外す処理を行う
+      （Req 3.7 の常時可視化、Req 3.8 のページ遷移後保持と矛盾しない描画維持）
+    - popstate で `?status=` を読み取って fragment 取得（Req 3.8 の URL クエリ永続を戻る/進むに追従）。
+      popstate 時も上記タブ active 状態の手動同期を行う
     - 修飾キー付き click（Cmd/Ctrl/Shift/Alt）は intercept せず既定動作を維持
   - `templates/items.html` の script 読み込み行に `<script src="/static/items_status.js?v={{assetVersion}}" defer></script>` を追加
   - **テスト追加（同 task 内）**: `static/items_status_tabs.test.mjs` を新規追加し、`node --test`
     で以下を検証:
     - タブ click で URL が `?status=...` に切り替わる
     - fragment fetch が `X-Requested-With: ItemsFragment` を含む
-    - popstate で fragment 再取得が起きる
+    - **タブ click 直後（および fragment fetch 完了後）に、新 `?status=` 値に一致するタブだけが
+      `aria-selected="true"` / `is-active` を持つ**ことを assert（Req 3.7 / 3.8 の active 同期回帰）
+    - popstate で fragment 再取得が起き、タブ active 状態も新 URL に追従して更新される
     - 連続切替時に AbortController で前段が abort される（race 防止）
   - _Requirements: 3.2, 3.6, 3.7, 3.8, NFR 1.1, NFR 1.2_
   - _Boundary: Static_

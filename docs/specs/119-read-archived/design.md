@@ -189,7 +189,11 @@ static/
 - `internal/mcpserver/server.go`:
   - `ListItemsInput` / `SearchItemsInput` に `Status string \`json:"status,omitempty"\`` 追加
   - `formatItemList` / `getItemHandler` JSON に `"status"` を含める
-  - `recentArticlesHandler` の `ListRecentItems` 呼び出しに `statuses` を渡す（既定 `unread`）
+  - `recentArticlesHandler` は MCP **Resource**（`*mcp.ReadResourceRequest` を受け、構造化 input 引数を
+    持たない）であるため、`ListRecentItems` 呼び出しでは固定で `statuses = nil`（全状態）を渡す。
+    Req 5.2 の「既定値を本仕様内で明文化された 1 つの値に固定」を「`nil`（全状態）」で満たし、
+    Req 5.3 の「クライアントが状態を引数で指定」は input 引数を持つ Tool（`list_items` /
+    `search_items`）側で満たす（後述「`recent-articles` Resource の status 引数取扱」を参照）
 - `internal/mcpserver/deps.go`: `DataSource` interface のメソッドシグネチャを上記に揃える
 - `templates/items.html`: 状態タブ markup を追加（`<nav class="status-tabs">` に Unread / All /
   Archived の 3 リンク。`?status=<v>` 書換、aria-selected による active 表示、#115 の active-filter chip 列と矛盾しないよう **検索バー直下・active-filter chips の上**に配置）
@@ -200,16 +204,20 @@ static/
     を追加（aria-label 必須、Req 2.1 / 2.2 / NFR 4.2）
 - `templates/item_detail.html`: 詳細ページ右上 actions 列に同じ切替ボタンを追加（任意 / 同一 PATCH 経路）
 - `static/style.css`:
-  - `.item-card[data-status="read"]`: タイトル文字色を `--text-tertiary` トーンに、border-left を
-    淡色化（color-only 依存を避ける）
+  - `.item-card[data-status="read"]`: タイトル文字色を `--text-tertiary` トーンに、opacity を
+    `0.85` 程度に弱化（**border-left は使わない**。#12 の `.failed` の `border-left: 3px solid
+    var(--color-danger)` と同じ軸に乗ると `read + failed` 同時成立時に競合し Req 4.2 / 4.3 の
+    別軸表示を満たせなくなるため、`read` は border-left を使わず色・透明度で表現する / 設計 #8）
   - `.item-card[data-status="archived"]`: 背景を `--bg-elevated` から弱化、status badge を併設
+    （`archived` も border-left を使わない。`failed` 軸と直交させる / Req 4.3）
   - `.item-status-badge[data-status="read"]` / `[data-status="archived"]` を SSR で description
     span に追加し、テキストラベル（"既読" / "アーカイブ"）を併記（NFR 4 の色のみ依存禁止）
   - `.status-tabs`: 既存 `.active-filters` と同じ余白トークンで描画、`[aria-selected="true"]`
     で primary 反転スタイル
   - `.item-card.failed` （#12）の border-left との衝突回避: `failed` は既存通り
-    `border-left: 3px solid var(--color-danger)` を維持、`status="archived"` は border-left を
-    使わず背景・透明度で表現する（Req 4.3）
+    `border-left: 3px solid var(--color-danger)` を維持、`status="read"` / `status="archived"`
+    は border-left を使わず、`read` は色弱化・`archived` は背景弱化・両者とも `item-status-badge`
+    のテキストで表現する（Req 4.2 / 4.3）
 - `static/app.js`: 既存 delegated click handler の隣に `button.mark-read-toggle` /
   `button.archive-toggle` を追加。`fetch('/v1/items/{id}/status', {method:'PATCH', body: JSON.stringify({status: next})})` を呼び、失敗時は toast.error で通知（Req 2.7）
 - `static/items_status.js` (新規): 状態タブ click 捕捉 → `?status=` 書換 → history.pushState →
@@ -427,8 +435,15 @@ func parseStatusFilter(q url.Values, defaultIfEmpty []string) []string
 - `handleUIItems`: `statuses := parseStatusFilter(r.URL.Query(), []string{"unread"})` を呼び、
   `s.store.ListItems(... statuses ...)` に渡す（既定 `unread`、Req 3.1）
 - `handleUIItems` のテンプレートデータに `"StatusTab"` キー（"unread" / "all" / "archived" の
-  どれが選択中か）と `"StatusTabURLs"` キー（各タブの遷移先 URL）を追加し、`templates/items.html`
-  でタブ active 表示を制御する
+  どれが選択中か）、`"StatusTabURLs"` キー（各タブの遷移先 URL）、および **`"StatusQuery"` キー**
+  （現在 URL の `?status=` 生値、未指定時は空文字）を追加する。`StatusQuery` は `templates/items.html`
+  の検索 form / sort form / per-page form の hidden input（`<input type="hidden" name="status" value="...">`)
+  へ注入され、検索・ソート・Per Page 操作時に `?status=` を温存する（Req 3.6 の併用）
+- 既存の URL ビルダー（clear-filters / pagination link / active-tag chip 解除リンク等、
+  `server.go` の `buildActiveTagFilters` 系ヘルパー）が `?status=` を保持することを確認し、
+  保持していなければ server.go 側で温存ロジックを追加する。これにより Archived / All タブ上で
+  検索・ソート・Per Page・Clear filters 操作を行っても `?status=` が落ちず、意図せず Unread
+  初期値へ戻る事故を防ぐ（Req 3.8 の保持永続）
 
 ### mcpserver 層
 
@@ -470,14 +485,14 @@ type SearchItemsInput struct {
 
 **既定値・受付値の確定**（設計確認事項 (a) と Req 6.3 の両立 / 高指摘 #2 を反映）
 
-各 MCP tool について以下に統一する。受付値は `unread` / `read` / `archived` / `all` の
-単一文字列。
+各 MCP tool / resource について以下に統一する。受付値は `unread` / `read` / `archived` / `all` の
+単一文字列（Tool に限る）。
 
-| MCP tool | Status `""` の解釈 | 根拠 |
-|----------|-------------------|------|
-| `list_items` | `nil`（store 層で status フィルタを WHERE に追加しない = 全状態） | Req 6.3: 既存 MCP クライアントは status を送らない。`unread` 既定にすると `read` / `archived` 化されたアイテムが listing から消え、本機能導入前と破壊的に異なる挙動になる |
-| `search_items` | `nil`（同上） | 同上 |
-| `recent-articles` | `nil`（同上、本仕様内で明文化された 1 つの値として「全状態」を採用） | Req 5.2 は「既定値を本仕様内で明文化された 1 つの値に固定する」ことを要求しており、その固定値として `nil`（全状態）を採用することで Req 6.3 と同時に満たす |
+| MCP tool / resource | 種別 | Status 入力受付 | 既定 (status `""` / 入力なし) の解釈 | 根拠 |
+|---------------------|------|-----------------|--------------------------------------|------|
+| `list_items` | Tool（`CallToolRequest`） | あり（`ListItemsInput.Status`） | `nil`（store 層で status フィルタを WHERE に追加しない = 全状態） | Req 6.3: 既存 MCP クライアントは status を送らない。`unread` 既定にすると `read` / `archived` 化されたアイテムが listing から消え、本機能導入前と破壊的に異なる挙動になる |
+| `search_items` | Tool（`CallToolRequest`） | あり（`SearchItemsInput.Status`） | `nil`（同上） | 同上 |
+| `recent-articles` | Resource（`ReadResourceRequest`） | **なし**（input 引数を持たない） | `nil`（本仕様内で明文化された 1 つの値として「全状態」を採用） | Req 5.2 は「既定値を本仕様内で明文化された 1 つの値に固定する」ことを要求しており、その固定値として `nil`（全状態）を採用することで Req 6.3 と同時に満たす。Req 5.3（クライアントが状態を引数で指定）は input 引数を持つ Tool 側で満たす |
 
 内部ヘルパー `mcpStatusFilter(s string) []string` のマッピング:
 
@@ -496,6 +511,26 @@ func mcpStatusFilter(s string) []string
 
 明示的に `unread` を指定する新規 MCP クライアントは `Status: "unread"` を送ることで未読のみ
 取得できる。本変更により既存 MCP クライアントは引き続き全状態を取得できる（Req 6.3）。
+
+##### `recent-articles` Resource の status 引数取扱（Req 5.2 / Req 5.3 の整理）
+
+`recent-articles` は MCP **Resource**（URI ベースで読み出される静的・準静的データソース）で
+あり、現行実装（`internal/mcpserver/server.go` の `recentArticlesHandler`）は
+`*mcp.ReadResourceRequest` を受け取る `mcp.ResourceHandler` 型である。`mcp.ReadResourceRequest`
+は URI と client 情報を運ぶのみで、`ListItemsInput` / `SearchItemsInput` のような構造化 input
+引数フィールド（`args.Status` 相当）を持たない。したがって本機能の範囲では以下のように整理する:
+
+- `recentArticlesHandler` は **入力引数を受け付けない**。`ListRecentItems` 呼び出しでは固定で
+  `statuses = nil`（全状態 / status 条件を WHERE に追加しない）を渡す
+- Req 5.2（「新着取得」相当の機能で返すアイテム集合の状態フィルタ既定値を本仕様内で明文化
+  された 1 つの値に固定）は、recent-articles では **「`nil`（全状態）」の 1 値固定** で満たす
+- Req 5.3（MCP クライアントが状態を引数で指定したとき、指定された状態のアイテムのみを返す）は、
+  **input 引数を持つ Tool（`list_items` / `search_items`）で満たす**。Req 5.3 の「Where MCP
+  クライアントが状態を引数で指定した」という前提節（Where 節）は、入力引数を持たない Resource
+  には適用されず、recent-articles は本 AC のスコープ外となる
+- 将来 recent-articles の URI を `altpocket://recent-articles?status=unread` 形式の URI Template
+  に拡張して状態指定を受け付ける改修は、Resource → ResourceTemplate への移行を伴うため
+  **本 Issue のスコープ外**（必要であれば別 Issue で扱う）
 
 #### DataSource interface（mcpserver/deps.go）
 
@@ -533,8 +568,8 @@ type DataSource interface {
         class="btn-secondary mark-read-toggle"
         data-item-id="{{.ID}}"
         data-current-status="{{.Status}}"
-        aria-label="{{if eq .Status "read"}}未読に戻す{{else}}既読にする{{end}}">
-  {{if eq .Status "read"}}Mark unread{{else}}Mark read{{end}}
+        aria-label="{{if eq .Status "unread"}}既読にする{{else}}未読に戻す{{end}}">
+  {{if eq .Status "unread"}}Mark read{{else}}Mark unread{{end}}
 </button>
 <button type="button"
         class="btn-secondary archive-toggle"
@@ -544,6 +579,16 @@ type DataSource interface {
   {{if eq .Status "archived"}}Unarchive{{else}}Archive{{end}}
 </button>
 ```
+
+**遷移セマンティクス（Req 2.3 / 2.4 / 2.6 の整合）**: `mark-read-toggle` は「`unread` ⇄ それ以外」
+ではなく「`unread` → `read` / それ以外 → `unread`」として実装する。これにより:
+
+- `unread` → `read`（Req 2.3）
+- `read` → `unread`（Req 2.4）
+- `archived` → `unread`（Req 2.6 のアーカイブ解除）
+
+の 3 ケースを 1 つのボタンで同時に満たす。テンプレートも `{{if eq .Status "unread"}}` を主軸に
+分岐させ、`read` / `archived` を「未読に戻す」側に集約することで JS 側のロジックと一致させる。
 
 - card description 行に `<span class="item-status-badge" data-status="{{.Status}}">{{.Status}}</span>`
   を追加（NFR 4: 色のみに依存しないテキストラベル）
@@ -555,14 +600,20 @@ type DataSource interface {
 - `items_active_filters.js` と同じ pattern: `[data-items-region]` 上の AbortController slot を共有、
   status-tabs の click を delegated 捕捉 → `?status=` 書換 → history.pushState → fragment 取得
 - popstate でも `?status=` を読み取って fragment 取得 → 戻る/進むに追従
+- **タブ active 状態の手動同期**: status-tabs は `items.html` 側に SSR 描画され、fragment 取得で
+  置換される `items_list.html` には含まれない。そのため fragment fetch 完了後（および click
+  直後）に JS が `nav.status-tabs a[role="tab"]` を走査し、新 `?status=` 値に一致するタブのみに
+  `aria-selected="true"` / `class="is-active"` を付与する処理を別途必要とする（Req 3.7 の常時
+  可視化、Req 3.8 の保持後描画整合）。popstate 時も同処理を実行する
 
 #### app.js（変更）
 
 - 既存 delegated click handler（refetch / delete）の隣に以下を追加:
-  - `button.mark-read-toggle`: `currentStatus` を読み、`next = currentStatus === 'read' ? 'unread' : 'read'`
-    （`archived` の場合は `unread`）を計算 → PATCH → 成功時 `data-current-status` 更新 + ボタン
-    label / aria-label 更新。現在の status タブで非表示にすべき item は `<article>` 要素を
-    DOM から fade-out で削除（Req 2.8）
+  - `button.mark-read-toggle`: `currentStatus` を読み、`next = currentStatus === 'unread' ? 'read' : 'unread'`
+    を計算（`unread` → `read` / `read` → `unread` / `archived` → `unread` の 3 ケースを 1 式で
+    満たす。Req 2.3 / 2.4 / 2.6）→ PATCH → 成功時 `data-current-status` 更新 + ボタン label /
+    aria-label 更新。現在の status タブで非表示にすべき item は `<article>` 要素を DOM から
+    fade-out で削除（Req 2.8）
   - `button.archive-toggle`: `currentStatus === 'archived' ? 'unread' : 'archived'` → PATCH →
     同上
   - 失敗時: `toast.error` + ボタンと card の元状態を維持（Req 2.7）
@@ -609,9 +660,12 @@ flowchart TD
 ```
 
 - **forward-only**（down migration は提供しない、本リポジトリ規約）
-- マイグレーションは **コード deploy 前**に手動 `psql -f` で適用（規約: 自動化は #87 で議論中）
-- 旧コードが新スキーマで動いても `status` カラムを読み書きしないため壊れない（`SELECT i.id,
-  i.url, ...` は明示列挙のため）。順序逆転（コード deploy → migration）でも事故にならない構造
+- **デプロイ順序は migration → コード deploy を厳守**（手動 `psql -f` で適用、自動化は #87 で議論中）
+  - 新コードは `items.status` を SELECT / UPDATE するため、migration 適用前の旧スキーマで新コードを deploy すると
+    一覧 / 詳細 / 状態更新クエリが `column "status" does not exist` で失敗する
+  - **順序逆転（コード deploy → migration）は許容しない**（旧コード→新スキーマは互換だが、逆方向は壊れる）
+  - 既存呼び出しが `SELECT i.id, i.url, ...` のように列名明示であっても、新規 `i.status` の参照が
+    新コードに含まれるため、旧スキーマでは必ずクエリが失敗する
 - backfill は CTAS ではなく `ADD COLUMN NOT NULL DEFAULT` で即時完了（中サイズテーブル想定で
   ALTER TABLE が短時間でロック取得・解放できる前提。10,000 件/ユーザー想定の NFR 1 と整合）
 
@@ -651,9 +705,13 @@ flowchart TD
   - `TestItemListRowJSONHasStatusSnakeCase`: 既存 `json_tags_test.go` の row に `Status: "read"`
     を入れて `"status"` キーの存在を assert
 - `internal/mcpserver`:
-  - `TestListItemsHandler_DefaultStatusUnread`: fake DataSource を使い、`Status` 空入力で
-    `[]string{"unread"}` が store に渡るか assert
+  - `TestListItemsHandler_DefaultStatusIsNilAllStates`: fake DataSource を使い、`Status` 空入力で
+    `nil`（全状態 / status フィルタを WHERE に追加しない）が store に渡るか assert
+    （Req 5.2 / Req 6.3 を満たす既定値が `unread` ではなく `nil` であることを確認 / 設計 #7）
   - `TestListItemsHandler_OutputContainsStatus`: 返却 JSON に `status` キーが含まれることを assert
+  - `TestRecentArticlesHandler_AlwaysCallsStoreWithNilStatuses`: `recent-articles` Resource は
+    input 引数を持たないため、`ListRecentItems` 呼び出しの `statuses` 引数が常に `nil` で
+    あることを assert（設計 #2: recent-articles の入力受付なし設計を回帰検証）
 
 ### Integration Tests（3-5 項目、`-tags=integration`）
 
@@ -714,23 +772,32 @@ PM の requirements 末尾 5 件について、本 design では以下の暫定�
 振る舞いに直結する (a) / (b) / (d) / (e) は本 spec 範囲で確定**し、(c) は本 Issue から除外
 する。実装後の人間レビューで再検討の余地がある場合は PR レビューで指摘してもらう。
 
-### (a) MCP の状態フィルタ既定値・受付値 — **確定**（高指摘 #2 反映）
+### (a) MCP の状態フィルタ既定値・受付値 — **確定**（高指摘 #2 反映 / r2 で recent-articles の Resource 性質を明示）
 
 - 既定値: **`nil`（全状態 / status 条件を WHERE に追加しない）**
-  - `list_items` / `search_items` / `recent-articles` のいずれも、`Status` 引数空 → `nil`
+  - `list_items` / `search_items` / `recent-articles` のいずれも、`Status` 引数空（または
+    引数を持たない）→ `nil`
   - Req 6.3（既存 MCP クライアントが status を送らないリクエストで破壊変更しない）と
     Req 5.2（既定値を本仕様内で明文化された 1 つの値に固定する）を同時に満たすため、
     固定値として「全状態」を採用する
-- 受付値: `unread` / `read` / `archived` / `all` の **単一文字列**
+- 受付値（**Tool のみ**）: `unread` / `read` / `archived` / `all` の **単一文字列**
   - `unread` → `[]string{"unread"}`、`read` → `[]string{"read"}`、`archived` → `[]string{"archived"}`
   - `all` → `[]string{"unread","read"}`（archived 除外、Web UI All タブと同一意味論）
 - 不明値・複数指定は **`nil`（全状態）にフォールバック**（Req 6.3 の破壊しない原則を守る）
+- `recent-articles` は **MCP Resource** であり、Tool のような構造化 input 引数（`Status`
+  フィールド）を持たない。本 Resource では status 引数の受付を行わず、常に `nil`（全状態）で
+  固定する。Req 5.3（クライアントが状態を引数で指定）は input 引数を持つ Tool 側で満たす
+  （詳細は「`recent-articles` Resource の status 引数取扱」節を参照）
 
-**初回案からの変更点**: 当初は `Status` 空 → `unread` 既定としていたが、Reviewer 指摘により
+**初回案からの変更点（r1）**: 当初は `Status` 空 → `unread` 既定としていたが、Reviewer 指摘により
 `list_items` / `search_items` / `recent-articles` を `unread` 既定にすると既存 MCP クライアントが
 `read` / `archived` 化されたアイテムを listing から取りこぼし Req 6.3 違反となるため、既定を
 `nil`（全状態）へ変更した。明示的に未読のみ取得したい新規クライアントは `Status: "unread"`
 を送ることで従来案の挙動を得られる。
+
+**r2 での変更点**: Reviewer 指摘により、`recent-articles` が MCP **Resource**（`ReadResourceRequest`）
+であり構造化 input 引数を持たないことを明示。受付値の表記から recent-articles の `args.Status`
+への言及を除去し、Req 5.3 の主体は Tool（`list_items` / `search_items`）に限定した。
 
 ### (b) タブ選択の保持永続単位 — **確定**
 
