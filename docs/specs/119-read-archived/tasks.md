@@ -18,8 +18,11 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - ファイル冒頭コメントに Issue #119 の意図・background・既存マイグレーション 001..006 との
     相対適用順、および冪等性パターン（`IF NOT EXISTS` + `DO $$ EXCEPTION` ブロック）の趣旨を記述
   - 既存マイグレーション（001〜006）の中身は **書き換えない**
-  - _Requirements: 1.1, 1.2, 1.3, 1.5, 6.1_
+  - _Requirements: 1.1, 1.2, 1.3, 1.5, 6.1, NFR 1.1, NFR 1.2_
   - _Boundary: migrations_
+  - 注: `items_user_status_idx` は design.md Requirements Traceability で NFR 1.1 / NFR 1.2 の
+    パフォーマンス対策の主担当として紐付くため、index 作成タスクである本タスクの
+    `_Requirements:_` にも NFR 1.1 / NFR 1.2 を明示する（Reviewer r6 指摘 #6 反映）
 
 - [ ] 2. store 層: Item.Status / 状態定数 / UpdateItemStatus / ListItems 拡張
   - `internal/store/store.go`:
@@ -148,11 +151,17 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `TestHandleSetItemStatusInvalidJSONReturns400`: parse 不能 JSON → 400 invalid_request
     - `TestHandleSetItemStatusEmptyStatusReturns400`: `{}` または `{"status":""}` → 400 invalid_request
     - `TestHandleSetItemStatusInvalidStatusReturns400`: `{"status":"foo"}` → 400 invalid_status（Req 1.5）
-    - `TestHandleSetItemStatusSuccessReturns200`: 正常遷移時 200 + `{"status":"<next>","item_id":"<id>"}`
-      レスポンス本文を assert する（Req 1.4 / 2.3〜2.6 の **server 側 JSON API 契約**をカバー）。
-      `handleSetItemStatus` は JSON API であり、カード DOM の `data-status` 属性更新は
-      `static/app.js` の責務（タスク 8 の `static/items_status.test.mjs` でカバー）であるため、
-      本 server テストでは DOM 更新には触れない
+    - `TestHandleSetItemStatusSuccessReturns200` (**integration tag**): 正常遷移時 200 +
+      `{"status":"<next>","item_id":"<id>"}` レスポンス本文を assert する（Req 1.4 / 2.3〜2.6 の
+      **server 側 JSON API 契約**をカバー）。`handleSetItemStatus` は JSON API であり、
+      カード DOM の `data-status` 属性更新は `static/app.js` の責務（タスク 8 の
+      `static/items_status.test.mjs` でカバー）であるため、本 server テストでは DOM 更新には
+      触れない。**実装上の都合**: 現行 `Server` は concrete `*store.Store` フィールドを持ち
+      store 差し替え用 interface を持たない（本 Issue では interface 化を scope 外とする）ため、
+      成功応答経路は実 DB 経由でしか到達できない。よって本テストは `//go:build integration`
+      tag 付きとし、`go test -tags=integration ./internal/server/...` で実行する
+      （NotFound / OtherUser の 2 件と同じ build tag / DB セットアップを共有。Verify 節
+      「Integration test の取扱」を参照 / Reviewer r6 指摘 #3 反映）
     - `TestHandleSetItemStatusNotFoundForMissingID` (integration tag): **実 DB を用いる
       integration test**。存在しない `item_id`（UUID 形式は valid だが DB 行が無い）に対する
       PATCH で 404 not_found が返ることを assert する（`pgx.ErrNoRows` の collapse 経路を
@@ -161,20 +170,35 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       integration test**。user A の item を seed → user B として PATCH 試行 → 404 not_found
       が返り、対象行の status が seed 時点から不変であることを assert する（NFR 2.1 の
       サーバ層拒否を回帰検証）
-    - **設計判断 / Reviewer 指摘 #5 反映**: 上記 2 件は当初「fake / mock の store で
-      `pgx.ErrNoRows` をシミュレートする」設計だったが、現行 `Server` は concrete な
-      `*store.Store` フィールドを持ち（`internal/server` には store 差し替え用 interface が
-      無い）、本 Issue では store interface 化の責務拡張は scope 外とする。代わりに altpocket
-      の既存 pattern（`items_active_filters_integration_test.go` 等）と同じく `//go:build
-      integration` tag 付きで実 DB を介して 404 経路を検証する。本 2 件は task 3 の
-      integration test と同じ build tag / DB セットアップを共有するため、Verify 節の `go test
-      ./...` には含まれず、`go test -tags=integration ./internal/server/...` で実行される
-      （Verify 節「Integration test の取扱」を参照）
-    - `TestHandleSetItemStatusLogsTransitionFields`: 成功時の `slog.Info("items.status.update", ...)`
-      に `user_id` / `item_id` / `prev` / `next` の 4 フィールドが正しい値で含まれ、かつ
-      Cookie / session token / Authorization ヘッダ / 本文の生値が出力**されない**ことを assert
-      する（`slog` の handler を test 用 buffer に差し替えて JSON line を観察。NFR 3.1 の機密
-      非出力と遷移ログの両方を回帰検証 / 設計 #9）
+    - **設計判断 / Reviewer 指摘 #5 反映 (r0) + r6 拡張**: 当初は上記 NotFound / OtherUser の
+      **2 件のみ**を「fake / mock の store で `pgx.ErrNoRows` をシミュレートする」設計だったが、
+      現行 `Server` は concrete な `*store.Store` フィールドを持ち（`internal/server` には
+      store 差し替え用 interface が無い）、本 Issue では store interface 化の責務拡張は scope
+      外とする。代わりに altpocket の既存 pattern（`items_active_filters_integration_test.go`
+      等）と同じく `//go:build integration` tag 付きで実 DB を介して当該 4 件
+      （**SuccessReturns200 / LogsTransitionFields / NotFoundForMissingID / OtherUserItemReturns404**）
+      を検証する。**r6 拡張点**: 当初は 200 経路（SuccessReturns200）と log 検証
+      （LogsTransitionFields）を通常 server テスト（`go test ./...` 経路）で書ける想定だったが、
+      success 経路は `UpdateItemStatus` の `prev` 返却が実 DB に依存するため fake では成立せず、
+      log 検証も同経路を通る必要があるため、両者も integration tag 側に移した
+      （Reviewer r6 指摘 #3）。本 4 件は task 3 の integration test と同じ build tag /
+      DB セットアップを共有するため、Verify 節の `go test ./...` には含まれず、
+      `go test -tags=integration ./internal/server/...` で実行される（Verify 節
+      「Integration test の取扱」を参照）。一方 `go test ./...` 経路では 400 系
+      （InvalidJSON / EmptyStatus / InvalidStatus）/ 401 系（Unauthorized）/
+      parser（`Test_parseStatusFilter_TableDriven`）/ `handleUIItems` データ整合
+      （`TestHandleUIItemsTemplateDataIncludesStatusQuery`）が引き続き実行され、Req 1.5 /
+      3.1 / 3.3〜3.6 / 3.8 / 6.2 のバリデーション・データ整合 AC は通常テスト経路で担保される
+    - `TestHandleSetItemStatusLogsTransitionFields` (**integration tag**): 成功時の
+      `slog.Info("items.status.update", ...)` に `user_id` / `item_id` / `prev` / `next` の
+      4 フィールドが正しい値で含まれ、かつ Cookie / session token / Authorization ヘッダ /
+      本文の生値が出力**されない**ことを assert する（`slog` の handler を test 用 buffer に
+      差し替えて JSON line を観察。NFR 3.1 の機密非出力と遷移ログの両方を回帰検証）。
+      **build tag の根拠**: 成功遷移ログは `UpdateItemStatus` が `prev` 値を実 DB から返す
+      経路に依存し、`*store.Store` を差し替え不能な現行構造下では実 DB 経由でしか発火しない。
+      上記 `TestHandleSetItemStatusSuccessReturns200` と同じく `//go:build integration` tag
+      付きとし、`go test -tags=integration ./internal/server/...` で実行する
+      （Reviewer r6 指摘 #3 反映 / 設計 #9）
     - `TestHandleUIItemsTemplateDataIncludesStatusQuery`: `handleUIItems` が `?status=` を
       `StatusQuery` テンプレート data として渡し、検索 form / sort form の hidden input ビルダー
       および clear-filters / pagination URL ビルダーが `?status=` を温存することを assert
@@ -182,8 +206,23 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - `extension_contract_test.go` は **変更しない**（成功時の JSON フィールド構造は assert
     していないため）
   - **テスト追加（同 task 内）**: 上記 10 種の handler / parser テストを本タスクで完結させる
-    （Req 1.4 / 1.5 / 2.3〜2.6 / 3.1 / 3.3〜3.6 / 3.8 / 6.2 / NFR 2.1 / NFR 3.1 の同 task 内テスト必須カテゴリに該当）
-  - _Requirements: 1.4, 1.5, 1.6, 2.3, 2.4, 2.5, 2.6, 3.1, 3.3, 3.4, 3.5, 3.6, 6.2, NFR 2.1, NFR 3.1_
+    （Req 1.4 / 1.5 / 2.3〜2.6 / 3.1 / 3.3〜3.6 / 3.8 / 6.2 / NFR 2.1 / NFR 3.1 の同 task 内テスト必須カテゴリに該当）。
+    内訳の実行経路:
+    - 通常 `go test ./...` 経路（6 件）: `Test_parseStatusFilter_TableDriven` /
+      `TestHandleSetItemStatusUnauthorizedReturnsJSONError` / `TestHandleSetItemStatusInvalidJSONReturns400` /
+      `TestHandleSetItemStatusEmptyStatusReturns400` / `TestHandleSetItemStatusInvalidStatusReturns400` /
+      `TestHandleUIItemsTemplateDataIncludesStatusQuery`
+    - integration tag 経路（4 件、`go test -tags=integration ./internal/server/...`）:
+      `TestHandleSetItemStatusSuccessReturns200` / `TestHandleSetItemStatusLogsTransitionFields` /
+      `TestHandleSetItemStatusNotFoundForMissingID` / `TestHandleSetItemStatusOtherUserItemReturns404`
+    - **AC traceability に対する watcher / per-task Reviewer の判定**: 通常経路で実行される
+      400 / 401 / parser / handleUIItems data 整合のみで Req 1.5 / 3.1 / 3.3〜3.6 / 3.8 / 6.2 /
+      NFR 2.1（401）を満たすが、Req 1.4 / 2.3〜2.6（成功遷移）/ NFR 2.1（404 経路）/ NFR 3.1
+      （構造化ログ）は integration tag 経路に依存するため、これらの AC については本タスク内に
+      **integration test を含めた上で deferred test ではない**ものとして扱う（per-task Reviewer
+      ループ運用時の `_Requirements_partial:_` 宣言は不要 / .claude/rules/tasks-generation.md
+      「task-test 境界整合の規約」参照）
+  - _Requirements: 1.4, 1.5, 1.6, 2.3, 2.4, 2.5, 2.6, 3.1, 3.3, 3.4, 3.5, 3.6, 3.8, 6.2, NFR 2.1, NFR 3.1_
   - _Boundary: Server_
   - _Depends: 2_
 
@@ -213,13 +252,30 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `TestListItemsHandler_ArchivedReturnsArchivedOnly`: `Status: "archived"` → `[archived]`（Req 5.3）
     - `TestListItemsHandler_AllReturnsUnreadAndRead`: `Status: "all"` → `[unread,read]`（Req 5.3 / 3.4 と統一）
     - `TestListItemsHandler_InvalidStatusFallsBackToNil`: `Status: "foo"` → `nil`（Req 6.3 破壊しない）
-    - `TestListItemsHandler_MultiValueStatusFallsBackToNil`: 区切り文字埋め込みの複数指定が
-      `nil` にフォールバックすることを assert する（Req 5.3 の「複数指定は既定にフォールバック」
-      / Reviewer 指摘）。`Status: "unread,read"`（カンマ区切り） / `Status: "unread read"`
-      （スペース区切り） / `Status: "unread,read,archived"`（3 値カンマ区切り） / `Status: "unread|read"`
-      （縦棒区切り）の各ケースで store に `nil`（全状態）が渡ることを表形式で assert。これにより
-      design.md の `mcpStatusFilter` が canonical 値集合との完全一致のみで分岐し、それ以外は
-      一律 `nil` に落とす規約（split 実装を導入しない設計判断）が回帰検証される
+    - `TestListItemsHandler_MultiValueStatusFallsBackToNil` (**error mode B / handler-level fallback**):
+      区切り文字埋め込みの複数指定が `nil` にフォールバックすることを assert する（Req 5.3 の
+      「複数指定は既定にフォールバック」、design.md「複数指定の取扱」error mode (B) /
+      Reviewer 指摘）。`Status: "unread,read"`（カンマ区切り） / `Status: "unread read"`
+      （スペース区切り） / `Status: "unread,read,archived"`（3 値カンマ区切り） /
+      `Status: "unread|read"`（縦棒区切り）の各ケースで store に `nil`（全状態）が渡ることを
+      表形式で assert。これにより design.md の `mcpStatusFilter` が canonical 値集合との
+      完全一致のみで分岐し、それ以外は一律 `nil` に落とす規約（split 実装を導入しない
+      設計判断）が回帰検証される
+    - `TestListItemsHandler_RejectsNonStringStatusAtSchemaLayer` (**error mode A / schema-level
+      reject**, Reviewer r6 指摘 #1 反映): JSON 配列・繰り返しキー・非文字列型の入力が MCP の
+      JSON Schema 検証で **handler 到達前**に拒否され、tool call error 経路で client に返ることを
+      assert する。具体的には MCP SDK 経由で以下の生 payload を擬似発射:
+      - `{"status": ["unread","read"]}`（JSON 配列）
+      - `{"status": 1}` / `{"status": true}` / `{"status": null}`（非文字列型）
+      - URL クエリ繰り返しキー `?status=unread&status=read`（適用される場合のみ）
+      これらに対して MCP SDK の validation error が返り、`mcpStatusFilter` および `listItemsHandler`
+      の handler body が **呼ばれない**ことを assert（fake DataSource の `ListItems` call recorder が
+      呼び出しゼロを記録）。design.md「複数指定の取扱」error mode (A) の「`mcpStatusFilter` は
+      呼び出されない」性質を回帰固定する。実装上 MCP SDK の `mcp.CallToolRequest` 検証経路を
+      test fixture から起動できない場合は、本 case をテスト計画上 `// TODO: covered by SDK
+      e2e if reachable` として明示し、(B) の handler-level fallback テストのみで実装上の coverage
+      を担保する（SDK 経路への直接 hook が困難な場合の **fallback 方針** / Reviewer r6 指摘 #1
+      の「test plan 上の明示」優先）
     - `TestListItemsHandler_OutputContainsStatus`: 返却 JSON に `"status"` キーが含まれ、各 item の
       `status` 値が正確に出力されることを assert（Req 5.1）
     - `TestSearchItemsHandler_StatusPropagation`: `Status: "unread"` / `"read"` / `"archived"` / `"all"` /
@@ -306,9 +362,14 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     （SSR テンプレートのみの単独 regression test は本リポジトリで歴史的に低価値のため省略）。
     `?status=` 温存の挙動はタスク 4 の `handleUIItems` テスト（後述）で hidden input / URL
     builder 経由の挙動を回帰検証する
-  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 4.1, 4.4_
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 4.1, 4.4, NFR 4.2_
   - _Boundary: Templates_
   - _Depends: 4_
+  - 注: 本タスクは `templates/items.html` の status-tabs markup を実装する。NFR 4.2 は「既読/
+    アーカイブ操作要素**および**状態タブ」両系統に読み上げ可能テキストを要求するため、
+    status-tabs 側の `aria-selected` / `aria-label="アイテム状態"` / リンクテキスト
+    （Unread / All / Archived）が本タスクの責務になる（Reviewer r6 指摘 #5 反映、
+    操作ボタン側の aria-label はタスク 7 でカバー）
 
 - [ ] 7. SSR テンプレート: item-card の既読/アーカイブボタン追加（archive 解除も含む）
   - `templates/items_list.html` の `.item-actions` 内に以下を追加（**`unread` を主軸に分岐**し、
@@ -360,6 +421,17 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       （`data-status` / `data-current-status` / label / aria-label のいずれも書き換えない / Req 2.7）
     - `button.archive-toggle`: 同様、`next = currentStatus === 'archived' ? 'unread' : 'archived'`。
       成功時は同じく card と 2 ボタンの `data-current-status` / label / aria-label / badge を更新
+  - **NFR 1.3 視覚フィードバック 500ms（同期 visual ack）**:
+    - click 直後（PATCH 応答前）に **同期的に** ボタン `disabled` 化と card に
+      `is-status-updating` CSS class を付与する（応答完了を待たずに発火）。これにより
+      ユーザー click から **同一 task tick の DOM 反映**として視覚フィードバックが返り、
+      NFR 1.3 の 500ms 閾値は応答時間でなく **synchronous DOM 反映の遅延**として満たされる
+    - 応答成功時: `is-status-updating` を外し、`data-status` / `data-current-status` / label /
+      aria-label / badge を確定更新
+    - 応答失敗時: `is-status-updating` を外し、ボタン `disabled` を解除、`toast.error` を表示
+      （元状態を維持。Req 2.7 と NFR 1.3 を同時に満たす）
+    - CSS（タスク 10 でカバー）: `.item-card.is-status-updating { opacity: 0.65; pointer-events: none; }`
+      程度の即時表現で十分（design.md NFR 1.3 Traceability 参照）
   - 既存 `app.js` の keyboard shortcut handler は変更しない（設計確認事項 (c) により本 Issue
     では新規 shortcut なし）
   - **テスト追加（同 task 内）**: `static/items_status.test.mjs` を新規追加し、`node --test`
@@ -392,6 +464,13 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       当該 card が DOM から消える / Archived タブで `archive-toggle: archived→unread` 後に
       当該 card が DOM から消える）。タブ条件に一致したままの場合は DOM 上に残ることも
       別ケースで assert（Req 2.8 のフィルタ条件に従った表示／非表示を回帰検証 / Reviewer 指摘）
+    - **NFR 1.3 同期 visual ack 回帰**: `mark-read-toggle` を click した直後（fetch が pending
+      `Promise` を返した state のまま、その後の `then` / `await` を進めず synchronous DOM 反映
+      のみを観測する）、当該ボタンが `disabled` 化され、当該 card に `is-status-updating`
+      class が付与されることを assert する。応答 resolve 後に `is-status-updating` が外れ、
+      応答 reject 後にも `is-status-updating` が外れて元状態が維持されることを別ケースで
+      assert（NFR 1.3 の 500ms フィードバックが「応答時間でなく synchronous DOM 反映の遅延」
+      で満たされることを回帰検証 / Reviewer r6 指摘 #2 反映）
   - _Requirements: 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, NFR 1.3_
   - _Boundary: Static_
   - _Depends: 4, 7_
@@ -444,10 +523,14 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       を併記する（Req 4.4 の色のみ依存禁止）
     - `.item-card.failed` と `.item-card[data-status="archived"]` が同時に成立しても破綻
       しないことを確認（failed の border-left + archived の背景弱化が共存）
+    - **`.item-card.is-status-updating`** を新規追加（`opacity: 0.65; pointer-events: none;`
+      程度の即時表現）。これはタスク 8 が click 直後に synchronous で付与する class で、
+      NFR 1.3 の 500ms 視覚フィードバックを「応答時間でなく synchronous DOM 反映」で満たすため
+      （design.md NFR 1.3 Traceability / Reviewer r6 指摘 #2 反映）
   - light / dark テーマ両方で視覚区別が成立することを目視確認
   - **テスト追加（同 task 内）**: CSS のみのタスクのため、視覚回帰テストは本リポジトリの既存
     pattern上手動目視で確認する（既存 #12 / #115 / #117 と同じ運用）。Go test での追加は不要
-  - _Requirements: 4.1, 4.2, 4.3, 4.4_
+  - _Requirements: 4.1, 4.2, 4.3, 4.4, NFR 1.3_
   - _Boundary: Static_
   - _Depends: 6, 7_
 
@@ -474,7 +557,11 @@ spin-up しない方針 / `.kiro/steering/structure.md` 準拠）。
 
 - 開発者ローカル: `go test -tags=integration ./internal/store/... ./internal/server/...`
   （`docker compose up -d postgres` で DB を起動した状態で実行）。`internal/server/items_status_test.go`
-  の integration tag 付きハンドラテスト（タスク 4 の 404 経路 2 件）も同コマンドの対象に含まれる
+  の integration tag 付きハンドラテスト（タスク 4 の **4 件**: `TestHandleSetItemStatusSuccessReturns200` /
+  `TestHandleSetItemStatusLogsTransitionFields` / `TestHandleSetItemStatusNotFoundForMissingID` /
+  `TestHandleSetItemStatusOtherUserItemReturns404`）も同コマンドの対象に含まれる（r6 で
+  200 / log の 2 件を integration tag 側へ追加 / Reviewer r6 指摘 #3 反映。`*store.Store` が
+  差し替え不能な現行構造下で `UpdateItemStatus` の `prev` 返却を実 DB に依存させているため）
 - Reviewer フェーズ: 必要に応じて Reviewer が同コマンドを手元で実行し AC カバーを確認する
 - 既存 CI（`.github/workflows/ci.yml`）には integration tag 対応が無いため本 PR では追加しない
   （integration job 化は別 Issue で扱う方針、Out of Scope）

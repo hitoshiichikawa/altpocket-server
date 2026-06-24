@@ -75,7 +75,7 @@ altpocket は read-later サービスでありながら、現状はアイテム�
 
 1. The MCP Server shall 公開する各アイテムオブジェクトに `unread` / `read` / `archived` のいずれかの状態フィールドを含める
 2. The MCP Server shall 「新着取得」相当の機能（`recent-articles` Resource）で返すアイテム集合の状態フィルタ既定値を `nil`（全状態 / status 条件を WHERE に追加しない）に固定する
-3. Where MCP クライアントが状態を引数で指定した（input 引数を持つ Tool `list_items` / `search_items` 経由で `status` 値を送信した）, the MCP Server shall 指定された状態のアイテムのみを返す。受け付ける `status` 値は `unread` / `read` / `archived` / `all`（`unread` + `read` の和集合、`archived` 除外）の単一文字列とし、不明値・複数指定は既定（`nil` = 全状態）にフォールバックする
+3. Where MCP クライアントが状態を引数で指定した（input 引数を持つ Tool `list_items` / `search_items` 経由で `status` 値を送信した）, the MCP Server shall 指定された状態のアイテムのみを返す。受け付ける `status` 値は `unread` / `read` / `archived` / `all`（`unread` + `read` の和集合、`archived` 除外）の単一文字列とし、不明値・複数指定（区切り文字で複数値を埋め込んだ単一文字列、例: `"unread,read"` / `"unread read"`）は既定（`nil` = 全状態）にフォールバックする。なお、単一文字列以外の入力（JSON 配列 `["unread","read"]`、繰り返しクエリキー `?status=unread&status=read`、非文字列型 `1` / `true` / `null` 等）は MCP の JSON Schema 検証によって handler 到達前に validation error として拒否されるため、本 AC の「複数指定 → nil フォールバック」スコープには含まれない（型違反は AC スコープ外、振る舞いは MCP 規約の tool call error に従う）
 4. The MCP Server shall Web UI からの状態変更が永続化された後、後続の MCP 呼び出しで更新後の状態を返す
 
 ### Requirement 6: 後方互換とデータ移行時の保護

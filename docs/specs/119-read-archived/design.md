@@ -186,8 +186,12 @@ static/
   - route `r.Patch("/{id}/status", s.requireAuth(s.handleSetItemStatus))` を `/v1/items` 配下に追加
   - 新規 `handleSetItemStatus`: JSON `{"status":"<next>"}` を受理、enum 検証、所有チェック後
     `Store.UpdateItemStatus` 呼び出し、構造化ログ出力（NFR 3.1）
-  - `parseStatusFilter(q url.Values) []string` 追加（`?status=unread` 1 件、または `?status=all`
-    で `[unread,read]` を返す。`archived` は単一指定が必須）
+  - `parseStatusFilter(q url.Values, defaultIfEmpty []string) []string` 追加（`?status=unread`
+    1 件、または `?status=all` で `[unread,read]` を返す。`archived` は単一指定が必須。第 2 引数
+    `defaultIfEmpty` は「`?status=` 不在 / 空 / 不明値 / UI タブ非対応の `read` 単独入力」のとき
+    呼び出し側が指定するフォールバック値で、`handleListItems` は `nil`（全状態 / Req 6.2 後方互換）、
+    `handleUIItems` は `[]string{"unread"}`（Req 3.1 既定 unread）を渡す。`/v1/items` と
+    `/ui/items` で既定値を分けるため `defaultIfEmpty` は必須引数として扱う / Reviewer r6 指摘 #4 反映）
   - `handleListItems` / `handleUIItems` で `statuses := parseStatusFilter(...)` を `ListItems` に渡す
 - `internal/mcpserver/server.go`:
   - `ListItemsInput` / `SearchItemsInput` に `Status string \`json:"status,omitempty"\`` 追加
@@ -258,10 +262,12 @@ static/
 | 6.1 | データ消失なし | マイグレーション 007 | `DEFAULT 'unread'` で backfill | |
 | 6.2 | 既存挙動を壊さない | server.handleListItems / store.ListItems backwards compat | `/v1/items` で defaultIfEmpty=nil（全状態）、後方互換戦略（後述） | |
 | 6.3 | 既存 MCP リクエストへの破壊変更なし | mcpserver mcpStatusFilter | `Status` 未指定で `nil`（全状態）を採用、`status` フィールドは追加のみ | 設計確認事項 (a) / (e) 参照 |
-| NFR 1.1 / 1.2 / 1.3 | パフォーマンス | DB index | `items_user_status_idx (user_id, status, created_at DESC)` | EXPLAIN で seq scan 回避 |
+| NFR 1.1 / 1.2 | パフォーマンス（一覧表示・タブ切替） | DB index | `items_user_status_idx (user_id, status, created_at DESC)` | EXPLAIN で seq scan 回避、`?status=unread` SELECT が index scan 経路に乗ることを開発者ローカルで確認 |
+| NFR 1.3 | パフォーマンス（個別状態変更後のフィードバック 500ms 以内） | server.handleSetItemStatus / static/app.js | (1) PATCH `/v1/items/{id}/status` の handler 内処理を `UpdateItemStatus` 1 クエリ + 構造化ログ + JSON 応答に最小化（追加クエリ・追加 round-trip 禁止）。(2) static/app.js は応答待ち中もボタン disabled + visual ack（カードの opacity 弱化または mark-read-toggle の loading 状態）を click 直後に同期適用し、500ms 以内に必ず**何らかの**視覚フィードバックをユーザーに返す（応答完了後にカード DOM・badge・aria-label を確定更新）。(3) NFR 1.3 は失敗系（toast.error）でも 500ms 以内のフィードバックを要求するため、fetch reject / network error 経路でも同様に visual ack → revert → toast の順序を守る | 設計確認事項参照。フィードバック手段は「click 直後の synchronous DOM クラス付与」が主、PATCH 応答完了後の確定更新は副。500ms は応答時間ではなく**最初の視覚フィードバックの遅延**として扱う（Reviewer r6 指摘 #2 反映） |
 | NFR 2.1 / 2.2 | 認可 | server / mcpserver | `WHERE user_id=$1 AND id=$2` を全経路で遵守 | |
 | NFR 3.1 | 構造化ログ | server.handleSetItemStatus | `slog.Info("items.status.update", user_id, item_id, prev, next)` | トークン / Cookie を出力しない |
-| NFR 4.1 / 4.2 | アクセシビリティ | items_list.html | `<button>` + aria-label + tab フォーカス | キーボード操作可 |
+| NFR 4.1 | アクセシビリティ（キーボード操作） | items_list.html / item_detail.html | `<button>` + Tab フォーカス + Enter/Space | ネイティブ button のキーボード操作 |
+| NFR 4.2 | アクセシビリティ（読み上げ可能テキスト） | items_list.html（mark-read-toggle / archive-toggle ボタン）+ items.html（status-tabs `<a role="tab">`） | ボタン側: `aria-label="{{if eq .Status \"unread\"}}既読にする{{else}}未読に戻す{{end}}"` 等の動的 aria-label。タブ側: `aria-selected` + `aria-label="アイテム状態"` の tablist + リンクテキスト（Unread / All / Archived）| 「既読/アーカイブ操作要素**および**状態タブ」の両系統で読み上げ可能テキストを担保 |
 
 ## Components and Interfaces
 
@@ -507,12 +513,24 @@ type SearchItemsInput struct {
 | `search_items` | Tool（`CallToolRequest`） | あり（`SearchItemsInput.Status`） | `nil`（同上） | 同上 |
 | `recent-articles` | Resource（`ReadResourceRequest`） | **なし**（input 引数を持たない） | `nil`（本仕様内で明文化された 1 つの値として「全状態」を採用） | Req 5.2 は「既定値を本仕様内で明文化された 1 つの値に固定する」ことを要求しており、その固定値として `nil`（全状態）を採用することで Req 6.3 と同時に満たす。Req 5.3（クライアントが状態を引数で指定）は input 引数を持つ Tool 側で満たす |
 
-**「複数指定」の取扱（Req 5.3 / Reviewer 指摘）**: `Status` フィールドは **JSON Schema 型として
-単一文字列**（`type: "string"`、`ListItemsInput.Status` / `SearchItemsInput.Status` 共に Go の
-`string`）であり、配列・繰り返しキー（`status=unread&status=read`）・JSON 配列リテラル
-（`["unread","read"]`）はそもそも JSON Schema 検証で reject されるか string への coerce が
-失敗するため、`mcpStatusFilter` に到達しない。本仕様上で「複数指定」が現実に発生し得るのは、
-**1 つの単一文字列値に区切り文字で複数の状態名を埋め込んだケース** に限定される。具体的には:
+**「複数指定」の取扱（Req 5.3 / Reviewer 指摘 r6 #1 再整理）**: requirements.md Req 5.3 は
+「受け付ける `status` 値は ... の **単一文字列とし**、不明値・複数指定は既定（`nil` = 全状態）に
+フォールバックする」と規定する。「単一文字列とし」の節が **input 型を string に限定する制約**で
+あり、「複数指定」の AC スコープは **input 型 string の中で発生し得る複数指定** に限定される
+（input 型違反は本 AC の射程外）。具体的には以下の 2 つの error mode が並存する:
+
+| Error mode | 発生経路 | 振る舞い | Req 5.3 / 6.3 との対応 |
+|---|---|---|---|
+| **(A) Schema-level type reject**（JSON 配列 / 繰り返しキー / 非文字列） | MCP SDK（`mcp.CallToolRequest` の JSON Schema 検証）が handler 呼び出し**前**に検証エラーを返す。具体例: `{"status":["unread","read"]}` / `{"status":1}` / GET param 繰り返しキー `?status=unread&status=read` 等 | MCP 規約に従う tool call error（client 側に validation error が返る）。`mcpStatusFilter` は呼び出されない | Req 5.3 の「単一文字列とし」の **type 制約側**に該当。本 AC の "複数指定" には含まれない（型違反は AC スコープ外） |
+| **(B) Handler-level multi-value fallback**（区切り文字埋め込みの単一文字列） | `Status: "unread,read"` / `Status: "unread read"` 等。型として string なので schema を通過し handler に到達 | `mcpStatusFilter` が canonical 値集合と完全一致比較し、いずれにも該当しないため `nil`（全状態）に fallback | Req 5.3 の **"複数指定 → nil フォールバック"** の主体。Req 6.3（既存 MCP クライアントへの破壊変更なし）も同時に満たす |
+
+requirements.md Req 5.3 の「単一文字列とし」節が input 型の限定として **(A) を AC スコープから
+除外**し、「不明値・複数指定は既定（`nil` = 全状態）にフォールバック」節が **(B) の取扱を規定**
+する、という二段読みで整合する（requirements.md r6 で本整合を明示する文言を追加 / 後述
+「requirements.md との整合」節を参照）。
+
+(B) で本仕様上「複数指定」が現実に発生し得るのは、**1 つの単一文字列値に区切り文字で複数の
+状態名を埋め込んだケース** に限定される。具体例:
 
 - カンマ区切り: `"unread,read"` / `"unread,read,archived"`
 - スペース区切り: `"unread read"`
@@ -552,6 +570,24 @@ func mcpStatusFilter(s string) []string
 
 明示的に `unread` を指定する新規 MCP クライアントは `Status: "unread"` を送ることで未読のみ
 取得できる。本変更により既存 MCP クライアントは引き続き全状態を取得できる（Req 6.3）。
+
+##### requirements.md Req 5.3 との整合（r6 補強）
+
+requirements.md Req 5.3（r6 加筆版）は明示的に以下を区別する:
+
+- 「複数指定（区切り文字で複数値を埋め込んだ**単一文字列**、例: `"unread,read"` /
+  `"unread read"`）は既定（`nil` = 全状態）にフォールバック」 → 本 design の **error mode (B)**
+  に対応。`mcpStatusFilter` が canonical 値集合との完全一致比較で `nil` に落とす
+- 「単一文字列以外の入力（JSON 配列、繰り返しクエリキー、非文字列型）は MCP の JSON Schema
+  検証によって handler 到達前に validation error として拒否される」 → 本 design の
+  **error mode (A)** に対応。MCP SDK の Tool call error 経路で client に validation error が返り、
+  本 AC の "複数指定 → nil フォールバック" スコープには含まれない
+
+この二段構造により、requirements.md / design.md / tasks.md の三者の整合が成立する。tasks.md 側の
+test plan は (A) を `TestListItemsHandler_RejectsNonStringStatusAtSchemaLayer` 系で MCP SDK の
+schema validation 経路として独立 case 化し、(B) は既存
+`TestListItemsHandler_MultiValueStatusFallsBackToNil` / `TestListItemsHandler_InvalidStatusFallsBackToNil`
+で handler-level fallback を回帰検証する（タスク 5 の更新内容を参照）。
 
 ##### `recent-articles` Resource の status 引数取扱（Req 5.2 / Req 5.3 の整理）
 
