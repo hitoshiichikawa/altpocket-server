@@ -61,7 +61,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Requirements: 1.1, 1.4, 1.6, 3.3, 3.4, 3.5, 6.2, NFR 2.1, NFR 3.1_
   - _Boundary: Store_
 
-- [ ] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill
+- [ ] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill / 2 軸独立性
   - `internal/store/store_item_status_test.go` を新規作成（`//go:build integration` tag）:
     - `TestUpdateItemStatus_TransitionsAllPairs`: 7 通り（unread↔read / unread↔archived /
       read↔archived / archived→unread / 既存値再設定）の遷移と `prev` 返り値を実 DB で確認
@@ -72,9 +72,22 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `TestListItems_FilterByStatus`: 3 件作成 → `statuses=[unread]` / `[unread,read]` /
       `[archived]` / `nil` の各ケースで期待件数を確認
     - `TestListRecentItems_FilterByStatus`: 同上を `ListRecentItems` で
+    - **`TestUpdateItemStatus_DoesNotMutateFetchStatus`** (Req 1.6 / 2 軸独立性):
+      `fetch_status='success'` / `'failed'` / `'pending'` / `'fetching'` の各 fetch_status を
+      持つ item を seed → `UpdateItemStatus` で `unread → read → archived → unread` の
+      全遷移を実行 → 各遷移後に `fetch_status` の値が seed 時点から **不変** であることを
+      assert する（status 軸の更新が fetch_status 軸を巻き込まないことを実 DB で回帰固定）
+    - **`TestWorkerFetchUpdatesDoNotMutateStatus`** (Req 1.6 / 2 軸独立性):
+      `status='read'` / `'archived'` の item を seed → 既存 `ClaimItemsForFetch` /
+      `UpdateFetchSuccess` / `UpdateFetchFailure`（`cmd/worker` 経路と同一の store 関数）を
+      順次呼び出し → 呼び出し後に `status` カラムが seed 時点から **不変** であることを
+      assert する（fetch 軸の更新が user status 軸を巻き込まないことを実 DB で回帰固定）。
+      worker 側コード（`cmd/worker`）の挙動変更は本タスクで行わないが、worker が呼ぶ
+      store 関数の SET 句が `status` を含まないことを **store integration test レイヤで**
+      ロックする
   - 既存 `items_active_filters_integration_test.go` の `newIntegrationStore` パターンと
     `seedItemsActiveFilterUser` パターンを参考にし、cleanup 規約に従う
-  - _Requirements: 1.4, 1.5, 1.6, 3.3, 3.4, 3.5, 5.4, 6.1, NFR 2.1_
+  - _Requirements: 1.4, 1.5, 1.6, 3.3, 3.4, 3.5, 5.4, 6.1, 6.2, NFR 2.1_
   - _Boundary: Store_
   - _Depends: 1, 2_
 
@@ -82,7 +95,9 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - `internal/server/server.go`:
     - `parseStatusFilter(q url.Values, defaultIfEmpty []string) []string` を追加（design.md の
       表通り。第 2 引数で「`?status=` 不在 / 空 / 不明値 のときに返す既定値」を呼び出し側が指定する。
-      `unread` / `all` / `archived` / `read` のマッピングは parser 内で固定）
+      マッピングは `unread` / `all` / `archived` の **3 値のみ**を parser 内で固定し、`read`
+      単独入力（UI タブに対応しない値）と他の不明値は `defaultIfEmpty` にフォールバックする
+      / Reviewer 指摘・design.md「parseStatusFilter」節）
     - `handleSetItemStatus(w, r)` を追加: JSON `{"status":"<v>"}` を受理、enum 検証、`requireAuth`
       / `limiter` / CSRF は既存 middleware 経由、`Store.UpdateItemStatus` 呼び出し、成功時
       `slog.Info("items.status.update", user_id, item_id, prev, next, request_id)` を出力。
@@ -100,15 +115,20 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       温存していない場合は server 側のヘルパー（`buildActiveTagFilters` 周辺の URL ビルダー）に
       `?status=` の引き継ぎを追加する（Req 3.6 の併用、設計 #5）
   - `internal/server/items_status_test.go` を新規作成（テスト計画 / Req カバレッジ対応表）:
-    - `Test_parseStatusFilter_TableDriven`: `""` / `"unread"` / `"all"` / `"archived"` / `"read"` /
+    - `Test_parseStatusFilter_TableDriven`: `""` / `"unread"` / `"all"` / `"archived"` /
+      `"read"`（**UI タブに対応しない値、defaultIfEmpty にフォールバックすることを assert**） /
       不明値 / 大文字混在 を、`defaultIfEmpty=nil` と `defaultIfEmpty=["unread"]` の 2 系列で
-      table-driven テスト（Req 3.1, 3.3, 3.4, 3.5, 6.2 をカバー）
+      table-driven テスト（Req 3.1, 3.3, 3.4, 3.5, 6.2 をカバー、`"read"` 単独受理が UI タブの
+      第 4 状態を生まないことを回帰固定）
     - `TestHandleSetItemStatusUnauthorizedReturnsJSONError`: requireAuth 未通過時 401 JSON（既存契約維持）
     - `TestHandleSetItemStatusInvalidJSONReturns400`: parse 不能 JSON → 400 invalid_request
     - `TestHandleSetItemStatusEmptyStatusReturns400`: `{}` または `{"status":""}` → 400 invalid_request
     - `TestHandleSetItemStatusInvalidStatusReturns400`: `{"status":"foo"}` → 400 invalid_status（Req 1.5）
     - `TestHandleSetItemStatusSuccessReturns200`: 正常遷移時 200 + `{"status":"<next>","item_id":"<id>"}`
-      レスポンス本文 + `data-status` の更新（Req 1.4 / 2.3〜2.6 をカバー）
+      レスポンス本文を assert する（Req 1.4 / 2.3〜2.6 の **server 側 JSON API 契約**をカバー）。
+      `handleSetItemStatus` は JSON API であり、カード DOM の `data-status` 属性更新は
+      `static/app.js` の責務（タスク 8 の `static/items_status.test.mjs` でカバー）であるため、
+      本 server テストでは DOM 更新には触れない
     - `TestHandleSetItemStatusNotFoundCollapsedFromErrNoRows`: store が `pgx.ErrNoRows` を返した
       場合 404 not_found（存在しない item と他ユーザー所有 item を区別せず collapse、NFR 2.1）
     - `TestHandleSetItemStatusOtherUserItemReturns404`: handler 経路で実際に他ユーザー所有 item に
@@ -165,12 +185,20 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `TestSearchItemsHandler_OutputContainsStatus`: 検索結果 JSON に `"status"` キーが含まれることを assert（Req 5.1）
     - `TestGetItemHandler_OutputContainsStatus`: 単体 item 取得結果 JSON に `"status"` キーが含まれ、
       `getItemHandler` の出力にも status が露出することを assert（Req 5.1）
-    - `TestRecentArticlesHandler_DefaultStatusIsNilAllStates`: `Status` 空入力で store に `nil`（全状態）
-      が渡ることを assert（Req 5.2 / Req 6.3 後方互換）
-    - `TestRecentArticlesHandler_UnreadFilterPropagated`: `Status: "unread"` で store に `[unread]` が
-      渡ることを assert（明示指定時に新規クライアントが unread のみを取得できることを確認、Req 5.3）
-  - **テスト追加（同 task 内）**: 上記 12 種の MCP handler テストを本タスクで完結させる
-    （Req 5.1 / 5.2 / 5.3 / 6.3 の同 task 内テスト必須）
+    - `TestRecentArticlesHandler_AlwaysCallsStoreWithNilStatuses`: `recent-articles` は MCP
+      **Resource**（`*mcp.ReadResourceRequest` を受け取り、`ListItemsInput` / `SearchItemsInput`
+      のような構造化 input 引数を持たない）であるため、ハンドラ呼び出しの種類によらず常に
+      `ListRecentItems` の `statuses` 引数が `nil`（= 全状態 / status フィルタを WHERE に追加
+      しない）であることを assert する（Req 5.2 の固定既定値が `nil` であることの回帰検証 /
+      Reviewer 指摘・design.md「`recent-articles` Resource の status 引数取扱」節を参照）。
+      `Status` 空入力経路や `Status: "unread"` 引数伝播経路は本ハンドラに存在しないため、
+      対応する旧テストは削除する。Tool 側の status 引数経路の回帰は本タスク内の
+      `TestListItemsHandler_*` / `TestSearchItemsHandler_*` で個別にカバーする
+  - **テスト追加（同 task 内）**: 上記 11 種の MCP handler テストを本タスクで完結させる
+    （Req 5.1 / 5.2 / 5.3 / 6.3 の同 task 内テスト必須）。`TestRecentArticlesHandler_*` は
+    Resource が input 引数を持たない設計の回帰検証 1 件のみ（`AlwaysCallsStoreWithNilStatuses`）
+    で完結し、`Status` 引数経路の回帰は Tool 側 `TestListItemsHandler_*` / `TestSearchItemsHandler_*`
+    で個別カバーする
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 6.3, NFR 2.2_
   - _Boundary: McpServer_
   - _Depends: 2_
@@ -250,8 +278,18 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - 失敗時に元の `data-status` が維持される（Req 2.7）
     - `archive-toggle` を `data-current-status="unread"` カードで click → body が
       `{"status":"archived"}`（Req 2.5）
+    - **`archive-toggle` を `data-current-status="read"` カードで click → body が
+      `{"status":"archived"}`** を直接 assert（Req 2.5 を read 状態のカードに対しても
+      適用することを回帰固定 / Reviewer 指摘）
     - `archive-toggle` を `data-current-status="archived"` カードで click → body が
       `{"status":"unread"}`（Req 2.6 のもう一方の経路）
+    - **`mark-read-toggle` / `archive-toggle` のいずれの成功時でも、現在の status タブ条件
+      （`[data-items-region].dataset.currentStatus` 等の test fixture で擬似的に "unread" /
+      "archived" を設定）に一致しなくなった item の `<article>` 要素が DOM から fade-out で
+      削除される**ことを assert（例: Unread タブで `mark-read-toggle: unread→read` 後に
+      当該 card が DOM から消える / Archived タブで `archive-toggle: archived→unread` 後に
+      当該 card が DOM から消える）。タブ条件に一致したままの場合は DOM 上に残ることも
+      別ケースで assert（Req 2.8 のフィルタ条件に従った表示／非表示を回帰検証 / Reviewer 指摘）
   - _Requirements: 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, NFR 1.3_
   - _Boundary: Static_
   - _Depends: 4, 7_
@@ -276,8 +314,17 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - fragment fetch が `X-Requested-With: ItemsFragment` を含む
     - **タブ click 直後（および fragment fetch 完了後）に、新 `?status=` 値に一致するタブだけが
       `aria-selected="true"` / `is-active` を持つ**ことを assert（Req 3.7 / 3.8 の active 同期回帰）
+    - **`?status=` を **未指定**にして popstate / フルページロードを擬似発火させたとき、`Unread`
+      タブが `aria-selected="true"` / `is-active` を持ち、他のタブからは外れることを assert**
+      （Req 3.1 と design の「`?status=` 未指定時は既定 unread」を popstate 経路で落とさない
+      ことを回帰固定 / Reviewer 指摘）
     - popstate で fragment 再取得が起き、タブ active 状態も新 URL に追従して更新される
     - 連続切替時に AbortController で前段が abort される（race 防止）
+    - **既存クエリ併用の保持**: 初期 URL が `?q=foo&tag=bar&sort=created_at&per_page=30&page=2`
+      の状態でタブを Archived に切り替えたとき、遷移先 URL が `?q=foo&tag=bar&sort=created_at&per_page=30&page=2&status=archived`
+      となり、`q` / `tag` / `sort` / `per_page` / `page` の各既存クエリが落ちずに **保持** される
+      ことを assert する（Req 3.6 の併用を popstate / pushState 双方で回帰固定 / Reviewer 指摘）。
+      逆方向（Archived → Unread の切替時）でも同様に既存クエリが保持されることを別ケースで assert
   - _Requirements: 3.2, 3.6, 3.7, 3.8, NFR 1.1, NFR 1.2_
   - _Boundary: Static_
   - _Depends: 6_

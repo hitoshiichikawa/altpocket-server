@@ -25,8 +25,11 @@ items は「fetch 軸 × user 状態軸」の 2 軸モデルに移行する。�
 - 各アイテムカードに「既読切替（unread ⇄ read）」「アーカイブ（→ archived）」「アーカイブ
   解除（archived → unread）」のアクション要素をキーボードのみで操作可能に提供する
 - 状態を色覚多様性に配慮したカード視覚（色 + テキストラベル / アイコン併用）で区別する
-- MCP 公開オブジェクトに `status` フィールドを含め、`list_items` / `search_items` /
-  `recent-articles` で `status` 引数フィルタを受け付ける
+- MCP 公開オブジェクトに `status` フィールドを含め、入力引数を持つ Tool（`list_items` /
+  `search_items`）で `status` 引数フィルタを受け付ける。`recent-articles` は MCP **Resource**
+  （`*mcp.ReadResourceRequest` を受け取り、構造化 input 引数を持たない）であるため status
+  引数の受付は本 Issue のスコープ外（`ListRecentItems` 呼び出しでは常に `nil` = 全状態を渡す。
+  詳細は「`recent-articles` Resource の status 引数取扱」節）
 
 ### Non-Goals
 
@@ -250,7 +253,7 @@ static/
 | 4.2 | failed との別軸提示 | style.css | 既存 `.failed` border-left 維持 | 軸を直交させる |
 | 4.3 | #12 との非衝突 | style.css | `archived` は border-left を使わない | 軸の干渉回避 |
 | 5.1 | MCP 状態フィールド露出 | mcpserver/server.go formatItemList / getItemHandler | item / detail JSON に `"status"` 追加 | |
-| 5.2 / 5.3 | MCP の既定値と受付値 | mcpserver listItemsHandler / searchItemsHandler / recentArticlesHandler | `Status` 引数空 → 既定 `nil`（全状態）、`unread/read/archived/all` を受理 | 設計確認事項 (a) 確定（高指摘 #2 反映、Req 6.3 と両立） |
+| 5.2 / 5.3 | MCP の既定値と受付値 | Tool: mcpserver listItemsHandler / searchItemsHandler（input 引数 `Status` を持つ）、Resource: recentArticlesHandler（input 引数なし、常に `nil` を渡す） | Tool: `Status` 引数空 → `nil`（全状態） / `unread/read/archived/all` を受理。Resource: 入力受付なし、`nil` 固定 | 設計確認事項 (a) 確定（高指摘 #2 反映、Req 6.3 と両立）。Req 5.3 の主体は input 引数を持つ Tool に限定、Req 5.2 の固定既定値は recent-articles では `nil`（全状態）として満たす |
 | 5.4 | Web と MCP の整合 | store.UpdateItemStatus | 単一 DB を介す | データソース統一 |
 | 6.1 | データ消失なし | マイグレーション 007 | `DEFAULT 'unread'` で backfill | |
 | 6.2 | 既存挙動を壊さない | server.handleListItems / store.ListItems backwards compat | `/v1/items` で defaultIfEmpty=nil（全状態）、後方互換戦略（後述） | |
@@ -412,9 +415,19 @@ func (s *Store) ListRecentItems(ctx context.Context, userID string, since time.T
 //   "unread"     → []string{"unread"}        // (Req 3.3)
 //   "all"        → []string{"unread","read"} // archived 除外（Req 3.4 / 設計確認事項 (d)）
 //   "archived"   → []string{"archived"}      // (Req 3.5)
-//   "read"       → []string{"read"}          // optional（直接 read のみを見る診断用、ドキュメント外）
 //   ""           → defaultIfEmpty            // 呼び出し側が指定する既定値
-//   others       → defaultIfEmpty            // 不明値も既定にフォールバック（破壊しない）
+//   others       → defaultIfEmpty            // 不明値（"read" 単独含む）は既定にフォールバック
+//
+// `?status=read` のような UI タブに対応しない値は **意図的に受け付けない**。Web UI のタブ
+// は Unread / All / Archived の 3 つだけであり、`/ui/items?status=read` を read 単独
+// フィルタとして受理してしまうと、UI タブに対応しない第 4 状態が URL から復元可能になり
+// Req 3.2（3 タブのみ提供）/ Req 3.7（現在選択中タブの可視化）と矛盾する。HTTP API
+// (`/v1/items`) においても、`/v1/items?status=read` が「全状態」と等価（defaultIfEmpty=nil）
+// に解釈されるが、`/v1/items` クライアントが read 単独取得を必要とする場合は将来 `?status` の
+// 複数値受理や別パラメータ追加で対応する余地として留め、本 Issue では Web UI と挙動を統一する。
+//
+// MCP 側の `mcpStatusFilter` は本 parser とは独立に `"read"` 単独入力を受理する（Tool 入力は
+// API 引数として明示的に指定されるため UI タブ整合性の制約を受けない / 後述「mcpStatusFilter」節を参照）。
 //
 // defaultIfEmpty が nil なら nil を返し（store 層では status フィルタを WHERE に
 // 追加しない = 全状態を返す）、defaultIfEmpty が非 nil ならその slice を返す。
@@ -451,7 +464,7 @@ func parseStatusFilter(q url.Values, defaultIfEmpty []string) []string
 
 | Field | Detail |
 |-------|--------|
-| Intent | MCP tool input に `status` 引数を追加、JSON 出力に `status` フィールドを追加 |
+| Intent | Tool（`list_items` / `search_items`）の input に `status` 引数を追加、JSON 出力に `status` フィールドを追加。Resource（`recent-articles`）は input 引数を持たず status 引数の受付なし、`ListRecentItems` 呼び出しでは固定で `nil`（全状態）を渡し、JSON 出力に `status` フィールドのみ追加する |
 | Requirements | 5.1, 5.2, 5.3, 5.4, 6.3 |
 
 **Input 拡張**
@@ -696,8 +709,10 @@ flowchart TD
 ### Unit Tests（3-5 項目）
 
 - `internal/server`:
-  - `Test_parseStatusFilter_TableDriven`: `""` / `"unread"` / `"all"` / `"archived"` / `"read"` /
-    不明値 / 大文字混在 を入力に、期待 `[]string` を assert（table-driven、urlnorm と同規約）
+  - `Test_parseStatusFilter_TableDriven`: `""` / `"unread"` / `"all"` / `"archived"` /
+    `"read"`（UI タブ非対応値、defaultIfEmpty へフォールバック） / 不明値 / 大文字混在 を入力に、
+    期待 `[]string` を assert（table-driven、urlnorm と同規約）。`"read"` がマップされず
+    `defaultIfEmpty` へ落ちることを明示的に regression として固定する
   - `TestHandleSetItemStatus_Unauthorized` / `TestHandleSetItemStatus_InvalidStatusReturns400` /
     `TestHandleSetItemStatus_InvalidJSONReturns400`: httptest で 401 / 400 / 400 を確認
     （extension_contract_test と同じスタイル）
@@ -705,13 +720,15 @@ flowchart TD
   - `TestItemListRowJSONHasStatusSnakeCase`: 既存 `json_tags_test.go` の row に `Status: "read"`
     を入れて `"status"` キーの存在を assert
 - `internal/mcpserver`:
-  - `TestListItemsHandler_DefaultStatusIsNilAllStates`: fake DataSource を使い、`Status` 空入力で
-    `nil`（全状態 / status フィルタを WHERE に追加しない）が store に渡るか assert
-    （Req 5.2 / Req 6.3 を満たす既定値が `unread` ではなく `nil` であることを確認 / 設計 #7）
+  - `TestListItemsHandler_DefaultStatusIsNilAllStates`: fake DataSource を使い、Tool input
+    `Status` 空入力で `nil`（全状態 / status フィルタを WHERE に追加しない）が store に渡るか
+    assert（Req 5.2 / Req 6.3 を満たす既定値が `unread` ではなく `nil` であることを確認 / 設計 #7）
   - `TestListItemsHandler_OutputContainsStatus`: 返却 JSON に `status` キーが含まれることを assert
-  - `TestRecentArticlesHandler_AlwaysCallsStoreWithNilStatuses`: `recent-articles` Resource は
-    input 引数を持たないため、`ListRecentItems` 呼び出しの `statuses` 引数が常に `nil` で
-    あることを assert（設計 #2: recent-articles の入力受付なし設計を回帰検証）
+  - `TestRecentArticlesHandler_AlwaysCallsStoreWithNilStatuses`: `recent-articles` は MCP
+    **Resource**（input 引数を持たない）であり、`ListRecentItems` 呼び出しの `statuses` 引数が
+    常に `nil`（= 全状態 / status フィルタを WHERE に追加しない）で固定されることを assert する。
+    Status 入力受付がないことを前提とし、`unread` / `read` / `archived` 等の引数経路は本テスト
+    対象外（Req 5.2 の固定既定値が `nil` であることを回帰検証 / 設計 #2 / Reviewer 指摘）
 
 ### Integration Tests（3-5 項目、`-tags=integration`）
 
