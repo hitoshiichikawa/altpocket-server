@@ -185,12 +185,11 @@ func (s *Server) mcpHTTPHandler() http.Handler {
 			if userID == "" {
 				return nil
 			}
-			// Wrap *store.Store in the transitional adapter so it still
-			// satisfies the pre-#119 mcpserver.DataSource shape until
-			// task 5 updates the mcpserver layer to call the new
-			// statuses-aware store signatures directly (see
-			// mcp_store_adapter.go).
-			return mcpserver.New(newMCPStoreAdapter(s.store), userID)
+			// *store.Store satisfies mcpserver.DataSource directly now
+			// that the interface uses the new statuses-aware signatures
+			// (Issue #119 task 5; the transitional mcpStoreAdapter
+			// introduced by task 4 has been removed).
+			return mcpserver.New(s.store, userID)
 		},
 		nil,
 	)
