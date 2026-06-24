@@ -144,7 +144,7 @@ internal/
 │   ├── store.go                            # 変更: Item 構造体に Status, ListItems / ListRecentItems 拡張, UpdateItemStatus 追加
 │   ├── store_item_status_test.go           # 新規（integration tag）: UpdateItemStatus / ListItems 状態フィルタ
 │   ├── json_tags_test.go                   # 変更: ItemListRow JSON に "status" snake_case が出ること
-│   └── mcp_recent.go                       # 変更: ListRecentItems に status 引数追加（任意 / nil = unread 既定）
+│   └── mcp_recent.go                       # 変更: ListRecentItems に status 引数追加（nil / 空 = 全状態 / status 条件を WHERE に追加しない、既定値は呼び出し側責務）
 ├── server/
 │   ├── server.go                           # 変更: /v1/items/{id}/status route, handleSetItemStatus, parseStatusFilter, status クエリパース
 │   ├── items_status_test.go                # 新規: handleSetItemStatus の認可 / 入力検証 / 後方互換テスト
@@ -174,7 +174,7 @@ static/
 - `internal/store/store.go`:
   - `Item` 構造体に `Status string \`json:"status"\`` フィールド追加
   - 定数 `ItemStatusUnread / ItemStatusRead / ItemStatusArchived` を追加（マジック文字列禁止規約）
-  - `ListItems(... statuses []string ...)` 第 4 引数群に `statuses` を追加（nil = 既定 `unread` 適用、後述「後方互換戦略」参照）
+  - `ListItems(... statuses []string ...)` 第 4 引数群に `statuses` を追加（nil / 空 = 全状態 / status 条件を WHERE に追加しない。既定値の適用責務は handler / mcpserver 側、後述「後方互換戦略」参照）
   - `GetItemDetail` の SELECT に `i.status` 追加
   - 新規メソッド `UpdateItemStatus(ctx, userID, itemID, next string) (prev string, err error)`：
     所有チェック → UPDATE → 旧値を返す（NFR 3.1 の遷移ログ生成に必要）
@@ -231,7 +231,7 @@ static/
 | 2.6 | archived からの解除 | items_list.html / app.js | mark-read-toggle が archived 時は unread に戻す | UI 同じ button を文脈で振る舞い変更 |
 | 2.7 | 失敗時の維持と通知 | app.js | fetch 失敗時 toast.error + revert | クライアント側 |
 | 2.8 | 状態反映を再リロードなし | app.js | data-status 属性更新 + card 即時退場（filter 不一致時） | fragment 取得は不要、in-place |
-| 3.1 / 3.3 | Unread 既定表示 | server.parseStatusFilter | 既定 `["unread"]` | /ui/items?status= 未指定時 |
+| 3.1 / 3.3 | Unread 既定表示 | server.handleUIItems / parseStatusFilter | `handleUIItems` が defaultIfEmpty=`["unread"]` を渡す | /ui/items?status= 未指定時のみ unread 既定（/v1/items は nil 既定で全状態、Req 6.2） |
 | 3.2 | 3 つの状態タブ | items.html (status-tabs) | Unread / All / Archived | SSR markup |
 | 3.4 | All タブが unread+read | server.parseStatusFilter | `?status=all` → `["unread","read"]` | 設計確認事項 (d) 確定 |
 | 3.5 | Archived タブ | server.parseStatusFilter | `?status=archived` → `["archived"]` | |
@@ -241,12 +241,12 @@ static/
 | 4.1 / 4.4 | 状態の視覚区別（色 + テキスト） | style.css / items_list.html | `[data-status]` + status-badge text | NFR 4.4 色覚配慮 |
 | 4.2 | failed との別軸提示 | style.css | 既存 `.failed` border-left 維持 | 軸を直交させる |
 | 4.3 | #12 との非衝突 | style.css | `archived` は border-left を使わない | 軸の干渉回避 |
-| 5.1 | MCP 状態フィールド露出 | mcpserver/server.go formatItemList | item JSON に `"status"` 追加 | |
-| 5.2 / 5.3 | MCP の既定値と受付値 | mcpserver listItemsHandler / searchItemsHandler | `Status` 引数空 → 既定 `unread`、`unread/read/archived/all` を受理 | 設計確認事項 (a) 確定 |
+| 5.1 | MCP 状態フィールド露出 | mcpserver/server.go formatItemList / getItemHandler | item / detail JSON に `"status"` 追加 | |
+| 5.2 / 5.3 | MCP の既定値と受付値 | mcpserver listItemsHandler / searchItemsHandler / recentArticlesHandler | `Status` 引数空 → 既定 `nil`（全状態）、`unread/read/archived/all` を受理 | 設計確認事項 (a) 確定（高指摘 #2 反映、Req 6.3 と両立） |
 | 5.4 | Web と MCP の整合 | store.UpdateItemStatus | 単一 DB を介す | データソース統一 |
 | 6.1 | データ消失なし | マイグレーション 007 | `DEFAULT 'unread'` で backfill | |
-| 6.2 | 既存挙動を壊さない | store.ListItems backwards compat | 後方互換戦略（後述） | |
-| 6.3 | 既存 MCP リクエストへの破壊変更なし | mcpserver | `Status` 未指定で既定 `unread` を採用、`status` フィールドは追加のみ | 設計確認事項 (e) 参照 |
+| 6.2 | 既存挙動を壊さない | server.handleListItems / store.ListItems backwards compat | `/v1/items` で defaultIfEmpty=nil（全状態）、後方互換戦略（後述） | |
+| 6.3 | 既存 MCP リクエストへの破壊変更なし | mcpserver mcpStatusFilter | `Status` 未指定で `nil`（全状態）を採用、`status` フィールドは追加のみ | 設計確認事項 (a) / (e) 参照 |
 | NFR 1.1 / 1.2 / 1.3 | パフォーマンス | DB index | `items_user_status_idx (user_id, status, created_at DESC)` | EXPLAIN で seq scan 回避 |
 | NFR 2.1 / 2.2 | 認可 | server / mcpserver | `WHERE user_id=$1 AND id=$2` を全経路で遵守 | |
 | NFR 3.1 | 構造化ログ | server.handleSetItemStatus | `slog.Info("items.status.update", user_id, item_id, prev, next)` | トークン / Cookie を出力しない |
@@ -388,32 +388,44 @@ func (s *Store) ListRecentItems(ctx context.Context, userID string, since time.T
 
 | Field | Detail |
 |-------|--------|
-| Intent | `/ui/items` / `/v1/items` の `?status=` を `[]string` に正規化する |
-| Requirements | 3.1, 3.3, 3.4, 3.5 |
+| Intent | `/ui/items` / `/v1/items` の `?status=` を `[]string` に正規化する。Web UI 既定（`unread` のみ）と REST API 既定（互換のため全状態）を分けるため、**呼び出し側が既定値を渡す** 設計とする |
+| Requirements | 3.1, 3.3, 3.4, 3.5, 6.2 |
 
 **Service Interface**
 
 ```go
 // parseStatusFilter converts the `?status=` query parameter into the
-// statuses slice consumed by Store.ListItems.
+// statuses slice consumed by Store.ListItems. The caller passes the
+// default value used when the query parameter is absent / empty, so
+// /ui/items (Web UI) and /v1/items (REST API) can apply different
+// defaults for the same parser.
 //
-// Mapping:
-//   ""           → []string{"unread"}        // 既定（Req 3.1）
+// Mapping (after applying defaultIfEmpty for "" inputs):
 //   "unread"     → []string{"unread"}        // (Req 3.3)
 //   "all"        → []string{"unread","read"} // archived 除外（Req 3.4 / 設計確認事項 (d)）
 //   "archived"   → []string{"archived"}      // (Req 3.5)
 //   "read"       → []string{"read"}          // optional（直接 read のみを見る診断用、ドキュメント外）
-//   others       → []string{"unread"}        // 不明値は既定にフォールバック（破壊しない）
+//   ""           → defaultIfEmpty            // 呼び出し側が指定する既定値
+//   others       → defaultIfEmpty            // 不明値も既定にフォールバック（破壊しない）
 //
-// 返り値が nil / 空配列になることはない。Store.ListItems は nil で全件取得
-// する責務分離だが、handler 層では必ず明示的なフィルタ集合を作る。
-func parseStatusFilter(q url.Values) []string
+// defaultIfEmpty が nil なら nil を返し（store 層では status フィルタを WHERE に
+// 追加しない = 全状態を返す）、defaultIfEmpty が非 nil ならその slice を返す。
+func parseStatusFilter(q url.Values, defaultIfEmpty []string) []string
 ```
+
+**既定値の渡し分け（Req 3.1 と Req 6.2 の両立）**:
+
+| 呼び出し元 | defaultIfEmpty | 根拠 |
+|-----------|----------------|------|
+| `handleUIItems` (`/ui/items`, Web UI / SSR) | `[]string{"unread"}` | Req 3.1: Web UI 初期表示で `unread` のみを表示する |
+| `handleListItems` (`/v1/items`, REST API) | `nil` | Req 6.2: 本機能の追加によって既存挙動を変更しない。既存の Chrome 拡張機能 / 外部 API クライアントは `?status=` を送らずに全件取得する前提のため、既定で全状態を返して後方互換を維持する |
 
 #### handleListItems / handleUIItems（変更）
 
-- `statuses := parseStatusFilter(r.URL.Query())` を呼び、`s.store.ListItems(... statuses ...)`
-  に渡す
+- `handleListItems`: `statuses := parseStatusFilter(r.URL.Query(), nil)` を呼び、
+  `s.store.ListItems(... statuses ...)` に渡す（既定 nil = 全状態、Req 6.2 後方互換）
+- `handleUIItems`: `statuses := parseStatusFilter(r.URL.Query(), []string{"unread"})` を呼び、
+  `s.store.ListItems(... statuses ...)` に渡す（既定 `unread`、Req 3.1）
 - `handleUIItems` のテンプレートデータに `"StatusTab"` キー（"unread" / "all" / "archived" の
   どれが選択中か）と `"StatusTabURLs"` キー（各タブの遷移先 URL）を追加し、`templates/items.html`
   でタブ active 表示を制御する
@@ -434,10 +446,12 @@ type ListItemsInput struct {
     Page    int    `json:"page,omitempty"`
     PerPage int    `json:"per_page,omitempty"`
     Sort    string `json:"sort,omitempty"`
-    // Status filters items by user-visible state. Default "unread" when empty
-    // (Req 5.2 / 設計確認事項 (a)). Accepts "unread" / "read" / "archived" /
-    // "all" — "all" is unread+read (Req 3.4 と同じ意味論で web/MCP を揃える).
-    Status  string `json:"status,omitempty" jsonschema:"状態フィルタ（unread/read/archived/all、既定: unread）"`
+    // Status filters items by user-visible state. Empty (omitted) defaults
+    // to "all states" (no filter) to preserve Req 6.3 backward compatibility
+    // for existing MCP clients that do not send the status field.
+    // Accepts "unread" / "read" / "archived" / "all" — "all" is unread+read
+    // (Req 3.4 と同じ意味論で web/MCP を揃える).
+    Status  string `json:"status,omitempty" jsonschema:"状態フィルタ（unread/read/archived/all、既定: 全状態）"`
 }
 
 type SearchItemsInput struct {
@@ -445,7 +459,7 @@ type SearchItemsInput struct {
     Tags    []string `json:"tags,omitempty"`
     Page    int      `json:"page,omitempty"`
     PerPage int      `json:"per_page,omitempty"`
-    Status  string   `json:"status,omitempty" jsonschema:"状態フィルタ（unread/read/archived/all、既定: unread）"`
+    Status  string   `json:"status,omitempty" jsonschema:"状態フィルタ（unread/read/archived/all、既定: 全状態）"`
 }
 ```
 
@@ -454,12 +468,34 @@ type SearchItemsInput struct {
 - `formatItemList(items)` の各要素に `"status": item.Status` を追加（Req 5.1）
 - `getItemHandler` の出力にも `"status": detail.Status` を追加
 
-**既定値・受付値の確定**（設計確認事項 (a)）
+**既定値・受付値の確定**（設計確認事項 (a) と Req 6.3 の両立 / 高指摘 #2 を反映）
 
-`Status == ""` → `parseStatusFilter` と同じ map を内部に持つ `mcpStatusFilter(s string)
-[]string` ヘルパーで `[]string{"unread"}` に正規化する。`"all"` / `"unread"` / `"read"` /
-`"archived"` の単一指定のみ受理（複数指定や非対応値はサーバ側で `[]string{"unread"}` に
-フォールバックし、破壊しない / Req 6.3）。
+各 MCP tool について以下に統一する。受付値は `unread` / `read` / `archived` / `all` の
+単一文字列。
+
+| MCP tool | Status `""` の解釈 | 根拠 |
+|----------|-------------------|------|
+| `list_items` | `nil`（store 層で status フィルタを WHERE に追加しない = 全状態） | Req 6.3: 既存 MCP クライアントは status を送らない。`unread` 既定にすると `read` / `archived` 化されたアイテムが listing から消え、本機能導入前と破壊的に異なる挙動になる |
+| `search_items` | `nil`（同上） | 同上 |
+| `recent-articles` | `nil`（同上、本仕様内で明文化された 1 つの値として「全状態」を採用） | Req 5.2 は「既定値を本仕様内で明文化された 1 つの値に固定する」ことを要求しており、その固定値として `nil`（全状態）を採用することで Req 6.3 と同時に満たす |
+
+内部ヘルパー `mcpStatusFilter(s string) []string` のマッピング:
+
+```go
+// mcpStatusFilter converts the MCP tool's Status input string into the
+// statuses slice consumed by Store.ListItems / Store.ListRecentItems.
+//
+//   ""         → nil                     // 既定: 全状態（Req 6.3 / Req 5.2）
+//   "unread"   → []string{"unread"}
+//   "read"     → []string{"read"}
+//   "archived" → []string{"archived"}
+//   "all"      → []string{"unread","read"}   // archived 除外（Req 3.4 と web/MCP を揃える）
+//   others     → nil                     // 不明値は既定にフォールバック（Req 6.3 / 破壊しない）
+func mcpStatusFilter(s string) []string
+```
+
+明示的に `unread` を指定する新規 MCP クライアントは `Status: "unread"` を送ることで未読のみ
+取得できる。本変更により既存 MCP クライアントは引き続き全状態を取得できる（Req 6.3）。
 
 #### DataSource interface（mcpserver/deps.go）
 
@@ -484,7 +520,8 @@ type DataSource interface {
   active-filters と main split の間**に配置。タブは `<a role="tab" aria-selected="...">` で
   Unread / All / Archived の 3 件、`href` は現在 URL の `?status=` を該当値に書き換えたもの
 - aria-selected と class `is-active` を SSR で付与し、`items_status.js` は同じ markup を JS で
-  差し替えるだけ（NFR 2.1: JS 無効環境でも `<a href>` で動作する）
+  差し替えるだけ（プログレッシブエンハンスメント: JS 無効環境でも `<a href>` でフルページ遷移
+  として動作する。既存 #114 / #115 / #117 と同じ pattern）
 
 #### items_list.html
 
@@ -677,12 +714,23 @@ PM の requirements 末尾 5 件について、本 design では以下の暫定�
 振る舞いに直結する (a) / (b) / (d) / (e) は本 spec 範囲で確定**し、(c) は本 Issue から除外
 する。実装後の人間レビューで再検討の余地がある場合は PR レビューで指摘してもらう。
 
-### (a) MCP の状態フィルタ既定値・受付値 — **確定**
+### (a) MCP の状態フィルタ既定値・受付値 — **確定**（高指摘 #2 反映）
 
-- 既定値: `unread`（`Status` 引数空 → `[]string{"unread"}`）
+- 既定値: **`nil`（全状態 / status 条件を WHERE に追加しない）**
+  - `list_items` / `search_items` / `recent-articles` のいずれも、`Status` 引数空 → `nil`
+  - Req 6.3（既存 MCP クライアントが status を送らないリクエストで破壊変更しない）と
+    Req 5.2（既定値を本仕様内で明文化された 1 つの値に固定する）を同時に満たすため、
+    固定値として「全状態」を採用する
 - 受付値: `unread` / `read` / `archived` / `all` の **単一文字列**
-  - `all` は `[]string{"unread","read"}`（archived 除外、Web UI All タブと同一意味論）
-- 不明値・複数指定は **既定 `unread` にフォールバック**（Req 6.3 の破壊しない原則を守る）
+  - `unread` → `[]string{"unread"}`、`read` → `[]string{"read"}`、`archived` → `[]string{"archived"}`
+  - `all` → `[]string{"unread","read"}`（archived 除外、Web UI All タブと同一意味論）
+- 不明値・複数指定は **`nil`（全状態）にフォールバック**（Req 6.3 の破壊しない原則を守る）
+
+**初回案からの変更点**: 当初は `Status` 空 → `unread` 既定としていたが、Reviewer 指摘により
+`list_items` / `search_items` / `recent-articles` を `unread` 既定にすると既存 MCP クライアントが
+`read` / `archived` 化されたアイテムを listing から取りこぼし Req 6.3 違反となるため、既定を
+`nil`（全状態）へ変更した。明示的に未読のみ取得したい新規クライアントは `Status: "unread"`
+を送ることで従来案の挙動を得られる。
 
 ### (b) タブ選択の保持永続単位 — **確定**
 

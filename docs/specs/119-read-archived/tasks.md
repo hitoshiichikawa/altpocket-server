@@ -21,7 +21,26 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - 定数 `ItemStatusUnread = "unread"` / `ItemStatusRead = "read"` /
       `ItemStatusArchived = "archived"` を package-level で公開
     - 新規メソッド `UpdateItemStatus(ctx, userID, itemID, next string) (prev string, err error)`
-      を実装（所有チェック + UPDATE + RETURNING old status / `pgx.ErrNoRows` で 404 collapse）
+      を実装（所有チェック + UPDATE + 旧 status 取得 / `pgx.ErrNoRows` で 404 collapse）
+      - **旧 status 取得の SQL pattern**: 通常の `UPDATE ... RETURNING status` は **更新後**
+        の値を返してしまうため、NFR 3.1（遷移前後ログ）には CTE を用いて更新前行を捕捉する。
+        実装例:
+        ```sql
+        WITH prev AS (
+          SELECT status FROM items
+          WHERE id = $1 AND user_id = $2
+          FOR UPDATE
+        ),
+        upd AS (
+          UPDATE items SET status = $3
+          WHERE id = $1 AND user_id = $2
+          RETURNING id
+        )
+        SELECT prev.status FROM prev, upd;
+        ```
+      - 上記 1 クエリで「行が存在しない / 他ユーザー所有」を `pgx.ErrNoRows` として
+        collapse でき、prev は更新前 status を返す（PostgreSQL 16 で動作）
+      - `FOR UPDATE` で同一行への並行更新を直列化し、prev / next の取り違えを防ぐ
     - `ListItems` シグネチャを `(ctx, userID, page, perPage, q, tags, statuses, sort)` に
       拡張。`statuses` が非空なら `i.status = ANY($N)` を WHERE に追加。SELECT に `i.status`
       を含める
@@ -33,8 +52,8 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - 既存呼び出し側（server / mcpserver / worker）の compile error は次タスク以降で順次解消する
     ため、本タスクではコンパイル成立は require しない（spec 内の単体差分のみ作成）
   - **テスト追加（同 task 内）**: 上記 `json_tags_test.go` の `status` snake-case 検証を
-    本タスクで完結させる（NFR 6 / Req 1.1 に対する同 task 内テスト必須）
-  - _Requirements: 1.1, 1.4, 1.6, 3.1, 3.3, 3.4, 3.5, 6.2, NFR 2.1, NFR 3.1_
+    本タスクで完結させる（Req 1.1 に対する同 task 内テスト必須）
+  - _Requirements: 1.1, 1.4, 1.6, 3.3, 3.4, 3.5, 6.2, NFR 2.1, NFR 3.1_
   - _Boundary: Store_
 
 - [ ] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill
@@ -56,28 +75,41 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
 
 - [ ] 4. server 層: handleSetItemStatus / parseStatusFilter / handleListItems / handleUIItems 接続
   - `internal/server/server.go`:
-    - `parseStatusFilter(q url.Values) []string` を追加（design.md の表通り。`""` / `unread` /
-      `all` / `archived` / `read` / 不明値 のマッピング）
+    - `parseStatusFilter(q url.Values, defaultIfEmpty []string) []string` を追加（design.md の
+      表通り。第 2 引数で「`?status=` 不在 / 空 / 不明値 のときに返す既定値」を呼び出し側が指定する。
+      `unread` / `all` / `archived` / `read` のマッピングは parser 内で固定）
     - `handleSetItemStatus(w, r)` を追加: JSON `{"status":"<v>"}` を受理、enum 検証、`requireAuth`
       / `limiter` / CSRF は既存 middleware 経由、`Store.UpdateItemStatus` 呼び出し、成功時
-      `slog.Info("items.status.update", user_id, item_id, prev, next, request_id)` を出力
+      `slog.Info("items.status.update", user_id, item_id, prev, next, request_id)` を出力。
+      `pgx.ErrNoRows` は 404 `{"error":"not_found"}` に collapse（存在しない / 他ユーザー所有
+      を区別せず NFR 2.1 でリーク防止）
     - `route("/v1/items", ...)` 配下に `r.Patch("/{id}/status", s.requireAuth(s.handleSetItemStatus))` を追加
-    - `handleListItems` / `handleUIItems` で `statuses := parseStatusFilter(r.URL.Query())` を
-      `s.store.ListItems(... statuses, sort)` に渡す
+    - `handleListItems`: `statuses := parseStatusFilter(r.URL.Query(), nil)` を渡す（Req 6.2
+      後方互換: 既存 `/v1/items` クライアントは status 未送信で全状態を取得し続ける）
+    - `handleUIItems`: `statuses := parseStatusFilter(r.URL.Query(), []string{store.ItemStatusUnread})`
+      を渡す（Req 3.1: Web UI 初期表示で unread のみ）
     - `handleUIItems` のテンプレート data に `"StatusTab"` / `"StatusTabURLs"` を追加（次タスクで
       テンプレート側を実装）
-  - `internal/server/items_status_test.go` を新規作成:
+  - `internal/server/items_status_test.go` を新規作成（テスト計画 / Req カバレッジ対応表）:
     - `Test_parseStatusFilter_TableDriven`: `""` / `"unread"` / `"all"` / `"archived"` / `"read"` /
-      不明値 / 大文字混在 → 期待 `[]string`
-    - `TestHandleSetItemStatusUnauthorizedReturnsJSONError`
-    - `TestHandleSetItemStatusInvalidJSONReturns400`
-    - `TestHandleSetItemStatusInvalidStatusReturns400`（`{"status":"foo"}` → 400 invalid_status）
-    - `TestHandleSetItemStatusEmptyStatusReturns400`
+      不明値 / 大文字混在 を、`defaultIfEmpty=nil` と `defaultIfEmpty=["unread"]` の 2 系列で
+      table-driven テスト（Req 3.1, 3.3, 3.4, 3.5, 6.2 をカバー）
+    - `TestHandleSetItemStatusUnauthorizedReturnsJSONError`: requireAuth 未通過時 401 JSON（既存契約維持）
+    - `TestHandleSetItemStatusInvalidJSONReturns400`: parse 不能 JSON → 400 invalid_request
+    - `TestHandleSetItemStatusEmptyStatusReturns400`: `{}` または `{"status":""}` → 400 invalid_request
+    - `TestHandleSetItemStatusInvalidStatusReturns400`: `{"status":"foo"}` → 400 invalid_status（Req 1.5）
+    - `TestHandleSetItemStatusSuccessReturns200`: 正常遷移時 200 + `{"status":"<next>","item_id":"<id>"}`
+      レスポンス本文 + `data-status` の更新（Req 1.4 / 2.3〜2.6 をカバー）
+    - `TestHandleSetItemStatusNotFoundCollapsedFromErrNoRows`: store が `pgx.ErrNoRows` を返した
+      場合 404 not_found（存在しない item と他ユーザー所有 item を区別せず collapse、NFR 2.1）
+    - `TestHandleSetItemStatusOtherUserItemReturns404`: handler 経路で実際に他ユーザー所有 item に
+      対する PATCH を試行し、404 が返ることを確認（fake / mock の store で `pgx.ErrNoRows` を
+      シミュレートする。NFR 2.1 のサーバ層拒否を回帰検証）
   - `extension_contract_test.go` は **変更しない**（成功時の JSON フィールド構造は assert
     していないため）
-  - **テスト追加（同 task 内）**: 上記 5 種の handler / parser テストを本タスクで完結させる
-    （Req 1.5 / NFR 2.1 / NFR 3.1 の同 task 内テスト必須カテゴリに該当）
-  - _Requirements: 1.4, 1.5, 1.6, 2.3, 2.4, 2.5, 2.6, 3.1, 3.3, 3.4, 3.5, 3.6, NFR 2.1, NFR 3.1_
+  - **テスト追加（同 task 内）**: 上記 8 種の handler / parser テストを本タスクで完結させる
+    （Req 1.4 / 1.5 / 2.3〜2.6 / 3.1 / 3.3〜3.5 / 6.2 / NFR 2.1 / NFR 3.1 の同 task 内テスト必須カテゴリに該当）
+  - _Requirements: 1.4, 1.5, 1.6, 2.3, 2.4, 2.5, 2.6, 3.1, 3.3, 3.4, 3.5, 3.6, 6.2, NFR 2.1, NFR 3.1_
   - _Boundary: Server_
   - _Depends: 2_
 
@@ -86,17 +118,34 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     store の新シグネチャに揃える（`statuses []string` 追加）
   - `internal/mcpserver/server.go`:
     - `ListItemsInput` / `SearchItemsInput` に `Status string \`json:"status,omitempty"\`` を追加
-    - 内部ヘルパー `mcpStatusFilter(s string) []string` を追加（既定 `unread`、`unread/read/archived/all` を受理、不明値は `unread` フォールバック）
+    - 内部ヘルパー `mcpStatusFilter(s string) []string` を追加（**既定 `nil`（全状態 / Req 6.3
+      後方互換）**、`unread`/`read`/`archived`/`all` を受理、不明値・複数指定は `nil`
+      フォールバック / design.md「既定値・受付値の確定」参照）
     - `listItemsHandler` / `searchItemsHandler` / `recentArticlesHandler` で `mcpStatusFilter(args.Status)`
       の結果を store に渡す
     - `formatItemList` / `getItemHandler` の出力 JSON に `"status": item.Status` / `"status": detail.Status` を追加
-  - `internal/mcpserver/server_test.go`:
-    - fake DataSource を更新（新シグネチャ）
-    - `TestListItemsHandler_DefaultStatusIsUnread`: `Status` 空入力で store に `[unread]` が渡ることを assert
-    - `TestListItemsHandler_AllReturnsUnreadAndRead`: `Status: "all"` → `[unread,read]`
-    - `TestListItemsHandler_OutputContainsStatus`: 返却 JSON に `"status"` キーが含まれることを assert
-    - `TestRecentArticlesHandler_DefaultStatusIsUnread`: 既定値の伝播を assert
-  - **テスト追加（同 task 内）**: 上記 4 種の MCP handler テストを本タスクで完結させる
+  - `internal/mcpserver/server_test.go`（テスト計画 / Req カバレッジ対応表）:
+    - fake DataSource を新シグネチャに更新（`statuses []string` をキャプチャできる recorder 化）
+    - `TestListItemsHandler_DefaultStatusIsNilAllStates`: `Status` 空入力で store に `nil`（全状態）
+      が渡ることを assert（Req 5.2 / Req 6.3 後方互換）
+    - `TestListItemsHandler_UnreadReturnsUnreadOnly`: `Status: "unread"` → `[unread]`（Req 5.3）
+    - `TestListItemsHandler_ReadReturnsReadOnly`: `Status: "read"` → `[read]`（Req 5.3）
+    - `TestListItemsHandler_ArchivedReturnsArchivedOnly`: `Status: "archived"` → `[archived]`（Req 5.3）
+    - `TestListItemsHandler_AllReturnsUnreadAndRead`: `Status: "all"` → `[unread,read]`（Req 5.3 / 3.4 と統一）
+    - `TestListItemsHandler_InvalidStatusFallsBackToNil`: `Status: "foo"` → `nil`（Req 6.3 破壊しない）
+    - `TestListItemsHandler_OutputContainsStatus`: 返却 JSON に `"status"` キーが含まれ、各 item の
+      `status` 値が正確に出力されることを assert（Req 5.1）
+    - `TestSearchItemsHandler_StatusPropagation`: `Status: "unread"` / `"read"` / `"archived"` / `"all"` /
+      空 / 不明値 を入力に、store に正しい statuses が渡ることを assert（Req 5.3 / 6.3、search_items
+      が list_items と同一のマッピングで動作することを回帰検証）
+    - `TestSearchItemsHandler_OutputContainsStatus`: 検索結果 JSON に `"status"` キーが含まれることを assert（Req 5.1）
+    - `TestGetItemHandler_OutputContainsStatus`: 単体 item 取得結果 JSON に `"status"` キーが含まれ、
+      `getItemHandler` の出力にも status が露出することを assert（Req 5.1）
+    - `TestRecentArticlesHandler_DefaultStatusIsNilAllStates`: `Status` 空入力で store に `nil`（全状態）
+      が渡ることを assert（Req 5.2 / Req 6.3 後方互換）
+    - `TestRecentArticlesHandler_UnreadFilterPropagated`: `Status: "unread"` で store に `[unread]` が
+      渡ることを assert（明示指定時に新規クライアントが unread のみを取得できることを確認、Req 5.3）
+  - **テスト追加（同 task 内）**: 上記 12 種の MCP handler テストを本タスクで完結させる
     （Req 5.1 / 5.2 / 5.3 / 6.3 の同 task 内テスト必須）
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 6.3, NFR 2.2_
   - _Boundary: McpServer_
@@ -201,9 +250,26 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
 ## Verify
 
 本 spec の実装後、watcher（stage-a-verify gate）が再実行すべき verify コマンドを以下の
-構造化ブロックで宣言する。Go test と golangci-lint と拡張機能テストの 3 系統を順次実行する。
+構造化ブロックで宣言する。Go test と golangci-lint と Node.js 拡張テストの 3 系統を順次実行する。
+新規追加する `static/items_status.test.mjs`（タスク 8）と `static/items_status_tabs.test.mjs`
+（タスク 9）を node --test 引数に含め、本機能 JS テストがゲートで実行されるようにする。
 
 <!-- stage-a-verify -->
 ```sh
-go test ./... && golangci-lint run && node --test static/items_active_filters.test.mjs static/items_search.test.mjs static/items_tags.test.mjs static/items_fragment_race.test.mjs
+go test ./... && golangci-lint run && node --test static/items_active_filters.test.mjs static/items_search.test.mjs static/items_tags.test.mjs static/items_fragment_race.test.mjs static/items_status.test.mjs static/items_status_tabs.test.mjs
 ```
+
+### Integration test の取扱（stage-a-verify gate スコープ外）
+
+`internal/store/store_item_status_test.go`（タスク 3）は `//go:build integration` tag 付きで
+記述するため、上記 `go test ./...` では **実行されない**（既存 `items_active_filters_integration_test.go`
+と同様の運用）。実 PostgreSQL を要するため、本ブロックには含めない（watcher 環境では DB を
+spin-up しない方針 / `.kiro/steering/structure.md` 準拠）。
+
+これらは以下のいずれかで担保する:
+
+- 開発者ローカル: `go test -tags=integration ./internal/store/...`（`docker compose up -d postgres`
+  で DB を起動した状態で実行）
+- Reviewer フェーズ: 必要に応じて Reviewer が同コマンドを手元で実行し AC カバーを確認する
+- 既存 CI（`.github/workflows/ci.yml`）には integration tag 対応が無いため本 PR では追加しない
+  （integration job 化は別 Issue で扱う方針、Out of Scope）
