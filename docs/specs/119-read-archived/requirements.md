@@ -1,0 +1,162 @@
+# Requirements Document
+
+## Introduction
+
+altpocket は read-later サービスでありながら、現状はアイテムが「未読 / 既読 / アーカイブ済み」の
+ユーザー可視な状態を持たない。`FetchStatus`（success / fetching / pending / failed）は本文取得の
+進捗を示すのみで、読了消化や整理の指標として機能しない。本 Issue では Items にユーザー可視な
+3 状態（`unread` / `read` / `archived`）を導入し、Web UI からの状態遷移操作、デフォルト「未読のみ」
+表示、「All」「Archived」への切替、状態に応じた視覚区別、および MCP 経由での状態の一貫した参照
+範囲を定義する。状態管理方式は Issue コメント（needs-decisions auto-continue, 2026-06-23）により
+**Option A: 3 値の明示的な状態フィールド**を採用済みであり、読了日時のタイムスタンプ管理は
+スコープ外とする。
+
+## Requirements
+
+### Requirement 1: アイテム状態モデル
+
+**Objective:** As a read-later サービスのユーザー, I want アイテムを未読・既読・アーカイブの 3 状態で管理できる, so that 読了済みや棚上げしたアイテムを新着と区別して整理できる
+
+#### Acceptance Criteria
+
+1. The Items Service shall 各アイテムに対し `unread` / `read` / `archived` のいずれか 1 つの状態を保持する
+2. The Items Service shall 新規に保存されたアイテムの初期状態を `unread` として扱う
+3. When 本機能のスキーマ変更適用後にユーザーが既存アイテム一覧を参照したとき, the Items Service shall 既存の全アイテムを `unread` 状態として返す
+4. When ユーザーがアイテムの状態を変更したとき, the Items Service shall 変更後の状態を永続化し、以降のリロード / 再ログイン後も同じ状態を返す
+5. The Items Service shall `unread` / `read` / `archived` 以外の状態値をアイテムに設定することを拒否する
+6. The Items Service shall アイテムの状態と既存の `FetchStatus`（success / fetching / pending / failed）を独立した 2 軸として扱う
+
+### Requirement 2: 状態遷移操作（Web UI）
+
+**Objective:** As a Web UI 利用者, I want カードから既読化・未読戻し・アーカイブ化を 1 アクションで行える, so that 読み終えたアイテムや棚上げするアイテムを即座に整理できる
+
+#### Acceptance Criteria
+
+1. The Web UI shall 各アイテムカードに「既読切り替え（unread ⇄ read）」のアクション要素を表示する
+2. The Web UI shall 各アイテムカードに「アーカイブする（→ archived）」のアクション要素を表示する
+3. When ユーザーが `unread` 状態のアイテムで既読切り替えを実行したとき, the Web UI shall 当該アイテムの状態を `read` に変更する
+4. When ユーザーが `read` 状態のアイテムで既読切り替えを実行したとき, the Web UI shall 当該アイテムの状態を `unread` に変更する
+5. When ユーザーがアーカイブ操作を実行したとき, the Web UI shall 当該アイテムの状態を `archived` に変更する
+6. While アイテムが `archived` 状態, the Web UI shall ユーザーが当該アイテムを `unread` に戻す（アーカイブ解除）操作要素を提供する
+7. If 状態変更操作が失敗したとき, the Web UI shall 操作前の状態を維持し、ユーザーに失敗を通知する
+8. When 状態変更操作が成功したとき, the Web UI shall 当該カードの表示状態（後述 Requirement 4 の視覚区別および現在のフィルタ条件に従った表示／非表示）を再リロードなしで反映する
+
+### Requirement 3: 一覧フィルタとタブ切替
+
+**Objective:** As a Web UI 利用者, I want 未読 / すべて / アーカイブを切り替えて一覧表示できる, so that 未読消化を中心に据えつつ、必要に応じて履歴・アーカイブも参照できる
+
+#### Acceptance Criteria
+
+1. The Web UI shall ライブラリ一覧の初期表示で `unread` 状態のアイテムのみを表示する
+2. The Web UI shall 「Unread」「All」「Archived」の 3 つの状態タブ（または同等の切替 UI）を提供する
+3. When ユーザーが「Unread」タブを選択したとき, the Web UI shall `unread` 状態のアイテムのみを一覧に表示する
+4. When ユーザーが「All」タブを選択したとき, the Web UI shall `unread` と `read` 状態のアイテムを一覧に表示し、`archived` を除外する
+5. When ユーザーが「Archived」タブを選択したとき, the Web UI shall `archived` 状態のアイテムのみを一覧に表示する
+6. The Web UI shall 状態タブの選択と既存のタグフィルタ / 検索クエリ / ソート / ページ送りを併用可能とする
+7. While 状態タブが「Unread」以外に設定されている, the Web UI shall 現在選択中の状態タブを #115 のアクティブフィルタ表示と矛盾しない方法で常時可視化する
+8. The Web UI shall 状態タブの選択を URL クエリ `?status=` で永続化し、ページ遷移・リロード・ブラウザの戻る／進む操作を通じて保持する。ユーザーが意図的に切替操作するまで初期値（Unread）に戻さない
+
+### Requirement 4: 状態の視覚区別
+
+**Objective:** As a Web UI 利用者, I want カードの色やスタイルでアイテム状態を一目で識別できる, so that スクロール中に未読 / 既読 / アーカイブ / 取得失敗を迷わず認識できる
+
+#### Acceptance Criteria
+
+1. The Web UI shall `unread` / `read` / `archived` の 3 状態に対して、それぞれ視覚的に区別可能なカードスタイルを適用する
+2. The Web UI shall `FetchStatus = failed` を本機能の 3 状態とは別軸として、引き続き視覚的に識別可能な形で提示する
+3. Where #12 のカードアクセントバー色分けが共存する, the Web UI shall 本機能の状態区別を #12 の色定義と衝突しない範囲で表現する
+4. The Web UI shall 状態を識別する視覚要素を、色覚多様性に配慮した形（色のみに依存しないテキストラベル / アイコン / 形状のいずれかの併用）で提供する
+
+### Requirement 5: MCP 経由の状態可視性
+
+**Objective:** As a MCP クライアント利用者, I want MCP ツール経由でも本機能の状態を一貫した範囲で参照できる, so that 外部クライアントから取得した結果と Web UI で見える内容に予期しないズレが生じない
+
+#### Acceptance Criteria
+
+1. The MCP Server shall 公開する各アイテムオブジェクトに `unread` / `read` / `archived` のいずれかの状態フィールドを含める
+2. The MCP Server shall 「新着取得」相当の機能（`recent-articles` Resource）で返すアイテム集合の状態フィルタ既定値を `nil`（全状態 / status 条件を WHERE に追加しない）に固定する
+3. Where MCP クライアントが状態を引数で指定した（input 引数を持つ Tool `list_items` / `search_items` 経由で `status` 値を送信した）, the MCP Server shall 指定された状態のアイテムのみを返す。受け付ける `status` 値は `unread` / `read` / `archived` / `all`（`unread` + `read` の和集合、`archived` 除外）の単一文字列とし、不明値・複数指定（区切り文字で複数値を埋め込んだ単一文字列、例: `"unread,read"` / `"unread read"`）は既定（`nil` = 全状態）にフォールバックする。なお、単一文字列以外の入力（JSON 配列 `["unread","read"]`、繰り返しクエリキー `?status=unread&status=read`、非文字列型 `1` / `true` / `null` 等）は MCP の JSON Schema 検証によって handler 到達前に validation error として拒否されるため、本 AC の「複数指定 → nil フォールバック」スコープには含まれない（型違反は AC スコープ外、振る舞いは MCP 規約の tool call error に従う）
+4. The MCP Server shall Web UI からの状態変更が永続化された後、後続の MCP 呼び出しで更新後の状態を返す
+
+### Requirement 6: 後方互換とデータ移行時の保護
+
+**Objective:** As a 既存ユーザー, I want 本機能リリース後に既存データと既存挙動が壊れない, so that バージョンアップ作業後すぐに普段通りライブラリを利用できる
+
+#### Acceptance Criteria
+
+1. When 本機能のスキーマ変更を既存環境に適用したとき, the Items Service shall 既存の全アイテムを `unread` 状態として保持し、データ消失や状態未設定アイテムを生まない
+2. The Items Service shall 本機能の追加によって既存の URL 正規化 / タグ / 検索 / 取得済み本文の挙動を変更しない
+3. The MCP Server shall 既存 MCP クライアントが状態フィールドを送信しないリクエストでも、本機能導入前と比較して破壊的に異なる挙動を返さない（既定範囲は `nil`（全状態）で固定し、既存クライアントは引き続き全状態のアイテムを取得する）
+
+## Non-Functional Requirements
+
+### NFR 1: パフォーマンス
+
+1. While 1 ユーザーあたりのアイテム件数が 10,000 件以下, the Web UI shall ライブラリ一覧の初期表示（Unread タブ・既定ページサイズ）の体感応答時間を、本機能導入前の同条件比で +20% 以内に抑える
+2. When ユーザーが状態タブを切り替えたとき, the Web UI shall 1 秒以内に新しい一覧を提示する（1 ユーザーあたり 10,000 件以下、既定ページサイズ前提）
+3. When ユーザーが個別アイテムの状態を変更したとき, the Web UI shall 操作完了の視覚的フィードバックを 500ms 以内に提示する
+
+### NFR 2: 認可・データ分離
+
+1. The Items Service shall ユーザーが他ユーザーの所有するアイテムの状態を読み取ること、および変更することを拒否する
+2. The MCP Server shall MCP API キーに紐付くユーザーが所有するアイテムのみを状態フィルタの対象とする
+
+### NFR 3: 可観測性
+
+1. The Items Service shall 状態変更操作についてユーザー識別子・対象アイテム識別子・遷移前後の状態を構造化ログとして記録し、トークン / Cookie / 本文の生値を含めない
+
+### NFR 4: アクセシビリティ
+
+1. The Web UI shall 既読トグル / アーカイブ操作要素を、キーボード操作（Tab フォーカス + Enter / Space）のみで実行可能とする
+2. The Web UI shall 既読トグル / アーカイブ操作要素および状態タブに、状態を読み上げ可能なテキスト（aria-label 等）を付与する
+
+## Out of Scope
+
+- 既読率ダッシュボード（消化率の集計・可視化）
+- アーカイブ済みアイテムの自動クリーンアップ（定期削除・容量上限による自動削除）
+- 既読日時 / アーカイブ日時のタイムスタンプ管理および期間集計（Option A 採用により、タイムスタンプはスコープ外）
+- 状態に基づく通知 / リマインダ機能
+- Chrome 拡張機能 UI への状態操作要素の追加（API レスポンス側の `status` フィールド露出は本 Issue スコープ内、UI 追加は別 Issue）
+- 一括選択による複数アイテムの一括状態変更
+- 検索結果やタグフィルタの母集団にアーカイブを含める／除外するの設定 UI（既定挙動は Requirement 3 に従う）
+- グローバルキーボードショートカット（`m` / `a` 等）の新規割当（本 Issue では Tab + Enter / Space で操作可能とする AC のみを満たし、グローバルショートカットは別 Issue で扱う）
+
+## 設計確定事項（旧確認事項の解決）
+
+以下は当初 design 着手前の確認事項としていたが、本 spec 内（design.md「設計確認事項」節）
+で確定済み。requirements.md の AC は確定値を直接記述するため、本節は **過去の経緯記録**
+として残す。
+
+- **(a) MCP の状態フィルタ既定値と受付値** — **確定**:
+  - 既定値: `nil`（全状態 / status フィルタを WHERE に追加しない）。これにより Req 6.3
+    （既存 MCP クライアントが状態を送らない場合に破壊変更しない）と Req 5.2（本仕様内で
+    明文化された 1 つの値に固定）を両立する
+  - 受付値: input 引数を持つ Tool（`list_items` / `search_items`）で `unread` / `read` /
+    `archived` / `all` の単一文字列を受理。不明値・複数指定は `nil` にフォールバック
+  - `recent-articles` は MCP **Resource**（`ReadResourceRequest`）であり構造化 input 引数を
+    持たないため、status 引数の受付なし。`ListRecentItems` 呼び出しでは常に `nil`（全状態）
+    を渡す。Req 5.3 の主体は input 引数を持つ Tool に限定する
+- **(b) 状態タブ選択の保持永続単位** — **確定**:
+  - URL クエリ `?status=` で永続化。既存 #114 / #115 / #117 のフィルタ chip・検索クエリ・
+    タグフィルタが全て URL クエリ駆動であることと整合させる（リンク共有可能・履歴互換・
+    JS 無効環境でも動作）。`?status=` 未指定時は既定 `unread` を表示する
+- **(c) キーボードショートカット導入の可否と割当** — **本 Issue から除外（Out of Scope）**:
+  - 新規グローバルショートカットを割り当てない。Req 2 / NFR 4.1 は「アクション要素を Tab +
+    Enter / Space で操作可能とする」ことを要求しており、card 上の `<button>` 要素が
+    ネイティブにフォーカス可能なため既に満たされる
+  - 既存 `static/app.js` の `'e'` キーは詳細ページ edit-tags 用、`'j'/'k'/'o'/'n'/'/'/'?'` は
+    一覧ナビ用に予約済み。将来 Issue で扱う場合は `'m'`（mark）/ `'a'`（archive）を候補とする
+- **(d) 「All」タブが archived を含むか** — **確定: 除外**:
+  - `?status=all` は `[]string{"unread","read"}`（archived 除外）。Pocket / Instapaper 等の
+    慣例（"All" は活きているアイテム、"Archive" は別タブ）に合わせる
+- **(e) 拡張機能 API レスポンスへの状態フィールド露出** — **確定: 露出する**:
+  - `/v1/items` 一覧レスポンスに `"status"` フィールドを追加する（store.Item に
+    `Status string \`json:"status"\`` を加えるため自動的に露出）
+  - `extension_contract_test.go` は成功レスポンス JSON のフィールド構造を assert していない
+    ため、新規 `status` フィールド追加はテスト変更不要・後方互換維持
+  - 本 Issue では拡張機能 UI への状態操作要素追加は Out of Scope。`status` フィールドは
+    将来の拡張機能 UI 追加で参照可能な状態にしておく目的
+
+## Related
+
+- Related: #12 #115
