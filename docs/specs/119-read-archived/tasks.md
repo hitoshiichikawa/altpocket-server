@@ -118,7 +118,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Store_
   - _Depends: 1, 2_
 
-- [ ] 4. server 層: handleSetItemStatus / parseStatusFilter / handleListItems / handleUIItems 接続
+- [x] 4. server 層: handleSetItemStatus / parseStatusFilter / handleListItems / handleUIItems 接続
   - `internal/server/server.go`:
     - `parseStatusFilter(q url.Values, defaultIfEmpty []string) []string` を追加（design.md の
       表通り。第 2 引数で「`?status=` 不在 / 空 / 不明値 のときに返す既定値」を呼び出し側が指定する。
