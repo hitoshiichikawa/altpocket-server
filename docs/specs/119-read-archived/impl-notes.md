@@ -10,6 +10,20 @@
   - ファイル冒頭コメントは 006_item_tag_display_name.sql と同程度の粒度で「背景 / 適用順 / 冪等性パターン / backfill 戦略」の 4 ブロック構造に整理し、Issue #119 / design.md の参照点を明示した。
 - 残存課題: なし（task 2 以降の store 層・server 層・MCP 層・SSR 実装が後続 task として残っているが、本 task の境界（migrations）には影響しない）。
 
+### Task 2
+- 採用方針: tasks.md task 2 の指示通り、`internal/store` の `Item.Status` フィールド追加・`ItemStatusUnread`/`Read`/`Archived` 定数公開・`UpdateItemStatus` 新規メソッド・`ListItems` および `ListRecentItems` の `statuses []string` 引数拡張・`GetItemDetail` の `SELECT i.status` 追加を **単一 commit** にまとめた。`json_tags_test.go` に `Status: "read"` 入力 → `"status"` snake_case JSON 出力の assert を追加し、`go test ./internal/store/...` が通る状態で停止（task 2 規約の "spec 内の単体差分のみ作成" を満たし、server / mcpserver / worker の compile error は task 4 / 5 / 後続で順次解消する）。
+- 重要な判断:
+  - **UpdateItemStatus の SQL pattern**: design.md / tasks.md task 2 に明示された data-modifying CTE（`WITH prev AS (... FOR UPDATE) UPDATE items SET status=$3 FROM prev WHERE items.id=prev.id RETURNING prev.status`）を素直に実装した。通常の `UPDATE ... RETURNING status` だと **更新後**の値が返ってしまうため NFR 3.1 の遷移前後ログを生成できない（design.md 設計判断 #6 と整合）。`FROM prev WHERE items.id = prev.id` で UPDATE を `prev` CTE に明示依存させ、`FOR UPDATE` ロック取得 → UPDATE の評価順を強制する。
+  - **ErrNoRows collapse**: 行未存在と他ユーザー所有を区別せずに `pgx.QueryRow.Scan(...)` が `pgx.ErrNoRows` を返す経路で NFR 2.1（所有チェック失敗が "存在しない" と同様に観測されること）を満たす。`prev` CTE が空（行未存在 / 所有外）なら UPDATE 対象行ゼロとなり Scan が ErrNoRows を返す。
+  - **store 層は default を持たない**: `ListItems(... statuses []string ...)` / `ListRecentItems(... statuses []string)` ともに `len(statuses) > 0` でのみ `i.status = ANY($N)` を WHERE に追加する。`nil` / 空 は「フィルタ無し（全状態）」として扱い、`unread` 既定 / `nil` 既定（後方互換）の判断は呼び出し側（task 4 の `parseStatusFilter(defaultIfEmpty)` / task 5 の `mcpStatusFilter`）の責務に委ねる。これにより `/v1/items` の Req 6.2（後方互換: 既定 nil = 全状態）と `/ui/items` の Req 3.1（既定 unread）を 1 つの store メソッドで両立できる（design.md "Store.ListItems / ListRecentItems（拡張）" 節と整合）。
+  - **`ListRecentItems` の SQL 構築方式**: 既存 `ListItems` の `[]string{} + argPos` パターンを完全踏襲すると WHERE 句数が少なすぎて over-engineering になるため、`where` を `string` で開始し `fmt.Sprintf` で argPos を 1 箇所だけ補完する最小化形にした。同等の `i.status = ANY($N)` を AND 結合する点で `ListItems` と振る舞い一致。
+  - **Item.Status の JSON タグ位置**: `Status string \`json:"status"\`` を `FetchError` と `CreatedAt` の間に配置（`FetchStatus` の次の "user-visible state" 軸として並ぶことで model の意図が読み取りやすい）。`json_tags_test.go` の既存 `assertMissingKey(t, m, "Status")` 追加で PascalCase 漏洩も regress-fix。
+  - **dependent packages の compile error は意図的に放置**: `go build ./...` は server / mcpserver で 3 件の compile error を吐く（`s.store.ListItems` の引数不一致 / `*store.Store` が `mcpserver.DataSource` を満たさない）が、tasks.md task 2 の "本タスクではコンパイル成立は require しない" 注記通り。dependent fix は task 4 (server) / task 5 (mcpserver) で順次入る。`go test ./internal/store/...` は単独で pass する。
+- 残存課題:
+  - **lint 不在**: per-task Implementer 環境に `golangci-lint` が未 install のため、本タスクで追加した Go コードに対する lint は実行できなかった（task 1 と同じ状況）。gofmt は pass、`go vet ./internal/store/...` も pass を確認済み。後続 task で Go 変更が積まれる際に同 verify gate で lint が再実行されるため、本 commit 時点では問題なし。
+  - **`UpdateItemStatus` の入力 enum 検証**: store 層では `next` 文字列を素通しで SQL に渡す（DB CHECK 制約が defense-in-depth）。入力検証は呼び出し側 `handleSetItemStatus`（task 4）の責務に置く設計（design.md "Store.UpdateItemStatus" Preconditions 節）。task 3 の `TestUpdateItemStatus_RejectsInvalidStatus` が CHECK 制約による拒否を実 DB で回帰検証する。
+  - **`ListRecentItems` の DISTINCT 維持**: 既存実装は `array_agg(DISTINCT t.id) FILTER (...)` の DISTINCT を保っており、本変更では `i.status` 追加と `WHERE` 拡張以外は触っていない。`ListItems` 側の非 DISTINCT array_agg（`ORDER BY t.id` で安定化）と挙動差があるが本 Issue のスコープ外（既存 #115 等で議論された設計判断）。
+
 ## Verify 実行記録
 
 - `go test ./...`: 全 package pass（cached + `internal/server` 4.012s）。SQL のみの追加のため Go コード側に影響無し。
