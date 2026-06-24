@@ -213,11 +213,19 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `TestListItemsHandler_ArchivedReturnsArchivedOnly`: `Status: "archived"` → `[archived]`（Req 5.3）
     - `TestListItemsHandler_AllReturnsUnreadAndRead`: `Status: "all"` → `[unread,read]`（Req 5.3 / 3.4 と統一）
     - `TestListItemsHandler_InvalidStatusFallsBackToNil`: `Status: "foo"` → `nil`（Req 6.3 破壊しない）
+    - `TestListItemsHandler_MultiValueStatusFallsBackToNil`: 区切り文字埋め込みの複数指定が
+      `nil` にフォールバックすることを assert する（Req 5.3 の「複数指定は既定にフォールバック」
+      / Reviewer 指摘）。`Status: "unread,read"`（カンマ区切り） / `Status: "unread read"`
+      （スペース区切り） / `Status: "unread,read,archived"`（3 値カンマ区切り） / `Status: "unread|read"`
+      （縦棒区切り）の各ケースで store に `nil`（全状態）が渡ることを表形式で assert。これにより
+      design.md の `mcpStatusFilter` が canonical 値集合との完全一致のみで分岐し、それ以外は
+      一律 `nil` に落とす規約（split 実装を導入しない設計判断）が回帰検証される
     - `TestListItemsHandler_OutputContainsStatus`: 返却 JSON に `"status"` キーが含まれ、各 item の
       `status` 値が正確に出力されることを assert（Req 5.1）
     - `TestSearchItemsHandler_StatusPropagation`: `Status: "unread"` / `"read"` / `"archived"` / `"all"` /
-      空 / 不明値 を入力に、store に正しい statuses が渡ることを assert（Req 5.3 / 6.3、search_items
-      が list_items と同一のマッピングで動作することを回帰検証）
+      空 / 不明値 / **複数指定** (`"unread,read"` 等の区切り文字埋め込み) を入力に、store に正しい
+      statuses が渡ることを assert（Req 5.3 / 6.3、search_items が list_items と同一のマッピングで
+      動作することを回帰検証 / 複数指定が `nil` にフォールバックすることも同表に含める）
     - `TestSearchItemsHandler_OutputContainsStatus`: 検索結果 JSON に `"status"` キーが含まれることを assert（Req 5.1）
     - `TestGetItemHandler_OutputContainsStatus`: 単体 item 取得結果 JSON に `"status"` キーが含まれ、
       `getItemHandler` の出力にも status が露出することを assert（Req 5.1）
@@ -230,11 +238,15 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       `Status` 空入力経路や `Status: "unread"` 引数伝播経路は本ハンドラに存在しないため、
       対応する旧テストは削除する。Tool 側の status 引数経路の回帰は本タスク内の
       `TestListItemsHandler_*` / `TestSearchItemsHandler_*` で個別にカバーする
-  - **テスト追加（同 task 内）**: 上記 11 種の MCP handler テストを本タスクで完結させる
-    （Req 5.1 / 5.2 / 5.3 / 6.3 の同 task 内テスト必須）。`TestRecentArticlesHandler_*` は
-    Resource が input 引数を持たない設計の回帰検証 1 件のみ（`AlwaysCallsStoreWithNilStatuses`）
-    で完結し、`Status` 引数経路の回帰は Tool 側 `TestListItemsHandler_*` / `TestSearchItemsHandler_*`
-    で個別カバーする
+  - **テスト追加（同 task 内）**: 上記 12 種の MCP handler テストを本タスクで完結させる
+    （Req 5.1 / 5.2 / 5.3 / 6.3 の同 task 内テスト必須）。複数指定フォールバック
+    （`TestListItemsHandler_MultiValueStatusFallsBackToNil`）は Req 5.3 の独立 AC として
+    `TestListItemsHandler_InvalidStatusFallsBackToNil`（単一不明値）と別ケースで明示し、
+    `TestSearchItemsHandler_StatusPropagation` の表形式にも複数指定行を含めることで
+    `list_items` / `search_items` 両 Tool で同一の `nil` 帰着を回帰検証する。
+    `TestRecentArticlesHandler_*` は Resource が input 引数を持たない設計の回帰検証 1 件のみ
+    （`AlwaysCallsStoreWithNilStatuses`）で完結し、`Status` 引数経路の回帰は Tool 側
+    `TestListItemsHandler_*` / `TestSearchItemsHandler_*` で個別カバーする
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 6.3, NFR 2.2_
   - _Boundary: McpServer_
   - _Depends: 2_
@@ -277,7 +289,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `<article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}"
       data-status="{{.Status}}" ...>` のように `data-status` を追加
     - meta 行に `<span class="item-status-badge" data-status="{{.Status}}" role="status"
-      aria-label="状態: {{.Status}}">{{.Status}}</span>` を追加（NFR 4: テキストラベル併用）
+      aria-label="状態: {{.Status}}">{{.Status}}</span>` を追加（Req 4.4: テキストラベル併用）
     - **詳細リンクの `?status=` 温存（Req 3.8 詳細往復で初期値に戻さない / Reviewer 指摘 #2）**:
       `items_list.html:50` の `<a class="tile-link" href="/ui/items/{{.ID}}">` を
       `href="/ui/items/{{.ID}}{{if $.StatusQuery}}?status={{$.StatusQuery}}{{end}}"`
@@ -429,7 +441,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       点線インジケータ等で archived を視覚化（border-left は使用しない）
     - `.item-status-badge[data-status="unread"]` / `[read]` / `[archived]`: status-pill と同様の
       丸ドット + テキスト併用スタイル。色覚多様性に配慮するため、必ず **ドット + テキストラベル**
-      を併記する（NFR 4 の色のみ依存禁止）
+      を併記する（Req 4.4 の色のみ依存禁止）
     - `.item-card.failed` と `.item-card[data-status="archived"]` が同時に成立しても破綻
       しないことを確認（failed の border-left + archived の背景弱化が共存）
   - light / dark テーマ両方で視覚区別が成立することを目視確認

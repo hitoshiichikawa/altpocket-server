@@ -214,7 +214,7 @@ static/
   - `.item-card[data-status="archived"]`: 背景を `--bg-elevated` から弱化、status badge を併設
     （`archived` も border-left を使わない。`failed` 軸と直交させる / Req 4.3）
   - `.item-status-badge[data-status="read"]` / `[data-status="archived"]` を SSR で description
-    span に追加し、テキストラベル（"既読" / "アーカイブ"）を併記（NFR 4 の色のみ依存禁止）
+    span に追加し、テキストラベル（"既読" / "アーカイブ"）を併記（Req 4.4 の色のみ依存禁止）
   - `.status-tabs`: 既存 `.active-filters` と同じ余白トークンで描画、`[aria-selected="true"]`
     で primary 反転スタイル
   - `.item-card.failed` （#12）の border-left との衝突回避: `failed` は既存通り
@@ -249,7 +249,7 @@ static/
 | 3.6 | 既存タグ / 検索 / ソート / ページ送りと併用 | server.handleUIItems | URL クエリ独立 | 既存ハンドラに status を AND 結合 |
 | 3.7 | 状態タブと #115 active-filters と矛盾しない | items.html 配置 | status-tabs を active-filters の上に配置 | 視覚レイアウト |
 | 3.8 | 状態タブ選択を保持 | URL クエリ駆動 | `?status=` を URL に持つ | 設計確認事項 (b) 確定 |
-| 4.1 / 4.4 | 状態の視覚区別（色 + テキスト） | style.css / items_list.html | `[data-status]` + status-badge text | NFR 4.4 色覚配慮 |
+| 4.1 / 4.4 | 状態の視覚区別（色 + テキスト） | style.css / items_list.html | `[data-status]` + status-badge text | Req 4.4 色覚配慮 |
 | 4.2 | failed との別軸提示 | style.css | 既存 `.failed` border-left 維持 | 軸を直交させる |
 | 4.3 | #12 との非衝突 | style.css | `archived` は border-left を使わない | 軸の干渉回避 |
 | 5.1 | MCP 状態フィールド露出 | mcpserver/server.go formatItemList / getItemHandler | item / detail JSON に `"status"` 追加 | |
@@ -507,18 +507,46 @@ type SearchItemsInput struct {
 | `search_items` | Tool（`CallToolRequest`） | あり（`SearchItemsInput.Status`） | `nil`（同上） | 同上 |
 | `recent-articles` | Resource（`ReadResourceRequest`） | **なし**（input 引数を持たない） | `nil`（本仕様内で明文化された 1 つの値として「全状態」を採用） | Req 5.2 は「既定値を本仕様内で明文化された 1 つの値に固定する」ことを要求しており、その固定値として `nil`（全状態）を採用することで Req 6.3 と同時に満たす。Req 5.3（クライアントが状態を引数で指定）は input 引数を持つ Tool 側で満たす |
 
+**「複数指定」の取扱（Req 5.3 / Reviewer 指摘）**: `Status` フィールドは **JSON Schema 型として
+単一文字列**（`type: "string"`、`ListItemsInput.Status` / `SearchItemsInput.Status` 共に Go の
+`string`）であり、配列・繰り返しキー（`status=unread&status=read`）・JSON 配列リテラル
+（`["unread","read"]`）はそもそも JSON Schema 検証で reject されるか string への coerce が
+失敗するため、`mcpStatusFilter` に到達しない。本仕様上で「複数指定」が現実に発生し得るのは、
+**1 つの単一文字列値に区切り文字で複数の状態名を埋め込んだケース** に限定される。具体的には:
+
+- カンマ区切り: `"unread,read"` / `"unread,read,archived"`
+- スペース区切り: `"unread read"`
+- 縦棒区切り: `"unread|read"` 等の任意区切り文字
+
+これらは canonical 受付値（`"unread"` / `"read"` / `"archived"` / `"all"`）のいずれにも完全一致
+しないため、下記マッピングの **`others → nil`** ルールにより一律で `nil`（全状態 / status
+フィルタを WHERE に追加しない）にフォールバックする。これにより requirements.md Req 5.3 の
+「不明値・複数指定は既定（`nil` = 全状態）にフォールバック」と Req 6.3 の「既存クライアントへの
+破壊変更なし」を同時に満たす。`mcpStatusFilter` は区切り文字を split せず、入力文字列全体を
+canonical 値集合と完全一致比較するのみで判定する（split 実装は導入しない / 不明値と複数指定を
+同一の `nil` 帰着で扱うことで実装と回帰検証を最小化する）。
+
 内部ヘルパー `mcpStatusFilter(s string) []string` のマッピング:
 
 ```go
 // mcpStatusFilter converts the MCP tool's Status input string into the
 // statuses slice consumed by Store.ListItems / Store.ListRecentItems.
 //
-//   ""         → nil                     // 既定: 全状態（Req 6.3 / Req 5.2）
-//   "unread"   → []string{"unread"}
-//   "read"     → []string{"read"}
-//   "archived" → []string{"archived"}
-//   "all"      → []string{"unread","read"}   // archived 除外（Req 3.4 と web/MCP を揃える）
-//   others     → nil                     // 不明値は既定にフォールバック（Req 6.3 / 破壊しない）
+// 受付は単一文字列 (Status string) のみ。JSON 配列・繰り返しキーは JSON Schema 検証で
+// 弾かれるか string coerce に失敗するため、本関数には到達しない。
+//
+//   ""             → nil                     // 既定: 全状態（Req 6.3 / Req 5.2）
+//   "unread"       → []string{"unread"}
+//   "read"         → []string{"read"}
+//   "archived"     → []string{"archived"}
+//   "all"          → []string{"unread","read"}   // archived 除外（Req 3.4 と web/MCP を揃える）
+//   "unread,read"  → nil                     // 区切り文字埋め込みの複数指定（Req 5.3 複数指定フォールバック）
+//   "unread read"  → nil                     // スペース区切りも同様
+//   "foo" / その他 → nil                     // 不明値（Req 6.3 / 破壊しない）
+//
+// 実装上は canonical 値集合 {"", "unread", "read", "archived", "all"} との完全一致のみで
+// 分岐し、それ以外は一律 nil。split 実装は導入しない（複数指定と不明値を同一の nil 帰着で
+// 扱うことで実装と回帰検証を最小化する）。
 func mcpStatusFilter(s string) []string
 ```
 
@@ -604,7 +632,7 @@ type DataSource interface {
 分岐させ、`read` / `archived` を「未読に戻す」側に集約することで JS 側のロジックと一致させる。
 
 - card description 行に `<span class="item-status-badge" data-status="{{.Status}}">{{.Status}}</span>`
-  を追加（NFR 4: 色のみに依存しないテキストラベル）
+  を追加（Req 4.4: 色のみに依存しないテキストラベル）
 
 ### static 層
 
