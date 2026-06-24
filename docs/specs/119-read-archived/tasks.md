@@ -24,7 +24,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     パフォーマンス対策の主担当として紐付くため、index 作成タスクである本タスクの
     `_Requirements:_` にも NFR 1.1 / NFR 1.2 を明示する（Reviewer r6 指摘 #6 反映）
 
-- [ ] 2. store 層: Item.Status / 状態定数 / UpdateItemStatus / ListItems 拡張
+- [x] 2. store 層: Item.Status / 状態定数 / UpdateItemStatus / ListItems 拡張
   - `internal/store/store.go`:
     - `Item` 構造体に `Status string \`json:"status"\`` を追加
     - 定数 `ItemStatusUnread = "unread"` / `ItemStatusRead = "read"` /
