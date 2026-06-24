@@ -6,11 +6,17 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
 
 - [ ] 1. マイグレーション 007: items.status カラム追加と backfill
   - `migrations/007_add_item_status.sql` を新規作成
-  - `ALTER TABLE items ADD COLUMN status TEXT NOT NULL DEFAULT 'unread'`
-  - `ALTER TABLE items ADD CONSTRAINT items_status_check CHECK (status IN ('unread', 'read', 'archived'))`
-  - `CREATE INDEX items_user_status_idx ON items (user_id, status, created_at DESC)`
-  - 冪等性のため `IF NOT EXISTS` を可能な箇所で利用し、Issue #119 の意図・background・既存
-    マイグレーション 001..006 との相対適用順をファイル冒頭コメントに記述
+  - `ALTER TABLE items ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'unread'`
+  - **CHECK 制約の冪等追加**: PostgreSQL 16 には `ADD CONSTRAINT IF NOT EXISTS` が存在しない
+    ため、`DO $$ BEGIN ... EXCEPTION WHEN duplicate_object THEN NULL; END $$;` ブロックで
+    `ALTER TABLE items ADD CONSTRAINT items_status_check CHECK (status IN ('unread', 'read', 'archived'))`
+    を包む。または `pg_constraint` を `IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE
+    conname = 'items_status_check' AND conrelid = 'items'::regclass)` で先読みする plpgsql
+    ブロックでも可。いずれも再実行時に `duplicate_object` を吸収して冪等を成立させる
+    （Reviewer 指摘 #3 反映）
+  - `CREATE INDEX IF NOT EXISTS items_user_status_idx ON items (user_id, status, created_at DESC)`
+  - ファイル冒頭コメントに Issue #119 の意図・background・既存マイグレーション 001..006 との
+    相対適用順、および冪等性パターン（`IF NOT EXISTS` + `DO $$ EXCEPTION` ブロック）の趣旨を記述
   - 既存マイグレーション（001〜006）の中身は **書き換えない**
   - _Requirements: 1.1, 1.2, 1.3, 1.5, 6.1_
   - _Boundary: migrations_
@@ -61,7 +67,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Requirements: 1.1, 1.4, 1.6, 3.3, 3.4, 3.5, 6.2, NFR 2.1, NFR 3.1_
   - _Boundary: Store_
 
-- [ ] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill / 2 軸独立性
+- [ ] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill / 2 軸独立性 / Web↔MCP 整合
   - `internal/store/store_item_status_test.go` を新規作成（`//go:build integration` tag）:
     - `TestUpdateItemStatus_TransitionsAllPairs`: 7 通り（unread↔read / unread↔archived /
       read↔archived / archived→unread / 既存値再設定）の遷移と `prev` 返り値を実 DB で確認
@@ -72,6 +78,16 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `TestListItems_FilterByStatus`: 3 件作成 → `statuses=[unread]` / `[unread,read]` /
       `[archived]` / `nil` の各ケースで期待件数を確認
     - `TestListRecentItems_FilterByStatus`: 同上を `ListRecentItems` で
+    - **`TestMigration007_BackfillsExistingItemsToUnread`** (Req 1.3 / 6.1 backfill 回帰):
+      007 migration 適用 **前** のスキーマ snapshot に対して既存 items を複数件作成し、
+      その後 007 migration を実 DB に適用 → 全行が `status='unread'` になっていることと、
+      backfill 後に CHECK 制約が active であることを assert（design.md:743 の計画を task に
+      落とし込む / Reviewer 指摘 #4）。前段スキーマの再現は `migrations/006_*.sql` までを
+      apply した一時 schema を作成し、`migrations/007_*.sql` を後追い適用する pattern で行う
+    - **`TestCreateItem_DefaultsToUnread`** (Req 1.2 新規 item 既定):
+      `Store.CreateItem`（または同等の新規 item 作成経路）を呼び、status カラムを明示指定
+      しないとき、永続化された行が `status='unread'` となることを実 DB で assert する
+      （DEFAULT 'unread' が新規行に効くことを回帰固定 / Reviewer 指摘 #4）
     - **`TestUpdateItemStatus_DoesNotMutateFetchStatus`** (Req 1.6 / 2 軸独立性):
       `fetch_status='success'` / `'failed'` / `'pending'` / `'fetching'` の各 fetch_status を
       持つ item を seed → `UpdateItemStatus` で `unread → read → archived → unread` の
@@ -85,9 +101,17 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       worker 側コード（`cmd/worker`）の挙動変更は本タスクで行わないが、worker が呼ぶ
       store 関数の SET 句が `status` を含まないことを **store integration test レイヤで**
       ロックする
+    - **`TestWebUpdateReflectsInMCPListRecent`** (Req 5.4 Web↔MCP 整合):
+      実 DB に item を seed → `UpdateItemStatus(userID, itemID, "read")` を呼び出して
+      永続化 → 後続で `Store.ListRecentItems(userID, since, nil)`（MCP の
+      `recent-articles` が呼ぶ store 関数と同一）を呼んだとき、返却された item の
+      `Status` が `"read"` に更新済みであることを assert する。`statuses=nil` /
+      `statuses=["read"]` の 2 ケースで実 DB を介した一貫性を回帰固定する
+      （Reviewer 指摘 #8 反映: PATCH/update → MCP read updated status の end-to-end を
+      store integration test レイヤで担保し、Web UI ↔ MCP の単一 DB ソース整合を検証）
   - 既存 `items_active_filters_integration_test.go` の `newIntegrationStore` パターンと
     `seedItemsActiveFilterUser` パターンを参考にし、cleanup 規約に従う
-  - _Requirements: 1.4, 1.5, 1.6, 3.3, 3.4, 3.5, 5.4, 6.1, 6.2, NFR 2.1_
+  - _Requirements: 1.2, 1.3, 1.4, 1.5, 1.6, 3.3, 3.4, 3.5, 5.4, 6.1, 6.2, NFR 2.1_
   - _Boundary: Store_
   - _Depends: 1, 2_
 
@@ -129,11 +153,23 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       `handleSetItemStatus` は JSON API であり、カード DOM の `data-status` 属性更新は
       `static/app.js` の責務（タスク 8 の `static/items_status.test.mjs` でカバー）であるため、
       本 server テストでは DOM 更新には触れない
-    - `TestHandleSetItemStatusNotFoundCollapsedFromErrNoRows`: store が `pgx.ErrNoRows` を返した
-      場合 404 not_found（存在しない item と他ユーザー所有 item を区別せず collapse、NFR 2.1）
-    - `TestHandleSetItemStatusOtherUserItemReturns404`: handler 経路で実際に他ユーザー所有 item に
-      対する PATCH を試行し、404 が返ることを確認（fake / mock の store で `pgx.ErrNoRows` を
-      シミュレートする。NFR 2.1 のサーバ層拒否を回帰検証）
+    - `TestHandleSetItemStatusNotFoundForMissingID` (integration tag): **実 DB を用いる
+      integration test**。存在しない `item_id`（UUID 形式は valid だが DB 行が無い）に対する
+      PATCH で 404 not_found が返ることを assert する（`pgx.ErrNoRows` の collapse 経路を
+      実 store 経由で回帰検証）
+    - `TestHandleSetItemStatusOtherUserItemReturns404` (integration tag): **実 DB を用いる
+      integration test**。user A の item を seed → user B として PATCH 試行 → 404 not_found
+      が返り、対象行の status が seed 時点から不変であることを assert する（NFR 2.1 の
+      サーバ層拒否を回帰検証）
+    - **設計判断 / Reviewer 指摘 #5 反映**: 上記 2 件は当初「fake / mock の store で
+      `pgx.ErrNoRows` をシミュレートする」設計だったが、現行 `Server` は concrete な
+      `*store.Store` フィールドを持ち（`internal/server` には store 差し替え用 interface が
+      無い）、本 Issue では store interface 化の責務拡張は scope 外とする。代わりに altpocket
+      の既存 pattern（`items_active_filters_integration_test.go` 等）と同じく `//go:build
+      integration` tag 付きで実 DB を介して 404 経路を検証する。本 2 件は task 3 の
+      integration test と同じ build tag / DB セットアップを共有するため、Verify 節の `go test
+      ./...` には含まれず、`go test -tags=integration ./internal/server/...` で実行される
+      （Verify 節「Integration test の取扱」を参照）
     - `TestHandleSetItemStatusLogsTransitionFields`: 成功時の `slog.Info("items.status.update", ...)`
       に `user_id` / `item_id` / `prev` / `next` の 4 フィールドが正しい値で含まれ、かつ
       Cookie / session token / Authorization ヘッダ / 本文の生値が出力**されない**ことを assert
@@ -210,18 +246,44 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       aria-selected="..." href="{{index .StatusTabURLs "unread"}}">` 形式で描画
     - active タブには `class="is-active"` と `aria-selected="true"` を付与（`{{if eq .StatusTab "unread"}}...{{end}}`）
     - **`?status=` を併用 UI で保持する hidden input / URL 構築（Req 3.6 / 3.8 / 設計 #5）**:
-      - 検索 GET form（`<form method="get" ...>` で `q` を送るやつ）に `<input type="hidden"
-        name="status" value="{{.StatusQuery}}">` を追加（`.StatusQuery` はハンドラが渡す現在
-        選択中の `?status=` 値、未指定時は空文字で hidden を省略してもよい）
-      - sort セレクタ / per-page セレクタの form にも同じ hidden を追加
-      - 「Clear filters」リンク（タグ・検索 chip の解除）の `href` ビルダー（既存
-        `buildActiveTagFilters` / `clearAllFiltersURL` 系）が `?status=` を温存することを確認し、
-        必要なら server.go 側で温存ロジックを追加（タスク 4 の `handleUIItems` 拡張で対応）
+      既存 `templates/items.html` には GET form が **3 箇所**、`?status=` を捨ててしまう
+      hard-coded `/ui/items` リンクが **2 箇所**あるため、以下を **全て** 修正対象として
+      明示する（Reviewer 指摘 #6 反映）:
+      - (1) `items.html:9` の mobile 上部検索バー `<form class="search-bar" ... method="get"
+        action="/ui/items">` に `<input type="hidden" name="status" value="{{.StatusQuery}}">`
+        を追加
+      - (2) `items.html:24` のデスクトップ `<form id="filter-form" method="get"
+        action="/ui/items" class="search-form">`（Search / Sort / Per Page / Tags / Apply
+        を含む）に同じ hidden を追加
+      - (3) `items.html:81` の mobile bottom sheet `<form method="get" action="/ui/items"
+        class="search-form">`（Search / Sort by / Per Page / Tags / Apply を含む）に同じ
+        hidden を追加
+      - (4) `items.html:59` の `<a class="btn-tertiary tag-clear-btn" href="/ui/items">Clear
+        filters</a>` を `href="/ui/items{{if .StatusQuery}}?status={{.StatusQuery}}{{end}}"`
+        相当に書き換える（または server.go 側で `ClearFiltersURL` を data として注入し、
+        テンプレートはそのプリビルド URL を参照する）
+      - (5) `items.html:120` の mobile bottom sheet 内 `<a class="btn-tertiary"
+        href="/ui/items" ...>Clear all</a>` も (4) と同じ書式に揃える（同 `ClearFiltersURL`
+        data を再利用してよい）
+      - `StatusQuery` 値が空文字（`?status=` 未指定）の場合は、hidden input を出力しても
+        `?status=` を空値で付与しても、URL の意味論に影響しない（`parseStatusFilter` が
+        `""` を `defaultIfEmpty` にフォールバックする / Req 3.1）。テンプレートの記述簡略化の
+        ため hidden は条件分岐なしで出力してよい
+      - **ページネーション link（`items_list.html:84` `PrevURL` / `items_list.html:88`
+        `NextURL`）** はサーバ側ビルダー（`server.go` の pagination ヘルパー）が既存 URL
+        クエリ全体を引き継ぐ pattern であれば追加作業不要だが、引き継いでいない場合は
+        タスク 4 の `handleUIItems` 拡張で `?status=` 温存を追加する（実装時に必ず確認）
   - `templates/items_list.html`:
     - `<article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}"
       data-status="{{.Status}}" ...>` のように `data-status` を追加
     - meta 行に `<span class="item-status-badge" data-status="{{.Status}}" role="status"
       aria-label="状態: {{.Status}}">{{.Status}}</span>` を追加（NFR 4: テキストラベル併用）
+    - **詳細リンクの `?status=` 温存（Req 3.8 詳細往復で初期値に戻さない / Reviewer 指摘 #2）**:
+      `items_list.html:50` の `<a class="tile-link" href="/ui/items/{{.ID}}">` を
+      `href="/ui/items/{{.ID}}{{if $.StatusQuery}}?status={{$.StatusQuery}}{{end}}"`
+      相当に書き換える（または server.go 側で各 item に `DetailURL` フィールドを構築済みで
+      渡す）。これにより詳細から `/ui/items/<id>` 経由で戻った際、戻り URL に `?status=`
+      が引き継がれる
     - ページネーション link の `href` ビルダーも `?status=` を温存することを確認（既存
       pagination URL ビルダーがクエリ全体を引き継ぐ pattern なら追加作業不要）
   - SSR でタブの aria-selected と URL クエリの整合性を取れることをハンドラ側 data 渡しで確認
@@ -245,6 +307,16 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     - `<button type="button" class="btn-secondary archive-toggle" data-item-id="{{.ID}}"
       data-current-status="{{.Status}}" aria-label="{{if eq .Status "archived"}}アーカイブ解除{{else}}アーカイブする{{end}}">{{if eq .Status "archived"}}Unarchive{{else}}Archive{{end}}</button>`
   - `templates/item_detail.html` の actions 列にも同じ 2 ボタンを追加（任意・同 PATCH 経路を共有）
+  - **詳細ページから一覧へ戻るリンクの `?status=` 温存（Req 3.8 詳細→Library 戻りで初期値に
+    戻さない / Reviewer 指摘 #2）**: `item_detail.html:3` の
+    `<a class="detail-back" href="/ui/items">&#x2190; Library</a>` を、ハンドラ
+    （`handleUIItemDetail` 相当）が渡す `LibraryURL` テンプレート data（例: `/ui/items` 単独
+    または `/ui/items?status=archived` 等の `?status=` を含む URL）を参照する形に書き換える。
+    詳細ページに到達した際の Referer / 直前 URL から `?status=` を引き継ぐか、
+    詳細ページ専用クエリ（`?from_status=archived`）を別途持つかは server 側で決める（推奨は
+    詳細ページ URL に `?status=` を伝播させる方針。`items_list.html` の tile-link 修正と
+    一貫させる）。これにより Archived / All 一覧 → 詳細 → Library 戻りで Unread に
+    強制リセットされる挙動を防ぐ
   - Tab フォーカス順序が既存ボタン（Original / Refetch / Delete）と整合することを目視確認
   - **テスト追加（同 task 内）**: テンプレートのみの単独 Go test は既存規約上追加せず、次タスク
     8 の JS テストと組み合わせて statictest（`extension/sidepanel.test.mjs` と同じ
@@ -255,15 +327,27 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
 
 - [ ] 8. static JS: 状態切替ボタンの delegated click + 失敗時巻き戻し
   - `static/app.js` の既存 delegated click handler（refetch / delete の隣）に追加:
-    - `button.mark-read-toggle`: `currentStatus` を読み、**`next = currentStatus === 'unread' ? 'read' : 'unread'`**
-      を算出する（`unread` → `read` / `read` → `unread` / `archived` → `unread` の 3 ケースを
-      1 式で満たす。Req 2.3 / 2.4 / 2.6）。`fetch('/v1/items/' + id + '/status', {method:'PATCH',
-      headers: {...headers, 'Content-Type':'application/json'}, body: JSON.stringify({status: next})})` を呼ぶ
-    - 成功時: card の `data-status` 属性を更新、ボタンの label / aria-label を新状態に合わせて
-      書き換え、`item-status-badge` のテキストを更新。現在の status タブ条件で非表示にすべき
-      item は `<article>` 要素を fade-out で DOM 削除（Req 2.8）
-    - 失敗時: `toast.error('状態の更新に失敗しました')` + ボタンと card の元状態維持（Req 2.7）
-    - `button.archive-toggle`: 同様、`next = currentStatus === 'archived' ? 'unread' : 'archived'`
+    - `button.mark-read-toggle`: `currentStatus` を **`btn.dataset.currentStatus`** から読み、
+      **`next = currentStatus === 'unread' ? 'read' : 'unread'`** を算出する（`unread` → `read` /
+      `read` → `unread` / `archived` → `unread` の 3 ケースを 1 式で満たす。Req 2.3 / 2.4 / 2.6）。
+      `fetch('/v1/items/' + id + '/status', {method:'PATCH', headers: {...headers,
+      'Content-Type':'application/json'}, body: JSON.stringify({status: next})})` を呼ぶ
+    - 成功時:
+      - card の `data-status` 属性を `next` に更新
+      - **同一カード内の `button.mark-read-toggle` と `button.archive-toggle` の双方の
+        `data-current-status` 属性も `next` に更新する**（次回 click 時の判定元 / Reviewer
+        指摘 #1 反映。`data-status` のみ更新して `data-current-status` を残置すると、
+        例えば unread→read 後に再度 mark-read-toggle を押した際、stale な `unread` を読んで
+        誤って再度 `read` を送り、Req 2.4（read → unread）が機能しなくなる）
+      - ボタンの label / aria-label を新状態に合わせて書き換え（mark-read-toggle: "Mark read"
+        ⇄ "Mark unread"、archive-toggle: "Archive" ⇄ "Unarchive"）
+      - `item-status-badge` のテキストと `data-status` 属性を更新
+      - 現在の status タブ条件で非表示にすべき item は `<article>` 要素を fade-out で DOM
+        削除（Req 2.8）
+    - 失敗時: `toast.error('状態の更新に失敗しました')` + ボタンと card の元状態維持
+      （`data-status` / `data-current-status` / label / aria-label のいずれも書き換えない / Req 2.7）
+    - `button.archive-toggle`: 同様、`next = currentStatus === 'archived' ? 'unread' : 'archived'`。
+      成功時は同じく card と 2 ボタンの `data-current-status` / label / aria-label / badge を更新
   - 既存 `app.js` の keyboard shortcut handler は変更しない（設計確認事項 (c) により本 Issue
     では新規 shortcut なし）
   - **テスト追加（同 task 内）**: `static/items_status.test.mjs` を新規追加し、`node --test`
@@ -274,8 +358,14 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
       `{"status":"unread"}`（Req 2.4）
     - **`mark-read-toggle` を `data-current-status="archived"` カードで click → body が
       `{"status":"unread"}`** を直接 assert（Req 2.6 のアーカイブ解除を回帰検証）
-    - 成功時に `data-status` が更新される（Req 2.8）
-    - 失敗時に元の `data-status` が維持される（Req 2.7）
+    - 成功時に **`data-status` も同一カード内の 2 ボタンの `data-current-status` も両方が**
+      新状態に更新される（Req 2.8 + Reviewer 指摘 #1: 次回 click の判定元の同期回帰固定）
+    - **連続 click 回帰**: `data-current-status="unread"` カードで `mark-read-toggle` を
+      1 回 click → 成功応答 → 直後に **同じカードの同じボタンをもう一度 click** したとき、
+      2 回目の PATCH body が `{"status":"unread"}`（read からの戻し）となることを assert する
+      （stale な `unread` を読んで誤って 2 回連続で `{"status":"read"}` を送らないことを
+      Req 2.4 / 2.6 の連続操作レベルで回帰固定 / Reviewer 指摘 #1 高）
+    - 失敗時に元の `data-status` と元の `data-current-status` が両方維持される（Req 2.7）
     - `archive-toggle` を `data-current-status="unread"` カードで click → body が
       `{"status":"archived"}`（Req 2.5）
     - **`archive-toggle` を `data-current-status="read"` カードで click → body が
@@ -370,8 +460,39 @@ spin-up しない方針 / `.kiro/steering/structure.md` 準拠）。
 
 これらは以下のいずれかで担保する:
 
-- 開発者ローカル: `go test -tags=integration ./internal/store/...`（`docker compose up -d postgres`
-  で DB を起動した状態で実行）
+- 開発者ローカル: `go test -tags=integration ./internal/store/... ./internal/server/...`
+  （`docker compose up -d postgres` で DB を起動した状態で実行）。`internal/server/items_status_test.go`
+  の integration tag 付きハンドラテスト（タスク 4 の 404 経路 2 件）も同コマンドの対象に含まれる
 - Reviewer フェーズ: 必要に応じて Reviewer が同コマンドを手元で実行し AC カバーを確認する
 - 既存 CI（`.github/workflows/ci.yml`）には integration tag 対応が無いため本 PR では追加しない
   （integration job 化は別 Issue で扱う方針、Out of Scope）
+
+### Performance verification (NFR 1.1 / 1.2) — 手動検証
+
+design.md「Performance / Performance & Scalability」節および NFR 1.1 / 1.2 の閾値（10,000 件
+/ user 規模で Unread 初期表示が本機能導入前比 +20% 以内、タブ切替 1 秒以内）を、index 追加のみで
+満たせていることを開発者ローカルで確認する（Reviewer 指摘 #9 / design.md:753-755 を
+tasks 側に落とし込む）。本検証は単独 task として切り出すと Budget overflow check の 10 件閾値を
+超えるため、Verify 節の **deferred manual step** として扱う。
+
+検証手順:
+
+- `psql` で開発 DB に対し以下を実行し、`items_user_status_idx` が選択されていることを確認:
+  ```sql
+  EXPLAIN (ANALYZE, BUFFERS)
+  SELECT id, url, title, status FROM items
+  WHERE user_id = $1 AND status = ANY('{unread}')
+  ORDER BY created_at DESC LIMIT 30;
+  ```
+  Index Scan / Index Only Scan のいずれかが選択され、Seq Scan が出ないこと
+- 10,000 件 / user 規模の seed データを生成し、ライブラリ初期表示
+  （`/ui/items?status=unread`）の応答時間 p95 を本機能導入 **前** ブランチと **後**
+  ブランチで比較し、+20% 以内（NFR 1.1）に収まることを記録
+- タブ切替（`?status=archived` への fragment 取得）の応答時間が 1 秒以内（NFR 1.2、
+  10,000 件 / user 既定ページサイズ前提）に収まることを記録
+
+記録の置き場: `docs/specs/119-read-archived/impl-notes.md`（Developer フェーズで新規作成）
+の「Performance verification (NFR 1.1 / 1.2)」見出し配下に、計測環境（PostgreSQL バージョン、
+シード件数、ハードウェア概要）と計測値（前後比較）を貼り付ける。stage-a-verify gate の
+自動コマンドには含めない（10,000 件 seed と前後ブランチ比較は CI 上で現実的に再現困難な
+ため）。Reviewer は impl-notes.md の記録を確認することで AC カバーを判定する。

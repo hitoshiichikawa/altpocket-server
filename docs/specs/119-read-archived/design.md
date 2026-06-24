@@ -622,14 +622,22 @@ type DataSource interface {
 #### app.js（変更）
 
 - 既存 delegated click handler（refetch / delete）の隣に以下を追加:
-  - `button.mark-read-toggle`: `currentStatus` を読み、`next = currentStatus === 'unread' ? 'read' : 'unread'`
-    を計算（`unread` → `read` / `read` → `unread` / `archived` → `unread` の 3 ケースを 1 式で
-    満たす。Req 2.3 / 2.4 / 2.6）→ PATCH → 成功時 `data-current-status` 更新 + ボタン label /
-    aria-label 更新。現在の status タブで非表示にすべき item は `<article>` 要素を DOM から
-    fade-out で削除（Req 2.8）
+  - `button.mark-read-toggle`: `currentStatus = btn.dataset.currentStatus` を読み、
+    `next = currentStatus === 'unread' ? 'read' : 'unread'` を計算（`unread` → `read` /
+    `read` → `unread` / `archived` → `unread` の 3 ケースを 1 式で満たす。Req 2.3 / 2.4 / 2.6）
+    → PATCH → 成功時に以下を **一括で同期** 更新する:
+    - card の `data-status` 属性
+    - 同一カード内の `button.mark-read-toggle` と `button.archive-toggle` **両方**の
+      `data-current-status` 属性（次回 click 時の判定元のソース・オブ・トゥルース。
+      連続クリック時に stale な値で誤遷移する事故を防ぐ）
+    - ボタンの可視ラベル / `aria-label`
+    - `item-status-badge` のテキストおよび `data-status` 属性
+    - 現在の status タブで非表示にすべき item は `<article>` 要素を DOM から fade-out で
+      削除（Req 2.8）
   - `button.archive-toggle`: `currentStatus === 'archived' ? 'unread' : 'archived'` → PATCH →
-    同上
-  - 失敗時: `toast.error` + ボタンと card の元状態を維持（Req 2.7）
+    同上（success 時の更新対象は同じセット）
+  - 失敗時: `toast.error` + card の `data-status` / 両ボタンの `data-current-status` / ラベル /
+    badge を **いずれも書き換えない**（Req 2.7）
 
 ## Data Models
 
