@@ -226,7 +226,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Server_
   - _Depends: 2_
 
-- [ ] 5. mcpserver 層: status 引数 / status 出力フィールド / DataSource 拡張
+- [x] 5. mcpserver 層: status 引数 / status 出力フィールド / DataSource 拡張
   - `internal/mcpserver/deps.go`: `DataSource.ListItems` / `ListRecentItems` のシグネチャを
     store の新シグネチャに揃える（`statuses []string` 追加）
   - `internal/mcpserver/server.go`:
