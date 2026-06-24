@@ -127,7 +127,10 @@ func TestHandleUIItemsFullPageZeroResultResolvesDisplayName(t *testing.T) {
 	tagFilters := []string{"go lang", "rust lang"}
 
 	// Reproduce the handler's full-page data path (handleUIItems, fragmentOnly=false).
-	items, _, err := s.ListItems(ctx, userID, 1, 20, "", tagFilters, "newest")
+	// statuses=nil: this regression test predates Issue #119 and only
+	// exercises the tag-filter path, so we keep the legacy whole-set
+	// behavior by passing nil for the new statuses argument.
+	items, _, err := s.ListItems(ctx, userID, 1, 20, "", tagFilters, nil, "newest")
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
@@ -328,7 +331,10 @@ func TestActiveFilterChipsAreMultiTenantIsolated(t *testing.T) {
 	// single user (handleUIItems, fragmentOnly=false).
 	resolveChips := func(userID string) []ActiveTagFilter {
 		t.Helper()
-		items, _, err := s.ListItems(ctx, userID, 1, 20, "", tagFilters, "newest")
+		// statuses=nil: this regression test predates Issue #119 and only
+		// exercises the tag-filter path, so we keep the legacy whole-set
+		// behavior by passing nil for the new statuses argument.
+		items, _, err := s.ListItems(ctx, userID, 1, 20, "", tagFilters, nil, "newest")
 		if err != nil {
 			t.Fatalf("ListItems(%s): %v", userID, err)
 		}

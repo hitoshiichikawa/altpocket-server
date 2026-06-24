@@ -141,6 +141,7 @@ func (s *Server) Routes() http.Handler {
 			r.Post("/", s.requireAuth(s.handleCreateItem))
 			r.Get("/{id}", s.requireAuth(s.handleGetItem))
 			r.Patch("/{id}", s.requireAuth(s.handlePatchItem))
+			r.Patch("/{id}/status", s.requireAuth(s.handleSetItemStatus))
 			r.Put("/{id}/tags", s.requireAuth(s.handleUpdateItemTags))
 			r.Post("/{id}/capture", s.requireAuth(s.handleCaptureItemContent))
 			r.Delete("/{id}", s.requireAuth(s.handleDeleteItem))
@@ -184,7 +185,12 @@ func (s *Server) mcpHTTPHandler() http.Handler {
 			if userID == "" {
 				return nil
 			}
-			return mcpserver.New(s.store, userID)
+			// Wrap *store.Store in the transitional adapter so it still
+			// satisfies the pre-#119 mcpserver.DataSource shape until
+			// task 5 updates the mcpserver layer to call the new
+			// statuses-aware store signatures directly (see
+			// mcp_store_adapter.go).
+			return mcpserver.New(newMCPStoreAdapter(s.store), userID)
 		},
 		nil,
 	)
@@ -533,8 +539,13 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	sort := defaultSort(r.URL.Query().Get("sort"))
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	perPage := perPageValue(r.URL.Query().Get("per_page"))
+	// /v1/items keeps backward-compatible defaults (no status filter when
+	// `?status=` is absent / empty / unknown) so existing extension and API
+	// clients continue to receive all states (Req 6.2). The UI's
+	// Unread-first default is applied separately by handleUIItems.
+	statuses := parseStatusFilter(r.URL.Query(), nil)
 
-	items, pag, err := s.store.ListItems(r.Context(), user.ID, page, perPage, q, tagFilters, sort)
+	items, pag, err := s.store.ListItems(r.Context(), user.ID, page, perPage, q, tagFilters, statuses, sort)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "db_error"})
 		return
@@ -745,8 +756,13 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 	sort := defaultSort(r.URL.Query().Get("sort"))
 	page := parseInt(r.URL.Query().Get("page"), 1)
 	perPage := perPageValue(r.URL.Query().Get("per_page"))
+	// The Web UI defaults to the "Unread" status tab when `?status=` is
+	// absent / empty / unknown so the user is greeted with unread items
+	// to consume (Req 3.1). The mapping for explicit values is handled in
+	// parseStatusFilter (Req 3.3 / 3.4 / 3.5).
+	statuses := parseStatusFilter(r.URL.Query(), []string{store.ItemStatusUnread})
 
-	items, pag, err := s.store.ListItems(r.Context(), user.ID, page, perPage, q, tagFilters, sort)
+	items, pag, err := s.store.ListItems(r.Context(), user.ID, page, perPage, q, tagFilters, statuses, sort)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -818,6 +834,15 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 	// be resolved fall back to their normalized name as a last resort.
 	activeTagFilters := buildActiveTagFilters(tagFilters, tagsForLookup, items, r.URL)
 
+	// Status tab data (Issue #119 / Req 3.1 / 3.2 / 3.6 / 3.7 / 3.8). The
+	// canonical 3 tab values drive both the active-tab highlight (StatusTab)
+	// and the navigation links (StatusTabURLs). StatusQuery exposes the raw
+	// `?status=` value so the SSR forms and links can carry it forward
+	// (template task 6 wires the hidden inputs / clear-filters URL).
+	rawStatusQuery := strings.TrimSpace(r.URL.Query().Get("status"))
+	statusTab := resolveStatusTab(rawStatusQuery)
+	statusTabURLs := buildStatusTabURLs(r.URL)
+
 	data := map[string]interface{}{
 		"Title":            "記事一覧",
 		"User":             user,
@@ -827,6 +852,7 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		"SelectedTags":     selectedTagSet(tagFilters),
 		"ActiveTagFilters": activeTagFilters,
 		"ClearAllTagsURL":  buildClearAllTagsURL(r.URL),
+		"ClearFiltersURL":  buildClearFiltersURL(r.URL),
 		"Page":             pag.Page,
 		"PerPage":          pag.PerPage,
 		"Total":            pag.Total,
@@ -838,6 +864,9 @@ func (s *Server) handleUIItems(w http.ResponseWriter, r *http.Request) {
 		"NextURL":          pageURL(r.URL, pag.Page+1),
 		"CSRFToken":        s.csrfFromContext(r.Context()),
 		"QuickAddNotice":   quickAddNotice(r.URL.Query().Get("quick_add")),
+		"StatusTab":        statusTab,
+		"StatusTabURLs":    statusTabURLs,
+		"StatusQuery":      rawStatusQuery,
 	}
 
 	if fragmentOnly {
