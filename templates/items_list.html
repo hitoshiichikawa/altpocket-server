@@ -46,14 +46,15 @@
 {{end}}
 
 {{range .Items}}
-  <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" aria-labelledby="item-title-{{.ID}}">
-    <a class="tile-link" href="/ui/items/{{.ID}}">
+  <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" data-status="{{.Status}}" aria-labelledby="item-title-{{.ID}}">
+    <a class="tile-link" href="/ui/items/{{.ID}}{{if $.StatusQuery}}?status={{$.StatusQuery}}{{end}}">
       <h3 id="item-title-{{.ID}}">{{.Title}}</h3>
       <p class="excerpt-clamp">{{.Excerpt}}</p>
     </a>
 
     <div class="meta item-meta">
       <span class="status-pill" data-status="{{.FetchStatus}}" role="status" aria-label="Fetch status: {{.FetchStatus}}">{{.FetchStatus}}</span>
+      <span class="item-status-badge" data-status="{{.Status}}" role="status" aria-label="状態: {{.Status}}">{{.Status}}</span>
       <span>{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
     </div>
 
