@@ -70,7 +70,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Requirements: 1.1, 1.4, 1.6, 3.3, 3.4, 3.5, 6.2, NFR 2.1, NFR 3.1_
   - _Boundary: Store_
 
-- [ ] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill / 2 軸独立性 / Web↔MCP 整合
+- [x] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill / 2 軸独立性 / Web↔MCP 整合
   - `internal/store/store_item_status_test.go` を新規作成（`//go:build integration` tag）:
     - `TestUpdateItemStatus_TransitionsAllPairs`: 7 通り（unread↔read / unread↔archived /
       read↔archived / archived→unread / 既存値再設定）の遷移と `prev` 返り値を実 DB で確認
