@@ -198,12 +198,26 @@
       }
     }
 
+    // 同一カード内のすべての status アクションボタン (mark-read-toggle /
+    // archive-toggle) を列挙する。Reviewer r4 指摘 #3 への対応 — 1 ボタンを
+    // disabled にしただけでは、もう一方のボタンが stale data-current-status を
+    // 参照したまま並行 PATCH を送れてしまう（DOM 表示 と DB の最終状態が食い違う
+    // race）。CSS の `.item-card.is-status-updating { pointer-events: none }` は
+    // 一覧画面のマウス操作しか抑止できず、`.detail-card` やキーボード操作 /
+    // programmatic click は素通りするため、JS 側で両ボタンを実体として
+    // disabled にする必要がある。
+    function statusButtonsInCard(card) {
+      if (!card || typeof card.querySelectorAll !== 'function') return [];
+      return card.querySelectorAll('button.mark-read-toggle, button.archive-toggle');
+    }
+
     // PATCH を投げて成功 / 失敗を分岐する。
     // 成功時: updateCardButtonsAndBadge → タブ条件チェック → fade-out 削除
     // 失敗時: data-status / data-current-status / label / aria-label / badge を
     //         一切触らず toast.error のみ
-    // いずれの場合も disabled と is-status-updating は解除する（NFR 1.3）。
-    async function performTransition(btn, kind, id, nextStatus, card) {
+    // いずれの場合も同一カード内の全 status ボタンの disabled と
+    // is-status-updating は解除する（NFR 1.3 / Reviewer r4 指摘 #3）。
+    async function performTransition(buttons, id, nextStatus, card) {
       try {
         const res = await fetchImpl('/v1/items/' + encodeURIComponent(id) + '/status', {
           method: 'PATCH',
@@ -225,7 +239,10 @@
         toast.error('状態の更新に失敗しました');
       } finally {
         // disabled / is-status-updating の解除は成功・失敗共通
-        if (btn && 'disabled' in btn) btn.disabled = false;
+        for (let i = 0; i < buttons.length; i += 1) {
+          const b = buttons[i];
+          if (b && 'disabled' in b) b.disabled = false;
+        }
         if (card && card.classList && typeof card.classList.remove === 'function') {
           card.classList.remove('is-status-updating');
         }
@@ -258,8 +275,6 @@
       const nextStatus = computeNext(kind, currentStatus);
       if (!nextStatus) return;
 
-      // 同期 visual ack（NFR 1.3）— PATCH 応答前に DOM を更新する
-      btn.disabled = true;
       // 一覧画面は `.item-card`、詳細画面は `.detail-card` をカードコンテナとして扱う。
       // 詳細画面ボタン (templates/item_detail.html) で `.item-card` のみを見ると
       // card が null になり、成功後に data-current-status / label / aria-label /
@@ -267,12 +282,23 @@
       const card = typeof btn.closest === 'function'
         ? btn.closest('.item-card, .detail-card')
         : null;
+
+      // 同期 visual ack（NFR 1.3）— PATCH 応答前に DOM を更新する。
+      // 同一カード内の status アクション 2 ボタン両方を disabled にして、stale
+      // data-current-status を読んだ並行 PATCH を遮断する（Reviewer r4 指摘 #3）。
+      // card が見つからない fallback では少なくともクリック自体のボタンを disabled にする。
+      const buttons = card ? statusButtonsInCard(card) : [];
+      const targets = buttons.length > 0 ? buttons : [btn];
+      for (let i = 0; i < targets.length; i += 1) {
+        const b = targets[i];
+        if (b && 'disabled' in b) b.disabled = true;
+      }
       if (card && card.classList && typeof card.classList.add === 'function') {
         card.classList.add('is-status-updating');
       }
 
       // 非同期 PATCH をトリガ（呼び出し側は await しない / 内部で finally）
-      void performTransition(btn, kind, id, nextStatus, card);
+      void performTransition(targets, id, nextStatus, card);
     }
 
     doc.addEventListener('click', onClick);

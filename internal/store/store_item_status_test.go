@@ -476,8 +476,21 @@ func TestWorkerFetchUpdatesDoNotMutateStatus(t *testing.T) {
 	archivedID := seedItemForStatusTest(t, s, ctx, userID, "worker-archived", ItemStatusArchived, "pending")
 
 	// ClaimItemsForFetch: flips fetch_status to 'fetching' but must leave
-	// status untouched.
-	claimed, err := s.ClaimItemsForFetch(ctx, 10)
+	// status untouched. The shared TEST_DATABASE_URL may already hold pending
+	// items from concurrent / prior tests, so a fixed limit (e.g. 10) cannot
+	// guarantee our two newly-seeded rows are included — they sort LAST under
+	// `ORDER BY created_at ASC`. Count the existing pending pool first and
+	// claim count + seeded(2) + buffer(8) to absorb small races (Reviewer r4
+	// 指摘 #4).
+	var pendingCount int
+	if err := s.DB.QueryRow(ctx, `
+		SELECT COUNT(*) FROM items
+		WHERE fetch_status='pending' OR refetch_requested=true
+	`).Scan(&pendingCount); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	claimLimit := pendingCount + 8
+	claimed, err := s.ClaimItemsForFetch(ctx, claimLimit)
 	if err != nil {
 		t.Fatalf("ClaimItemsForFetch: %v", err)
 	}
@@ -486,7 +499,8 @@ func TestWorkerFetchUpdatesDoNotMutateStatus(t *testing.T) {
 		claimedIDs[it.ID] = true
 	}
 	if !claimedIDs[readID] || !claimedIDs[archivedID] {
-		t.Fatalf("ClaimItemsForFetch did not claim both seeded items (got %d items: %v)", len(claimed), claimedIDs)
+		t.Fatalf("ClaimItemsForFetch did not claim both seeded items (limit=%d, got %d items: %v)",
+			claimLimit, len(claimed), claimedIDs)
 	}
 	if gotStatus, _ := readRowStatusAndFetchStatus(t, s, ctx, readID); gotStatus != ItemStatusRead {
 		t.Errorf("ClaimItemsForFetch mutated status for read item: got %q, want %q", gotStatus, ItemStatusRead)

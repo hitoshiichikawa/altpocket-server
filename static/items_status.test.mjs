@@ -819,3 +819,77 @@ test('button 以外の要素 click は no-op', async () => {
 
   assert.equal(env.fetchCalls.length, 0, '無関係要素 click は fetch を呼ばない');
 });
+
+// --- Reviewer r4 指摘 #3 race-condition 回帰テスト ---------------------------
+
+test('Reviewer r4 指摘 #3 (item-card): mark-read 進行中に同カードの archive-toggle を click しても 2 本目の PATCH が飛ばない', async () => {
+  // race シナリオ:
+  // 1. unread カードで mark-read-toggle を click → PATCH {status:'read'} pending
+  // 2. PATCH 応答前に同カードの archive-toggle を click
+  // 修正前: archive-toggle は stale data-current-status='unread' を読んで
+  //         computeNext('archive', 'unread') = 'archived' を送ってしまう
+  // 修正後: 同一カード内の status ボタン両方が disabled になり、2 本目の
+  //         PATCH は発火しない（onClick の `if (btn.disabled) return` で阻止）
+  const card = new FakeCard({ itemId: 'item-race-1', status: 'unread' });
+  const env = loadModule({
+    cards: [card],
+    // 1 本目の fetch は never-resolve にして並行 click が disabled 越しに発火するかを検証
+    fetchHandlers: [
+      () => new Promise(() => { /* never resolve */ }),
+      jsonOkResponse(),
+    ],
+  });
+
+  await env.clickButton(card, 'mark-read');
+  // 同期 visual ack で両ボタンが disabled
+  assert.equal(card.markReadBtn.disabled, true, 'クリックされた mark-read-toggle は disabled');
+  assert.equal(card.archiveBtn.disabled, true, '同カード内の archive-toggle も disabled (race 防止)');
+  assert.ok(card.classList.contains('is-status-updating'));
+
+  // 並行 archive click は fetch を呼ばないこと
+  await env.clickButton(card, 'archive');
+  await flushMicrotasks();
+  assert.equal(env.fetchCalls.length, 1, '進行中の遷移をまたいで 2 本目の PATCH が発火しないこと');
+});
+
+test('Reviewer r4 指摘 #3 (detail-card): 詳細画面でも mark-read 進行中に archive-toggle click が遮断される', async () => {
+  // 詳細画面は CSS の .item-card { pointer-events: none } の対象外だったため、
+  // 修正前はカード CSS による race 防止が効かず、JS 側で 1 ボタンしか disabled
+  // にしていなかったので race を素通りした。修正後は JS 側で両ボタン disabled +
+  // .detail-card.is-status-updating の CSS でも pointer-events 抑止が二重に効く。
+  const card = new FakeDetailCard({ itemId: 'detail-race-1', status: 'unread' });
+  const env = loadModule({
+    cards: [card],
+    fetchHandlers: [
+      () => new Promise(() => { /* never resolve */ }),
+      jsonOkResponse(),
+    ],
+  });
+
+  await env.clickButton(card, 'mark-read');
+  assert.equal(card.markReadBtn.disabled, true);
+  assert.equal(card.archiveBtn.disabled, true, '詳細画面でも同カードの archive-toggle が disabled');
+
+  await env.clickButton(card, 'archive');
+  await flushMicrotasks();
+  assert.equal(env.fetchCalls.length, 1, '詳細画面でも 2 本目の PATCH が発火しない');
+});
+
+test('Reviewer r4 指摘 #3: PATCH 解決後は同カード内の両ボタン disabled が解除される', async () => {
+  // 1 本目の PATCH が成功 / 失敗どちらでも、performTransition の finally で
+  // 同一カード内のすべての status ボタンが re-enable される（成功で fade-out
+  // remove されるケースを除く）。
+  const card = new FakeCard({ itemId: 'item-race-2', status: 'unread' });
+  const env = loadModule({
+    cards: [card],
+    fetchHandlers: [jsonFailResponse(500)],
+  });
+
+  await env.clickButton(card, 'mark-read');
+  await flushMicrotasks();
+
+  // 失敗後: 両ボタン共に disabled が解除されている
+  assert.equal(card.markReadBtn.disabled, false, '失敗後 mark-read-toggle が再操作可能');
+  assert.equal(card.archiveBtn.disabled, false, '失敗後 archive-toggle も再操作可能');
+  assert.ok(!card.classList.contains('is-status-updating'));
+});

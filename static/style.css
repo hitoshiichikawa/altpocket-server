@@ -1353,10 +1353,14 @@ button:disabled,
   pointer-events: none;
 }
 
-/* 状態切替中の同期 visual ack（NFR 1.3 / Reviewer r6 指摘 #2）
+/* 状態切替中の同期 visual ack（NFR 1.3 / Reviewer r6 指摘 #2 / r4 指摘 #3）
    items_status_actions.js が click 直後に synchronous で付与する class。
-   応答完了またはエラー時に解除される。 */
-.item-card.is-status-updating {
+   応答完了またはエラー時に解除される。一覧の `.item-card` と詳細の `.detail-card`
+   両方に適用することで、詳細画面のマウス操作経路も同等に抑止する（race 防止の
+   1 次防御。2 次防御として JS 側で同一カード内の status ボタン両方を disabled
+   にしている）。 */
+.item-card.is-status-updating,
+.detail-card.is-status-updating {
   opacity: 0.65;
   pointer-events: none;
   transition: opacity var(--motion-fast) var(--ease-default);

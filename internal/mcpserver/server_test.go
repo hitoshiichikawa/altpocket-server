@@ -367,37 +367,19 @@ func TestListItemsHandler_RejectsNonStringStatusAtSchemaLayer(t *testing.T) {
 
 			// Acceptance: the DataSource must not be called regardless of how the
 			// SDK reports the rejection (transport error vs. IsError result).
+			// Req 5.3 mandates non-string inputs (JSON array, integer, boolean,
+			// null) are rejected by JSON Schema validation before reaching
+			// listItemsHandler; this is verified uniformly for all 5 cases.
 			if ds.listItemsCalls != 0 {
 				t.Fatalf("ListItems must not be called for non-string status %v, got %d calls (args=%v)",
 					tc.status, ds.listItemsCalls, ds.listItemsArgs)
 			}
 
-			// At least one of the two rejection signals must be present.
+			// At least one of the two rejection signals must be present:
 			//   - callErr != nil: SDK returned a transport / validation error
 			//   - res.IsError: SDK returned a structured error result
-			// "null" is the only edge: the Go SDK currently treats JSON null as
-			// the zero value (empty string) and forwards the call to the handler;
-			// the handler then resolves it as mcpStatusFilter("") -> nil (= all
-			// states). For "null" we accept that path because Req 5.3 mandates
-			// "全状態にフォールバック" and that semantic is preserved either by
-			// schema reject OR by the handler-level "all states" fallback. The
-			// handler-level path is only acceptable when DataSource is called
-			// with Statuses=nil.
 			if callErr == nil && (res == nil || !res.IsError) {
-				if tc.name != "null" {
-					t.Fatalf("expected schema-level reject for %s, but got success result without IsError (res=%+v)", tc.name, res)
-				}
-				// null case: verify the handler-level fallback path actually
-				// produced Statuses=nil (= all states) — semantically equivalent
-				// to schema reject + fallback per Req 5.3.
-				if ds.listItemsCalls == 0 {
-					// Server did not actually invoke handler — schema validated.
-					// This is also acceptable for "null".
-					return
-				}
-				if ds.listItemsArgs.Statuses != nil {
-					t.Fatalf("null status must fall back to Statuses=nil (all states), got %v", ds.listItemsArgs.Statuses)
-				}
+				t.Fatalf("expected schema-level reject for %s, but got success result without IsError (res=%+v)", tc.name, res)
 			}
 		})
 	}
