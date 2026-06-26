@@ -7,12 +7,19 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
 
 - [ ] 1. store 層: BulkDeleteItems / BulkAddItemTag / BulkTagResult 追加
   - `internal/store/items_bulk.go` を新規作成:
+    - **重要 / pgx v5 と PostgreSQL UUID 列の型整合**: 本タスクで追加する SQL は `items.id` /
+      `item_tags.item_id` / `item_contents.item_id`（いずれも `UUID` 列、`migrations/001_init.sql`
+      確認済み）を `ANY($N)` で比較する。pgx v5 は Go `[]string` を `text[]` として encode する
+      ため、`uuid_col = ANY($N)` のままでは PostgreSQL の `operator does not exist: uuid = text`
+      で実行時エラーになる。**本タスクで追加する全 `ANY($N)` パラメータは `ANY($N::uuid[])`
+      明示キャストを必須とする**（既存 `store.go:812` は `text` 列との比較なのでキャスト不要だが、
+      本タスクは UUID 列との比較なので必須）
     - `BulkTagResult` 構造体（`ItemID string` + `Tags []Tag`）を package 公開
     - `BulkDeleteItems(ctx, userID, itemIDs []string) (succeeded []string, err error)` を実装:
-      - 単一トランザクション内で `DELETE FROM item_contents WHERE item_id = ANY($1) AND EXISTS
-        (SELECT 1 FROM items WHERE id = item_contents.item_id AND user_id = $2)`、`DELETE FROM
-        item_tags WHERE item_id = ANY($1) AND EXISTS (...)` を実行
-      - `DELETE FROM items WHERE id = ANY($1) AND user_id = $2 RETURNING id` を実行し、
+      - 単一トランザクション内で `DELETE FROM item_contents WHERE item_id = ANY($1::uuid[]) AND
+        EXISTS (SELECT 1 FROM items WHERE id = item_contents.item_id AND user_id = $2)`、
+        `DELETE FROM item_tags WHERE item_id = ANY($1::uuid[]) AND EXISTS (...)` を実行
+      - `DELETE FROM items WHERE id = ANY($1::uuid[]) AND user_id = $2 RETURNING id` を実行し、
         `pgx.Rows` を `rows.Scan` で `succeeded []string` に貯める
       - 既存 `DeleteItem` と同じ orphan tags 削除を末尾で実行
       - tx 失敗時は全体を rollback し err を返す（succeeded は nil）
@@ -22,14 +29,14 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
            $tagName, $tagNormalized) ON CONFLICT (normalized_name) DO UPDATE SET normalized_name =
            excluded.normalized_name RETURNING id`（既存行の id を取り出す慣用句、`DO NOTHING` だと
            RETURNING が空になるため `DO UPDATE` で no-op upsert を使う）
-        2. **所有確認**: `SELECT id FROM items WHERE id = ANY($1) AND user_id = $2` で
+        2. **所有確認**: `SELECT id FROM items WHERE id = ANY($1::uuid[]) AND user_id = $2` で
            ownedItemIDs を取得
         3. **item_tags 追加**: `INSERT INTO item_tags (item_id, tag_id, display_name) SELECT
            id, $tagID, $displayName FROM unnest($ownedItemIDs::uuid[]) AS id ON CONFLICT
            (item_id, tag_id) DO NOTHING`（既存のユニーク制約 `(item_id, tag_id)` 前提）
         4. **更新後タグ集合 SELECT**: `SELECT it.item_id, t.id, it.display_name, t.normalized_name
-           FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE it.item_id = ANY($ownedItemIDs)
-           ORDER BY it.item_id, t.normalized_name`
+           FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE it.item_id =
+           ANY($ownedItemIDs::uuid[]) ORDER BY it.item_id, t.normalized_name`
       - 結果を ownedItemIDs ごとに `BulkTagResult` に詰めて返す
     - 両関数とも `len(itemIDs) == 0` の早期 return（`return []string{}, nil` / `return []BulkTagResult{}, nil`）
   - 既存 `internal/store/store.go` / `internal/store/tags.go` の修正は **不要**（新規ファイル
@@ -61,7 +68,10 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       混在 → 持たない item にのみ追加、持つ item は重複追加されない（Req 5.4 ON CONFLICT DO NOTHING）、
       user B 所有 item は触らない（Req 8.1）
     - `TestBulkAddItemTag_PreservesExistingTags`: 既存タグ 3 件持つ item + 新規タグ追加 →
-      既存タグ全て維持、新規タグが末尾に追加（Req 5.3 / 5.4）
+      既存タグ全て維持、新規タグが `succeeded[].Tags` に **含まれる**（store の SQL は `ORDER BY
+      it.item_id, t.normalized_name` で normalized 名昇順を返すため、新規タグの位置は normalized 順
+      に依存する）。「末尾」と仮定する assertion は書かない（design.md の SQL ORDER BY と整合）
+      （Req 5.3 / 5.4）
     - `TestBulkAddItemTag_ReturnsFullTagListPerItem`: succeeded[].Tags が更新後の全タグ集合
       （既存 + 新規）を含むことを assert（Req 5.5 の前提）
     - `TestBulkAddItemTag_NewTagCreatesTagsRow`: 既存 tags テーブルに存在しないタグを追加 →
@@ -83,7 +93,13 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       `BulkTagRequest` / `BulkTagResponse` / `BulkTagSuccessDetail` / `BulkFailureDetail`
       （design.md「Components and Interfaces」節の型定義に従う）
     - `handleBulkDeleteItems(w, r)`:
-      - `requireAuth` 通過後、`s.limiter.Allow(user.ID)` 検査
+      - **拡張機能 / MCP Bearer JWT 遮断**: ハンドラ冒頭（auth context 取り出しの前後問わず、ただし
+        return path が共通になる位置で）`if r.Header.Get("Authorization") != "" { writeJSON(403,
+        {"error":"forbidden"}); return }`。`requireAuth` は Bearer も session も両受けするため、
+        bulk endpoint を **session-only** に絞るには handler 側での明示的 reject が必要
+        （requirements.md「Out of Scope: 拡張機能および MCP 経由での一括操作 API 公開」を server で
+        固定 / Req 8.1 / 8.2 / 8.3 の goldensource）
+      - `requireAuth` 通過後、`s.limiter.Allow(user.ID)` 検査 → false なら 429 rate_limited
       - JSON `{"item_ids": [...]}` を decode、`len(item_ids) == 0` → 400 invalid_request、
         `len(item_ids) > 100` → 400 payload_too_large
       - **UUID 形式の per-id 検証**（design.md Components節 / Security Considerations節）:
@@ -95,18 +111,23 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - succeeded set を作り `failed := (validIDs \ succeededSet) ∪ invalidUUIDs` を計算
         （invalid UUID 由来の failed と not-found 由来の failed を同じ `reason: "not_found"` で
         合流させる）
-      - failed の各 id について `reason: "not_found"`、title / url は空文字（leak 防止）で
-        `BulkFailureDetail` を組み立てる
+      - failed の各 id について `BulkFailureDetail{ItemID, Reason: "not_found"}` を組み立てる
+        （**`Title` / `URL` フィールドは struct 自体に存在しない** / leak 防止 / design.md
+        Components 節の最終仕様）
       - `slog.Info("items.bulk.delete", ...)` を出力（user_id / item_ids / succeeded_count /
         failed_count / failed_ids / request_id）
       - 200 で `BulkDeleteResponse` を返す
     - `handleBulkTagItems(w, r)`:
-      - 同じ chain 検査
+      - 同じ chain 検査（Bearer 遮断 + rate limiter）
       - JSON `{"item_ids": [...], "tag": "..."}` を decode、`item_ids` 空 / 超過は上と同じ
       - **UUID 形式の per-id 検証**: handleBulkDeleteItems と同じ流儀。invalid な id は store に
         渡さず `failed[{item_id: <as-is>, reason: "not_found"}]` に collapse、`validIDs` だけを
         store に渡す（Req 8.3 二重防御）
-      - `tag.Normalize(req.Tag)` 結果が空文字 → 400 invalid_tag（Req 5.9 二重防御）
+      - **`tag` 空判定 → `invalid_tag` 一本化**: `tag.Normalize(req.Tag)` 結果が空文字なら 400
+        `{"error":"invalid_tag"}` を返す（Req 5.9 server 二重防御）。`req.Tag == ""` のケースも
+        `tag.Normalize("")` で空文字を返す挙動に依存する形で **`invalid_tag` に collapse** し、
+        `invalid_request` には混ぜない（クライアント側の invalid_tag 専用処理 / 入力欄 focus 戻しの
+        ため categorization を分離する必要がある / design.md Error Categories 節と整合）
       - `normalizeTagInputs([]string{req.Tag})[0]` で `TagInput`（Name + NormalizedName）を作る
       - `s.store.BulkAddItemTag(ctx, user.ID, validIDs, tagInput)` を呼ぶ
       - succeeded set / failed を上と同様に計算（invalid UUID 由来の failed を合流）
@@ -127,35 +148,46 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestHandleBulkDeleteItems_EmptyIDsReturns400`: `{"item_ids": []}` → 400 invalid_request
     - `TestHandleBulkDeleteItems_OverLimitReturns400PayloadTooLarge`: 101 件 → 400
       payload_too_large（NFR 2.1 server enforcement の回帰固定）
+    - `TestHandleBulkDeleteItems_RejectsBearerAuthReturns403`: `Authorization: Bearer <jwt>` を
+      付けて POST → 403 `{"error":"forbidden"}`。Server.store / limiter は呼ばれずに即時 reject
+      されることを併せて確認（拡張機能 / MCP の bulk endpoint 到達を server で固定 /
+      requirements.md Out of Scope の goldensource）
+    - `TestHandleBulkDeleteItems_RateLimitedReturns429`: `ratelimit.New(0, 0)` で構成した limiter
+      を持つ Server に POST → 429 `{"error":"rate_limited"}`（store は呼ばれない / 既存単一 API
+      の rate limit pattern と一致 / 新規 bulk endpoint のレート制御退行の回帰固定）
     - `TestHandleBulkTagItems_UnauthorizedReturnsJSON401`: 同上
     - `TestHandleBulkTagItems_InvalidJSONReturns400`: 同上
     - `TestHandleBulkTagItems_EmptyIDsReturns400`: 同上
     - `TestHandleBulkTagItems_OverLimitReturns400PayloadTooLarge`: 同上
-    - `TestHandleBulkTagItems_EmptyTagReturns400InvalidTag`: `{"tag": "   "}` または `{}` →
-      400 invalid_tag（Req 5.9 server 二重防御）
+    - `TestHandleBulkTagItems_RejectsBearerAuthReturns403`: 上の bulk-tag 版
+    - `TestHandleBulkTagItems_RateLimitedReturns429`: 上の bulk-tag 版
+    - `TestHandleBulkTagItems_EmptyTagReturns400InvalidTag`: `{"tag": "   "}` または `{"tag": ""}`
+      または `{}`（`tag` フィールド欠落）→ 400 `{"error":"invalid_tag"}`。`invalid_request` には
+      collapse しないことを assert（Req 5.9 server 二重防御 / クライアント側 invalid_tag 専用
+      処理の dispatch 契約を固定）
     - `TestHandleBulkTagItems_NormalizationEmptyTagReturns400InvalidTag`: `{"tag": "　 "}`
       （全角空白等の正規化後空文字パターン） → 400 invalid_tag
-    - `TestHandleBulkDeleteItems_InvalidUUIDsCollapseToFailedNotFound`: `{"item_ids":["not-a-uuid", "<valid-uuid>"]}`
-      で store には valid な id のみが渡され、invalid な id は `failed[{item_id:"not-a-uuid",
-      reason:"not_found"}]` として返ることを fake store を使った handler 層テストで assert
-      （Req 8.3 / Security Considerations 節の不正 id 攻撃面遮断の回帰固定）。store interface は
-      テスト用に minimal fake で差し替える
-    - `TestHandleBulkTagItems_InvalidUUIDsCollapseToFailedNotFound`: 上と同じ流儀で bulk-tag 側も
-      回帰固定
+    - **UUID 形式 collapse テスト（`TestHandleBulk*Items_InvalidUUIDs*`）は本 task では追加しない**:
+      `Server.store` は `*store.Store` の concrete 型のため、handler 単体で「store には valid id
+      のみが渡されたこと」を fake で観測するのが現実的に困難（既存 server 構造に minimal interface
+      を後付けする変更は本 PR スコープを超える）。当該テストは task 4 の integration test で
+      実 DB を seed して `200 + failed[reason:"not_found"] に invalid uuid が collapse される`
+      ことを観察する形に移管する（design.md Integration Tests 節と整合）
     - `TestBulkRoutesRegisteredOnRouter`: chi router の routing tree を walk して
       `POST /v1/items/bulk-delete` / `POST /v1/items/bulk-tag` の 2 route が登録済みであることを
       assert（design.md「Routing Glue」節、chi v5 の `chi.Walk` でツリーを枚挙し path + method を
       照合）。`/{id}` ワイルドカード route と前者の静的セグメントが競合しない（404 にならない）
       ことを併せて確認
   - `extension_contract_test.go` は **変更しない**（既存契約に影響なし / NFR 3.4 / 3.5）
-  - **テスト追加（同 task 内）**: 上記 13 件の handler unit テスト（基本 10 件 + UUID 検証 2 件 +
-    ルート登録 1 件）を本タスクで完結させる（Req 5.9 / 8.1 / 8.3 / NFR 2.1 / NFR 3.4 の 400 /
-    401 / payload_too_large 系 + UUID 形式不正の collapse + 静的ルートと `/{id}` ワイルドカードの
-    非競合は通常 `go test ./...` で実行可能 / 同 task 内テスト必須カテゴリに該当）。成功時の
-    per-item 部分失敗レスポンス検証は実 DB が必要なため、次タスク 4 の integration test に
-    deferred する
+  - **テスト追加（同 task 内）**: 上記 13 件の handler unit テスト（基本 10 件 + Bearer 拒否 2 件 +
+    rate limit 429 2 件 - UUID 検証 2 件を task 4 に移管 + ルート登録 1 件）を本タスクで完結させる
+    （Req 5.9 / 8.1 / NFR 2.1 / NFR 3.4 / NFR 5.1 のうち、handler 単体で観測可能な 400 / 401 /
+    403 / 429 / payload_too_large 系 + 静的ルートと `/{id}` ワイルドカードの非競合 + Bearer 拒否は
+    通常 `go test ./...` で実行可能 / 同 task 内テスト必須カテゴリに該当）。UUID 形式不正の
+    collapse 検証および成功時の per-item 部分失敗レスポンス検証は実 DB が必要なため、次タスク 4 の
+    integration test に deferred する
   - _Requirements: 4.1, 4.7, 4.8, 5.7, 5.8, 5.9, 8.1, 8.2, 8.3, NFR 2.1, NFR 3.4, NFR 5.1_
-  - _Requirements_partial: 4.7, 4.8, 5.7, 5.8, 8.2, NFR 5.1_
+  - _Requirements_partial: 4.7, 4.8, 5.7, 5.8, 8.2, 8.3, NFR 5.1_
   - _Boundary: Server_
   - _Depends: 1_
 
@@ -165,7 +197,18 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     踏襲）:
     - `TestHandleBulkDeleteItems_PartialFailureResponse`: 実 DB に own 3 件 + other-user 2 件 +
       存在しない 1 件を seed → POST `/v1/items/bulk-delete` → 200 + succeeded=3 件 + failed=3 件
-      （reason: "not_found"）を assert。failed の title / url は空文字（leak 防止 / Req 8.2 / 8.3）
+      （reason: "not_found"）を assert。**レスポンス JSON に `title` / `url` フィールド自体が
+      含まれない** ことを assert（`BulkFailureDetail` 構造体から該当フィールドを撤去済み /
+      leak 防止 / Req 8.2 / 8.3）
+    - `TestHandleBulkDeleteItems_InvalidUUIDsCollapseToFailedNotFound`: 実 DB に own 1 件 seed
+      → POST `{"item_ids":["not-a-uuid", "<valid-own-uuid>"]}` → 200 + succeeded=[valid-uuid]
+      + failed=[{item_id:"not-a-uuid", reason:"not_found"}]。500 にならず handler 層で collapse
+      されることを assert（Req 8.3 / Security Considerations 節の DB エラー誘発攻撃面遮断の
+      回帰固定 / task 3 から移管）
+    - `TestHandleBulkTagItems_InvalidUUIDsCollapseToFailedNotFound`: 上の bulk-tag 版。
+      `{"item_ids":["not-a-uuid", "<valid-own-uuid>"], "tag": "GoLang"}` → 200 + succeeded
+      に valid-uuid のみ含まれ、failed に `{item_id:"not-a-uuid", reason:"not_found"}` が
+      含まれることを assert
     - `TestHandleBulkDeleteItems_AllSuccessResponse`: own 3 件のみ → succeeded=3、failed=[] /
       slog に `succeeded_count: 3` / `failed_count: 0` が含まれる
     - `TestHandleBulkDeleteItems_LogsStructuredFields`: 成功時の `items.bulk.delete` log line に
@@ -225,7 +268,21 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
           </div>
         </form>
       </dialog>
+      <dialog class="bulk-failure-dialog"
+              data-bulk-failure-dialog
+              role="alertdialog"
+              aria-labelledby="bulk-failure-title"
+              aria-describedby="bulk-failure-list">
+        <h2 id="bulk-failure-title" data-bulk-failure-title>失敗した項目</h2>
+        <ul id="bulk-failure-list" class="bulk-failure-list" data-bulk-failure-list role="list"></ul>
+        <div class="dialog-actions">
+          <button type="button" class="btn-primary" data-bulk-failure-close>OK</button>
+        </div>
+      </dialog>
       ```
+    - `bulk-failure-dialog` は Req 4.7 / 5.7「失敗したアイテムをユーザーが特定可能な形（タイトルまたは
+      URL を含むメッセージ）で通知」を 100 件まで全件 reachable に満たすための SSR 領域。actions
+      モジュール（task 7）が `<li>` を populate して `showModal()` する
     - 既存 `<script src="/static/items_status.js?v={{assetVersion}}" defer></script>` の直後に
       `<script src="/static/items_bulk_selection.js?v={{assetVersion}}" defer></script>` と
       `<script src="/static/items_bulk_actions.js?v={{assetVersion}}" defer></script>` を追加
@@ -357,63 +414,114 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       実装方針: `window.altpocketBulkSelection` を selection 側で公開し、actions 側がそれを
       参照する（または selection 側が `bulkselection:changed` event の detail で `clear` /
       `removeFromSelection` のコールバックを返却する）
-    - **`static/app.js` に `window.altpocketConfirm = confirm` の 1 行を追加**（既存
-      `window.altpocketToast = toast` 行の直後に挿入）。既存 module-local な `confirm` ヘルパーを
-      bulk actions から再利用するための公開（design.md「Templates」節の方式 1 採用）。
-      既存単一アイテム削除動線の挙動には影響しない（`confirm` 関数の参照を 1 つ追加するのみ）
+    - **`static/app.js` への 2 つの公開行追加**（design.md「Templates」節の最終規約）:
+      - `window.altpocketConfirm = confirm;` を `const confirm = (() => { ... })();` の **直後
+        の行**（現状 line 120 付近の `})();` 直後）に挿入する。**`window.altpocketToast = toast`
+        行（line 58 付近）の直後に置いてはならない**: `confirm` const はまだ宣言前で TDZ
+        ReferenceError で JS 全体が停止する（過去のレビューで指摘済みの落とし穴）
+      - `window.altpocketNormalizeTagName = normalizeTagName;` を `const normalizeTagName =
+        (value) => { ... };`（現状 line 344 付近）の **直後の行**に挿入する
+      - **シグネチャ規約**: `window.altpocketConfirm` は **object**（`{ show(title, description,
+        onConfirm, actionLabel?, actionClass?) }`）であり関数ではない。`items_bulk_actions.js`
+        からは `window.altpocketConfirm.show('一括削除', '<件数> 件を削除しますか？',
+        () => { /* approve callback */ }, 'Delete', 'btn-danger')` 形式で呼ぶ。
+        `window.altpocketConfirm(message)` という関数呼び出しは不可
+      - **フォールバック**: `window.altpocketConfirm` / `window.altpocketNormalizeTagName` が
+        undefined の場合、`items_bulk_actions.js` は前者を `window.confirm(message)` ブラウザ
+        標準に降格、後者を `value.normalize('NFKC').toLowerCase().trim()` のローカル実装に
+        降格して機能を維持する
+      - 既存単一アイテム削除 / タグ編集の動線（既に同じ `confirm` / `normalizeTagName` を使用中）
+        の挙動には影響しない（global 参照を 2 つ追加するのみ）
     - `[data-items-region]` の `bulkselection:changed` event を listen し:
       - `count > 0` ならツールバー（`[data-bulk-toolbar]`）の `hidden=false` 化 + `data-bulk-count`
         テキスト更新（Req 3.1 / 3.6）
       - `count === 0` なら `hidden=true` 化（Req 3.2）
     - ツールバーの delegated click を捕捉:
-      - `button.bulk-delete` → 既存 `confirm` ダイアログ（`window.altpocketConfirm` 経由、
-        無ければ既存 `confirm-overlay` を直接操作）で「N 件を削除しますか？」表示（Req 4.1）→
-        approve で `POST /v1/items/bulk-delete`、cancel で何もしない（Req 4.2 / 4.3）
+      - `button.bulk-delete` → `window.altpocketConfirm.show('一括削除', '<件数> 件を削除しますか？',
+        () => { /* approve → POST /v1/items/bulk-delete */ }, 'Delete', 'btn-danger')` を呼ぶ
+        （**object の `.show(...)` メソッド呼び出し、関数呼び出しではない** / Req 4.1）。
+        `window.altpocketConfirm` が undefined ならブラウザ標準 `window.confirm()` に降格。
+        cancel / Escape では approve callback が発火しないため、追加コード無しで「キャンセル時に
+        何もしない」が成立する（既存 `confirm.show` の挙動）（Req 4.2 / 4.3）
       - `button.bulk-tag` → `<dialog data-bulk-tag-dialog>` を `showModal()`、フォーム submit で
-        `<input data-bulk-tag-input>` の値を取得。**空判定のためだけに** `normalizeTagName`
-        （`app.js` と同じ NFKC + lowercase）を実行し、正規化結果が空文字なら no-op + input に
-        focus 戻す（Req 5.9）。**POST 時は正規化前の原文字列をそのまま送る**（NFKC + lowercase
-        を JS 側で強制適用しない / 既存単一アイテム編集では server 側 `normalizeTagInputs` が
-        `Name` に原文字列を保持して chip 表示の casing を維持する仕様 / Req 5.2「既存単一
-        アイテム編集と同じタグ正規化規則を適用する」）。`POST /v1/items/bulk-tag` の body は
-        `{"item_ids": [...], "tag": <原文字列>}`
+        `<input data-bulk-tag-input>` の値を取得。**空判定のためだけに**
+        `(window.altpocketNormalizeTagName || ((v) => v.normalize('NFKC').toLowerCase().trim()))(value)`
+        を実行し、正規化結果が空文字なら no-op + input に focus 戻す（Req 5.9）。
+        **POST 時は正規化前の原文字列をそのまま送る**（NFKC + lowercase を JS 側で強制適用しない /
+        既存単一アイテム編集では server 側 `normalizeTagInputs` が `Name` に原文字列を保持して
+        chip 表示の casing を維持する仕様 / Req 5.2「既存単一アイテム編集と同じタグ正規化規則を
+        適用する」）。`POST /v1/items/bulk-tag` の body は `{"item_ids": [...], "tag": <原文字列>}`
       - `button.bulk-clear` → `selection.clear()` を呼ぶ（Req 3.4）
+    - **失敗一覧の提示（共通ヘルパー）**: `bulk-failure-dialog`（task 5 で SSR 済みの
+      `<dialog data-bulk-failure-dialog role="alertdialog">`）に失敗 item を populate して
+      `showModal()` するヘルパー `showBulkFailureDialog({verb, items})` を本モジュール内に持つ。
+      `verb` は `"削除"` / `"タグ付け"`、`items` は `[{id, title, url}]` 配列。動作:
+      - `data-bulk-failure-title` の `textContent` を `${items.length} 件の${verb}に失敗しました` に更新
+      - `data-bulk-failure-list` の子要素を `replaceChildren()` で空に
+      - 各 item について `<li>` を `createElement` で生成し、`title` があれば
+        `li.textContent = title`、無ければ `li.textContent = url`（**`textContent` のみ使う / XSS
+        防御** / NFR 5.1）。両方無い項目は `li.textContent = item.id`（fallback）
+      - `<li>` を順次 `appendChild`
+      - dialog を `showModal()` で開く（CSS が scrollable + max-height を担保するため 100 件全件
+        reachable / Req 4.7 / 5.7「特定可能な形で通知」を 100 件まで満たす）
+      - `data-bulk-failure-close` ボタン押下 / Escape で close（既存 `<dialog>` の標準挙動 +
+        click handler 1 つを `init()` 時 register）
+      - **トースト併用**: 並行で `toast.error('${items.length} 件の${verb}に失敗しました（詳細を開く）')`
+        を発火し、件数だけは toast 経由で持続表示（dialog 閉鎖後の reminder）
+      - **truncation は行わない**（過去レビューで指摘済み「先頭 3 件 + ほか N 件」は Req 4.7 /
+        5.7 違反のため撤廃。100 件分の `<li>` を scrollable 領域で全件提示）
     - **一括削除レスポンス処理**:
       - レスポンス型の前提: `BulkDeleteResponse.succeeded` は **`string[]`**（id の配列）、
-        `BulkDeleteResponse.failed` は **`BulkFailureDetail[]`**（`{item_id, reason, title?, url?}`）
-        （design.md「Components and Interfaces」節の型定義を厳守）。実装では succeeded を
-        `string[]` として直接走査し、failed のみ `failed[i].item_id` でアクセスする（succeeded
-        側で `.item_id` を読まない）
+        `BulkDeleteResponse.failed` は **`BulkFailureDetail[]`**（`{item_id, reason}` のみ /
+        **`title` / `url` フィールドは struct 自体に存在しない** / design.md Components 節の
+        最終仕様）。実装では succeeded を `string[]` として直接走査し、failed のみ
+        `failed[i].item_id` でアクセスする
       - 200 OK + 全成功: succeeded（`string[]`）の各 id について
         `region.querySelector('article[data-item-id="<id>"]')` を fade-out（後述
         「fadeOutAndRemove と beginActionMutation のブラケット規約」参照）で削除、
         `selection.clear()` 後にツールバー隠す（Req 4.4 / 4.5 / 4.6）、`toast.success('N 件削除しました')`
-      - 200 OK + 部分失敗: succeeded（`string[]`）の id を DOM 削除 +
-        `selection.removeFromSelection(succeeded)`、failed[].item_id は selection 残置（Req 4.8）。
-        **failed のタイトル / URL は DOM 削除より先に文字列収集する**（`article[data-item-id="<failed.item_id>"]`
-        は actions 側で削除しないため remove 後も DOM 残存だが、収集タイミングが succeeded
-        削除より前なら順序依存もなく安全）。`toast.error` で failed 一覧（title または URL を
-        含むメッセージ）を表示（Req 4.7）
-      - 400 / 401 / 403 / 429 / 500（全件失敗扱い）: **selection 中の各 id について DOM 上の
-        article から title / URL を列挙し、`toast.error('N 件の削除に失敗しました: <title 一覧>')`**
-        で通知する（Req 4.7「失敗の一部または全部」を満たす）。selection は触らない（残置）。
-        ただし toast 文字列は冗長化を避け、選択 5 件以下なら全件列挙、6 件以上なら先頭 3 件 +
-        「ほか N 件」形式で省略する
+      - 200 OK + 部分失敗:
+        1. **DOM 削除前に failed 詳細を収集**: `failed[].item_id` ごとに対応する article
+           （`region.querySelector('article[data-item-id="<failed.item_id>"]')`）から
+           `h3[id^="item-title-"]` の textContent を `title`、`.tile-link[href]` を `url`
+           として抽出（actions 側で failed item は remove しないが、収集順を **succeeded
+           削除より前** に揃えて順序依存を回避）
+        2. succeeded を beginActionMutation/endActionMutation ブラケット内で DOM 削除
+        3. `selection.removeFromSelection(succeeded)`、failed[].item_id は selection 残置（Req 4.8）
+        4. `showBulkFailureDialog({verb: '削除', items: collectedFailures})` を呼ぶ（Req 4.7）
+      - 4xx / 5xx（全件失敗扱い、ネットワーク失敗を含む）: selection 中の各 id について同様に
+        DOM から title / URL を **全件** 収集 → `showBulkFailureDialog({verb: '削除', items})`
+        を呼ぶ（Req 4.7「失敗の一部または全部」を満たす）。selection は触らない（残置）
+      - 400 invalid_request / 400 payload_too_large: `toast.error` で「リクエストが不正です」/
+        「100 件を超える選択はできません」を表示。selection は保持（人間 identify が不要な
+        systemic エラーのため failure dialog は出さない）
     - **一括タグ付けレスポンス処理**:
-      - 200 OK + 全成功: succeeded[].tags を当該カードの `.tags` chip 列に反映する。**反映時は
-        必ず `document.createElement` + `textContent` で chip ノードを組み立てる**（タグ名は
-        ユーザー入力由来のため `innerHTML` 経由の文字列代入 / `insertAdjacentHTML` は **禁止**、
-        保存型 XSS を防ぐ / NFR 5.1 セキュリティ）。既存 chip 列の DOM 子要素は `replaceChildren()`
-        または個別 `appendChild` で更新する。`selection.clear()` + dialog 閉鎖 + ツールバー
-        隠す（Req 5.5 / 5.6）
+      - 200 OK + 全成功: succeeded[].tags を当該カードの `.tags` chip 列に反映する。**chip ノード
+        は既存 SSR と同じ contract**（`items_list.html` line 65-70 と一致）で組み立てる:
+        - tag 要素: `document.createElement('button')`
+        - `setAttribute('type', 'button')`
+        - `setAttribute('class', 'tag tag-filter-toggle')`（新規付与は default で `is-selected`
+          なし、`aria-pressed="false"`。SSR が `SelectedTags` に応じて `is-selected` を付ける
+          のと同じパターン）
+        - `setAttribute('data-tag-filter-toggle', '')`（空属性）
+        - `setAttribute('data-tag-normalized', tag.normalized_name)`
+        - `setAttribute('aria-pressed', 'false')`
+        - `setAttribute('aria-label', 'タグで絞り込み: ' + tag.name)`
+        - `button.textContent = tag.name`（**`innerHTML` / `insertAdjacentHTML` は禁止** /
+          XSS 防御 / NFR 5.1）
+        - 既存 `<div class="tags">` を `replaceChildren(...newButtons)` で全置換（既存 chip 列が
+          無い card は `<div class="tags">` を createElement で挿入してから append）
+        これにより #117 chip クリック絞り込みと #115 active-filters chip 連携が新規付与タグでも
+        動作する（NFR 3.3 後方互換）
+      - `selection.clear()` + dialog 閉鎖 + ツールバー隠す（Req 5.5 / 5.6）
       - 200 OK + 部分失敗: succeeded の tags を反映（上と同じ DOM API 経路）+
         `selection.removeFromSelection(succeeded ids)`、failed は selection 残置（Req 5.8）+
-        `toast.error` で failed 一覧（Req 5.7、failed タイトル / URL は対象 article の DOM から
-        収集 / 一括削除と同じ列挙ルール）
-      - 400 invalid_tag: `toast.error('タグ名を入力してください')` + dialog open のまま + 入力欄に focus
-      - 4xx / 5xx（全件失敗扱い）: 一括削除と同じく selection 中の article 群から title / URL を
-        DOM 収集して `toast.error('N 件のタグ付けに失敗しました: <title 一覧>')` を表示（Req 5.7）。
-        selection は触らない
+        `showBulkFailureDialog({verb: 'タグ付け', items})`（DOM 収集規約は削除と同じ / Req 5.7）
+      - 400 invalid_tag: dialog open のまま + 入力欄に focus 戻す + `toast.error('タグ名を入力して
+        ください')`
+      - 400 invalid_request / 400 payload_too_large / 4xx 他 / 5xx（全件失敗扱い）: 一括削除と
+        同じく selection 中の article 群から title / URL を DOM 収集して
+        `showBulkFailureDialog({verb: 'タグ付け', items})` を表示（Req 5.7）。selection は触らない
     - **fadeOutAndRemove と beginActionMutation のブラケット規約**（Req 4.8 / 5.8 と既存
       `items_status_actions.js` の fade-out 削除パターンの両立）:
       既存 `items_status_actions.js` の `fadeOutAndRemove` は `setTimeout(remove, 300)` で
@@ -454,23 +562,62 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestDeleteAllSuccessRemovesCardsAndClearsSelection`: 全成功レスポンス → 該当 article が
       DOM から削除 + selection.clear が呼ばれる（Req 4.5 / 4.6）
     - `TestDeletePartialFailureKeepsFailedSelected`: 部分失敗レスポンス → succeeded の card は
-      DOM 削除、failed の id は selection に残置 + toast.error で failed タイトル一覧表示
-      （Req 4.7 / 4.8）
-    - `TestDeleteCancelDoesNothing`: confirm cancel → fetch 未呼出 / 選択保持（Req 4.3）
+      DOM 削除、failed の id は selection に残置 + `bulk-failure-dialog` が `showModal` で開き
+      `<li>` に失敗 item の title (or url) が **全件** 含まれる（truncation 無し / Req 4.7 / 4.8）
+    - `TestDeleteCancelDoesNothing`: confirm cancel（`window.altpocketConfirm.show` の approve
+      callback が呼ばれない経路）→ fetch 未呼出 / 選択保持（Req 4.3）
+    - `TestDeleteConfirmUsesShowSignature`: bulk-delete click 時、actions モジュールが
+      `window.altpocketConfirm.show(title, description, onConfirm, actionLabel, actionClass)` の
+      **object メソッド呼び出し**を行うことを spy で assert（**`window.altpocketConfirm(message)`
+      の関数呼び出しは行わない**）。`description` 引数に件数が含まれることも assert
+      （Req 4.1 / シグネチャ規約の回帰固定）
+    - `TestDeleteRateLimitedShowsFailureDialog`: 429 `{"error":"rate_limited"}` レスポンス →
+      `bulk-failure-dialog` が selection 全件分の title/url を `<li>` で列挙して open + selection
+      は残置（Req 4.7「失敗の全部」の 4xx 経路 / 過去レビュー: actions test 4xx/5xx 未カバーの是正）
+    - `TestDeleteServerErrorShowsFailureDialog`: 500 `{"error":"db_error"}` または fetch reject
+      （network 失敗）→ 同上の全件失敗ダイアログ + selection 残置（Req 4.7 5xx 経路）
+    - `TestDeleteForbiddenBearerRejectShowsFailureDialog`: 403 `{"error":"forbidden"}` → 同上
+      （拡張機能 / MCP からの呼び出しが万一通った場合の表示一貫性）
+    - `TestDeleteUnauthorizedShowsFailureDialog`: 401 `{"error":"unauthorized"}` → 同上
+    - `TestDeleteInvalidRequestShowsToastNotDialog`: 400 `{"error":"invalid_request"}` →
+      **`toast.error` のみ**で `bulk-failure-dialog` は出さない（systemic エラーで per-item identify
+      が不要 / selection 保持）
+    - `TestDeletePayloadTooLargeShowsToastNotDialog`: 400 `{"error":"payload_too_large"}` → 同上
     - `TestTagButtonOpensDialog`: bulk-tag click → `<dialog>` open
     - `TestTagDialogEmptyInputIsNoOp`: 空文字 / 全角空白だけ入力 → fetch 未呼出（Req 5.9）+
-      input に focus 戻す
+      input に focus 戻す。`window.altpocketNormalizeTagName` undefined 時のフォールバック
+      （`value.normalize('NFKC').toLowerCase().trim()`）でも同じ判定が成立することを併せて assert
     - `TestTagDialogConfirmCallsAPI`: 非空入力 → fetch が `/v1/items/bulk-tag` を呼ぶ、body に
-      `item_ids` / `tag` を含む
-    - `TestTagSuccessAppliesTagsToCards`: 全成功レスポンス → succeeded[].tags が当該カードの
-      `.tags` chip 列に反映 + selection.clear + dialog 閉鎖（Req 5.5 / 5.6）
-    - `TestTagPartialFailureKeepsFailedSelected`: 部分失敗 → succeeded の tags 反映 + failed の id
-      は selection 残置 + toast.error（Req 5.7 / 5.8）
+      `item_ids` / `tag`（**原文字列、normalize していない**）を含む（Req 5.2 既存規則踏襲）
+    - `TestTagSuccessRebuildsChipsWithFilterToggleContract`: 全成功レスポンス → succeeded[].tags
+      が当該カードの `.tags` chip 列に反映され、各 chip 要素が **`button.tag.tag-filter-toggle`
+      + `data-tag-filter-toggle` 属性 + `data-tag-normalized="<normalized>"` + `aria-pressed="false"`
+      + `aria-label="タグで絞り込み: <name>"` + textContent=<name>** をすべて持つことを assert
+      （Req 5.5 + NFR 3.3 #117 chip クリック絞り込み契約の維持 / 過去レビュー: chip rebuild
+      契約欠落の回帰固定）
+    - `TestTagSuccessClearsSelectionAndClosesDialog`: 全成功 → selection.clear + dialog 閉鎖
+      （Req 5.6）
+    - `TestTagPartialFailureKeepsFailedSelected`: 部分失敗 → succeeded の chips 反映 + failed の id
+      は selection 残置 + `bulk-failure-dialog` で failed 全件列挙（Req 5.7 / 5.8）
+    - `TestTagRateLimitedShowsFailureDialog`: 429 → `bulk-failure-dialog` + selection 残置
+      （Req 5.7 4xx 経路）
+    - `TestTagServerErrorShowsFailureDialog`: 500 / network 失敗 → 同上（Req 5.7 5xx 経路）
+    - `TestTagInvalidTagOpenedDialogStaysAndFocusInput`: 400 invalid_tag → bulk-tag dialog 開いた
+      まま + `data-bulk-tag-input` に focus 戻す + `toast.error('タグ名を入力してください')`
+      （**`bulk-failure-dialog` は出さない**）
+    - `TestFailureDialogPopulatesAllItemsWithoutTruncation`: 失敗 6 件 / 50 件 / 100 件の dialog
+      populate で `<li>` 件数がそのまま 6 / 50 / 100 になることを assert（truncation 撤廃の
+      回帰固定 / Req 4.7 / 5.7）
+    - `TestFailureDialogUsesTextContentNotInnerHTML`: failed item の title に `<script>` を含む
+      文字列でも、`<li>` に script 要素として挿入されない（`textContent` 使用 / XSS 防御 /
+      NFR 5.1）
     - `TestToolbarShowsHidesOnSelectionChange`: `bulkselection:changed` event detail.count=0 → hidden、
       count>0 → 表示 + 件数テキスト更新（Req 3.1 / 3.2 / 3.6）
     - `TestClearButtonCallsSelectionClear`: bulk-clear click → selection.clear が呼ばれる（Req 3.4）
-  - **テスト追加（同 task 内）**: 上記 12 件の actions モジュールテストを本タスクで完結させる
-    （Req 3.1 / 3.2 / 3.3 / 3.4 / 3.6 / 4.1〜4.8 / 5.5〜5.9 / 6.5 の同 task 内テスト必須カテゴリに該当）
+  - **テスト追加（同 task 内）**: 上記 23 件の actions モジュールテストを本タスクで完結させる
+    （Req 3.1 / 3.2 / 3.3 / 3.4 / 3.6 / 4.1〜4.8 / 5.5〜5.9 / 6.5 の同 task 内テスト必須カテゴリに該当、
+    4xx/5xx エラーパス・chip rebuild 契約・confirm シグネチャ規約・failure dialog 全件 populate
+    の回帰固定を含む）
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 5.1, 5.2, 5.5, 5.6, 5.7, 5.8, 5.9, 6.5, NFR 1.2, NFR 1.3_
   - _Boundary: Static_
   - _Depends: 5, 6_
@@ -493,6 +640,14 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `.bulk-tag-dialog`: ネイティブ `<dialog>` の最低限スタイル（既存 `confirm-overlay` の
       backdrop / shadow / radius トークンに揃える）
     - `.bulk-tag-dialog::backdrop`: dialog 背景 dim（既存 confirm overlay と同じ rgba）
+    - `.bulk-failure-dialog`: 失敗一覧 dialog のレイアウト（`max-width: min(560px, 90vw);` 程度
+      + `padding: var(--space-4); border-radius: var(--radius-md);`、`confirm-overlay` と同じ
+      backdrop / shadow / radius トークンに揃える）
+    - `.bulk-failure-dialog::backdrop`: dialog 背景 dim（同上 rgba）
+    - `.bulk-failure-list`: **`max-height: 60vh; overflow-y: auto;`** + 余白 + 単純な
+      list-style（失敗 100 件まで scrollable に全件 reachable / Req 4.7 / 5.7 truncation 廃止
+      の CSS 側保証）。`<li>` 内テキストは長いタイトル / URL を折返し可能とする
+      （`overflow-wrap: anywhere;`）
   - light / dark 両テーマで視覚区別が成立することを目視確認（既存トークンを使う限り自動的に
     両テーマで動作する / NFR 4.3 色覚多様性配慮）
   - モバイル（< 768px）でも `bulk-toolbar` がスクリーン下端に貼り付くことを確認（既存
@@ -503,7 +658,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     本タスクは新 selector の **追加のみ** で完結する
   - **テスト追加（同 task 内）**: CSS のみのタスクのため、視覚回帰テストは既存規約上手動目視で
     確認する（既存 #12 / #115 / #117 / #119 と同じ運用）。Go test での追加は不要
-  - _Requirements: 1.4, 1.5, 3.5, 5.5, NFR 1.1, NFR 1.3, NFR 4.3_
+  - _Requirements: 1.4, 1.5, 3.5, 4.7, 5.5, 5.7, NFR 1.1, NFR 1.3, NFR 4.3_
   - _Boundary: Static_
   - _Depends: 5_
 
