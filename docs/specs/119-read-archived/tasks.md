@@ -371,7 +371,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     （Unread / All / Archived）が本タスクの責務になる（Reviewer r6 指摘 #5 反映、
     操作ボタン側の aria-label はタスク 7 でカバー）
 
-- [ ] 7. SSR テンプレート: item-card の既読/アーカイブボタン追加（archive 解除も含む）
+- [x] 7. SSR テンプレート: item-card の既読/アーカイブボタン追加（archive 解除も含む）
   - `templates/items_list.html` の `.item-actions` 内に以下を追加（**`unread` を主軸に分岐**し、
     `read` / `archived` を「未読に戻す」側に集約する。JS の `next = currentStatus === 'unread' ? 'read' : 'unread'`
     と一致させる。Req 2.3 / 2.4 / 2.6 の整合）:
