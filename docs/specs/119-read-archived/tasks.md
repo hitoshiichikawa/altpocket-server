@@ -475,7 +475,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Static_
   - _Depends: 4, 7_
 
-- [ ] 9. static JS: items_status.js（タブ切替 + fragment 取得 + popstate + タブ active 同期）
+- [x] 9. static JS: items_status.js（タブ切替 + fragment 取得 + popstate + タブ active 同期）
   - `static/items_status.js` を新規作成。`static/items_active_filters.js` の pattern に揃える:
     - `[data-items-region]` 上の `__itemsFragmentInflight` slot を共有して AbortController を持つ
     - `<nav.status-tabs a[role="tab"]>` の click を delegated 捕捉 → `?status=` を書き換えた
