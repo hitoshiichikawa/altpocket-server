@@ -74,6 +74,12 @@
 
     <div class="actions item-actions">
       <a class="btn-secondary action-button" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Original</a>
+      <button type="button" class="btn-secondary mark-read-toggle" data-item-id="{{.ID}}"
+        data-current-status="{{.Status}}"
+        aria-label="{{if eq .Status "unread"}}既読にする{{else}}未読に戻す{{end}}">{{if eq .Status "unread"}}Mark read{{else}}Mark unread{{end}}</button>
+      <button type="button" class="btn-secondary archive-toggle" data-item-id="{{.ID}}"
+        data-current-status="{{.Status}}"
+        aria-label="{{if eq .Status "archived"}}アーカイブ解除{{else}}アーカイブする{{end}}">{{if eq .Status "archived"}}Unarchive{{else}}Archive{{end}}</button>
       <button type="button" class="btn-secondary refetch" data-item-id="{{.ID}}">Refetch</button>
       <button type="button" class="btn-danger delete" data-item-id="{{.ID}}">Delete</button>
     </div>

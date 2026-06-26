@@ -366,6 +366,51 @@ func TestHandleUIItemsTemplateDataIncludesStatusQuery(t *testing.T) {
 		}
 	})
 
+	t.Run("buildLibraryURL preserves status for the detail-page back link (Req 3.8)", func(t *testing.T) {
+		// The detail page's "← Library" link must return to the same
+		// status tab the user was browsing. buildLibraryURL is the
+		// canonical builder used by handleUIItem to populate the
+		// `LibraryURL` template data.
+		cases := []struct {
+			name string
+			raw  string
+			want string
+		}{
+			{name: "empty raw status drops the query (Req 3.1 default Unread)", raw: "", want: "/ui/items"},
+			{name: "whitespace-only is treated as empty", raw: "   ", want: "/ui/items"},
+			{name: "canonical archived survives verbatim", raw: "archived", want: "/ui/items?status=archived"},
+			{name: "canonical all survives verbatim", raw: "all", want: "/ui/items?status=all"},
+			{name: "canonical unread survives verbatim (round-trip)", raw: "unread", want: "/ui/items?status=unread"},
+			{name: "non-canonical read survives verbatim (harmless; parser collapses)", raw: "read", want: "/ui/items?status=read"},
+			{name: "case-variant is preserved (parser is case-insensitive)", raw: "Archived", want: "/ui/items?status=Archived"},
+			{name: "unknown value is preserved (parser collapses to default)", raw: "unknown", want: "/ui/items?status=unknown"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				if got := buildLibraryURL(tc.raw); got != tc.want {
+					t.Errorf("buildLibraryURL(%q) = %q, want %q", tc.raw, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("buildLibraryURL escapes unsafe characters in raw status", func(t *testing.T) {
+		// Defense-in-depth: even if a hand-crafted URL carries a value
+		// with characters that need escaping (& / =), the builder must
+		// emit a URL whose Query().Get("status") round-trips back to
+		// the raw input. We never trust the value for routing — the
+		// library-side parser collapses unknown values to the default.
+		raw := "foo&bar=baz"
+		got := buildLibraryURL(raw)
+		parsed, err := url.Parse(got)
+		if err != nil {
+			t.Fatalf("buildLibraryURL produced an unparseable URL %q: %v", got, err)
+		}
+		if v := parsed.Query().Get("status"); v != raw {
+			t.Errorf("buildLibraryURL did not round-trip raw status: got %q, want %q", v, raw)
+		}
+	})
+
 	t.Run("buildStatusTabURLs round-trips through parseStatusFilter", func(t *testing.T) {
 		// The tab URL produced for "all" must, when parsed back, yield
 		// the [unread, read] slice — and likewise for the other tabs.

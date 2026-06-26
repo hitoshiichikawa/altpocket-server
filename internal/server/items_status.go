@@ -125,6 +125,45 @@ func buildStatusTabURL(currentURL *url.URL, statusValue string) string {
 	return u.String()
 }
 
+// buildLibraryURL returns the `?status=`-preserving URL used by the
+// item-detail page's "Library" back link (Req 3.8 / Reviewer 指摘 #2).
+//
+// Issue #119 keeps the active status tab in the URL while the user is
+// browsing the library. When the user opens a detail page from
+// `/ui/items?status=archived` and then clicks the "← Library" link, we
+// want to land back on the Archived tab, not snap to the default
+// Unread tab.
+//
+// The raw `?status=` value (the user-visible canonical tab name, or
+// any case-variant they typed) is preserved verbatim — even a
+// non-canonical value like `?status=Read` survives, because
+// parseStatusFilter will collapse the unknown value to the
+// defaultIfEmpty fallback on the library side, which is semantically
+// harmless.
+//
+// Inputs:
+//   - rawStatus: r.URL.Query().Get("status") from /ui/items/{id}, i.e.
+//     the carry-over from the detail page URL.
+//
+// Outputs:
+//   - "" or whitespace → "/ui/items"  (Req 3.1 default Unread).
+//   - any other value  → "/ui/items?status=<value>" with URL-safe
+//     escaping (url.Values.Encode).
+//
+// Only `?status=` is propagated. The detail page never gets `?q=` or
+// `?tag=` in its URL (it is keyed by `{id}`), so propagating other
+// query parameters is unnecessary and would just clutter the back
+// link. This is intentionally narrower than buildClearFiltersURL,
+// which has to preserve a full filter context.
+func buildLibraryURL(rawStatus string) string {
+	const libraryPath = "/ui/items"
+	if strings.TrimSpace(rawStatus) == "" {
+		return libraryPath
+	}
+	q := url.Values{"status": {rawStatus}}
+	return libraryPath + "?" + q.Encode()
+}
+
 // buildClearFiltersURL returns a URL with every filter parameter
 // (q / tag / tags) removed, **preserving** the status tab so a Clear
 // Filters click does not silently snap the user back from Archived / All

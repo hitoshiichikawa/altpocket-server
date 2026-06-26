@@ -1,6 +1,6 @@
 {{define "content"}}
 <section class="detail-layout">
-  <a class="detail-back" href="/ui/items">&#x2190; Library</a>
+  <a class="detail-back" href="{{.LibraryURL}}">&#x2190; Library</a>
 
   <article class="card detail-card">
     <header>
@@ -11,6 +11,12 @@
         </div>
         <div class="detail-header-actions" id="detail-header-actions">
           <button type="button" class="btn-secondary edit-tags" data-item-id="{{.Item.ID}}">Edit</button>
+          <button type="button" class="btn-secondary mark-read-toggle" data-item-id="{{.Item.ID}}"
+            data-current-status="{{.Item.Status}}"
+            aria-label="{{if eq .Item.Status "unread"}}既読にする{{else}}未読に戻す{{end}}">{{if eq .Item.Status "unread"}}Mark read{{else}}Mark unread{{end}}</button>
+          <button type="button" class="btn-secondary archive-toggle" data-item-id="{{.Item.ID}}"
+            data-current-status="{{.Item.Status}}"
+            aria-label="{{if eq .Item.Status "archived"}}アーカイブ解除{{else}}アーカイブする{{end}}">{{if eq .Item.Status "archived"}}Unarchive{{else}}Archive{{end}}</button>
           <div class="action-menu" data-action-menu>
             <button type="button" class="btn-icon" aria-haspopup="menu" aria-expanded="false" aria-label="More actions" data-action-menu-trigger>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="8" cy="13" r="1.5"/></svg>

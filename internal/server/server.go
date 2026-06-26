@@ -910,12 +910,17 @@ func (s *Server) handleUIItem(w http.ResponseWriter, r *http.Request) {
 	if pageTitle == "" {
 		pageTitle = "(無題)"
 	}
+	// LibraryURL preserves the `?status=` query so the detail page's
+	// "← Library" link returns to the same status tab (Req 3.8 /
+	// Reviewer 指摘 #2). buildLibraryURL handles the empty / canonical /
+	// case-variant inputs uniformly.
 	data := map[string]interface{}{
-		"Title":     pageTitle,
-		"User":      user,
-		"ActiveNav": "items",
-		"Item":      item,
-		"CSRFToken": s.csrfFromContext(r.Context()),
+		"Title":      pageTitle,
+		"User":       user,
+		"ActiveNav":  "items",
+		"Item":       item,
+		"CSRFToken":  s.csrfFromContext(r.Context()),
+		"LibraryURL": buildLibraryURL(r.URL.Query().Get("status")),
 	}
 	if err := s.renderer.Render(w, "detail", data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
