@@ -181,7 +181,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `<section class="split">` の終了 (`</section>`) と既存 script 群の間に以下を追加:
       ```html
       <div class="bulk-toolbar" data-bulk-toolbar role="region" aria-label="一括操作" hidden>
-        <span class="bulk-toolbar-count"><span data-bulk-count>0</span> 件選択中</span>
+        <span class="bulk-toolbar-count"><span data-bulk-count>0</span> / <span data-bulk-limit>100</span> 件選択中</span>
         <div class="bulk-toolbar-actions">
           <button type="button" class="btn-danger bulk-delete">一括削除</button>
           <button type="button" class="btn-secondary bulk-tag">一括タグ付け</button>
@@ -230,7 +230,11 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - shift+click かつ `lastClickedID !== null` なら、現在の DOM 順（`document.querySelectorAll('.item-card')`
         の順）で `lastClickedID` から currentID までの範囲を `Set` に追加（Req 2.1 / 2.2 / 2.3）
       - shift+click でも `lastClickedID === null` なら通常の単一 toggle として扱う（Req 2.4）
-      - 通常 click（shift なし）は change ハンドラに委ねつつ `lastClickedID = currentID` を更新
+      - 通常 click（shift なし）は change ハンドラに委ねる
+      - **`lastClickedID` の更新は通常 click / shift+click のいずれの経路でも実行する**
+        （currentID で上書き）。Req 2.3 の「直前に起動された選択操作要素」を、次回の範囲選択
+        起点として正しく追従させるため。例: id1 → id5 を Shift 選択した後の Shift+id8 は
+        `5→8` の範囲を選択する（`1→8` ではない）
     - `document` 上の `keydown` を捕捉、既存 `app.js` と同じガード（`tag === 'INPUT' / TEXTAREA /
       SELECT / isContentEditable / modifier present` なら return）後、`e.key === 'x'` なら
       `document.activeElement?.closest('.item-card')` の id を toggle（Req 6.1〜6.3）
@@ -243,13 +247,24 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - 単一 toggle / shift 範囲の結果として `Set.size > 100` になる場合、超過分は追加せず
         `win.altpocketToast.error('一括操作は最大 100 件までです')` を呼ぶ
       - 既に 100 件選択済みで新規 toggle を試みた場合も同様
-    - **fragment 差替リセット**（Req 7.1 / 7.2 / 7.5）: `[data-items-region]` 上で
-      `MutationObserver` を起動し、`childList` 変更（innerHTML 全置換）を観測したら
-      `Set.clear()` + event 発火。これにより状態タブ切替（Req 7.1）・タグフィルタチップ・
-      検索クエリ・ソート・ページ送り変更（Req 7.2）のいずれが fragment 差替を引き起こした
-      場合でも、選択状態が自動でリセットされる（既存 #114 / #115 / #117 / #119 のフィルタ
-      切替は全て `[data-items-region].innerHTML` 置換に集約されているため、本オブザーバ 1 個で
-      Req 7.1 / 7.2 / 7.5 が同時に満たされる）
+    - **fragment 差替リセットと部分失敗時の選択保持の両立**（Req 4.8 / 5.8 / 7.1 / 7.2 / 7.5）:
+      `[data-items-region]` 上で `MutationObserver(childList)` を起動し、MutationRecord 受信時に
+      以下の **二段階判定** を行ってリセット可否を決める:
+      1. **suppression bracket（actions モジュールが actively DOM 削除中か）**:
+         内部カウンタ `_actionMutationDepth > 0` のときは reset を行わない。actions 側は
+         `selection.beginActionMutation()` で削除前にカウンタを +1、`selection.endActionMutation()`
+         で −1 にする（reference counted, nest 安全）。`endActionMutation()` 冒頭で
+         `observer.takeRecords()` を呼び出してブラケット中に蓄積した records を破棄してから
+         decrement することで、microtask boundary 越しの遅延 callback でも誤発火しない
+      2. **fragment 差し替え判定（bracket 外）**:
+         - `addedNodes.length > 0` → fragment 差し替え（`innerHTML = newHTML` / `replaceChildren(...)`）
+           とみなし `Set.clear()` + `bulkselection:changed` event 発火
+         - `addedNodes.length === 0` かつ bracket 外 → 通常運用では発生しないが、保守的に
+           reset する（SSR 側が将来空 fragment を返す経路を追加しても Req 7.5 を満たす）
+      これにより部分失敗時に actions が succeeded のみを `article.remove()` してもリセットされず
+      failed の id が Set に残置される（Req 4.8 / 5.8）。状態タブ切替（Req 7.1）・タグフィルタチップ・
+      検索クエリ・ソート・ページ送り変更（Req 7.2）はいずれも `[data-items-region].innerHTML`
+      置換に集約されているため `addedNodes.length > 0` で確実にリセットされる
     - **popstate リセット**（Req 7.3 / 7.4）: `win.addEventListener('popstate', () => Set.clear() +
       event 発火)` を register。リロード経路（Req 7.3）は new pageload で Set が空から開始する
       ため追加コード不要だが、確認のため init 時に明示的に `Set` を空に初期化する
@@ -262,9 +277,12 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - 既存モジュールの DOM 構造（`.item-card` / `.tile-link` / `.tag-filter-toggle` /
         `.active-filter-chip` / `.status-tab` / `.mark-read-toggle` / `.archive-toggle`）を
         改変しない（チェックボックス 1 個を `<article>` 冒頭に追加するだけ）
-    - export 公開 API: `init()` の戻り値として `{getSelectedIDs, clear, removeFromSelection}` を
-      返す（テストおよび actions モジュールから利用可能）。`window.altpocketBulkSelection`
-      でも同 API を公開し、actions 側がスクリプト読み込み順に依存せず取得できるようにする
+    - export 公開 API: `init()` の戻り値として
+      `{getSelectedIDs, clear, removeFromSelection, beginActionMutation, endActionMutation}` を
+      返す（テストおよび actions モジュールから利用可能）。**`init()` の末尾で同オブジェクトを
+      `window.altpocketBulkSelection` にも代入**し、actions 側がスクリプト読み込み順に依存せず
+      取得できるようにする（既存 `window.altpocketToast` と同じ流儀、design.md「inter-module API」
+      節準拠）
   - `templates/items.html` の script 読み込み行は task 5 で追加済み
   - `static/items_bulk_selection.test.mjs` を新規作成（`node --test`、既存
     `items_status.test.mjs` の fake DOM + vm.createContext パターンを踏襲）:
@@ -277,6 +295,9 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       選択は保持される（Req 2.2）
     - `TestShiftClickWithoutHistoryActsAsSingleToggle`: `lastClickedID === null` の状態で
       Shift+click → 通常の単一 toggle として扱われる（Req 2.4）
+    - `TestShiftClickUpdatesLastClickedAnchor`: 1 件選択 → Shift+5 → さらに Shift+8 →
+      範囲は `5→8`（`1→8` ではない）。shift+click 自体が次回の範囲選択起点を更新することを
+      回帰固定（Req 2.3）
     - `TestKeyboardXTogglesFocusedCard`: フォーカス中カードで `keydown` `x` → toggle（Req 6.1）
     - `TestKeyboardXIgnoresInputFocus`: `<input>` フォーカス中の `keydown` `x` は no-op（Req 6.3）
     - `TestKeyboardXIgnoresModifierCombo`: `Ctrl+x` / `Meta+x` 等は no-op（既存 app.js 規約 / Req 6.2）

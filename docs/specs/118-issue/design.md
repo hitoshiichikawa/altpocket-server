@@ -206,11 +206,11 @@ static/
 | 1.6 | 既存タブ・フィルタ・検索・ソート動作を変えない | server.go / items.html | 既存 URL クエリ駆動の経路を一切変更しない | 既存 #114/#115/#117/#119 経路 |
 | 2.1 / 2.2 / 2.3 | Shift+クリック範囲選択 | items_bulk_selection.js | `lastClickedID` を保持し、現在の DOM 順 (`document.querySelectorAll('.item-card')`) で範囲算出 | shift+click event → 範囲算出 → Set 追加 |
 | 2.4 | 履歴空時は単一 toggle | items_bulk_selection.js | `lastClickedID === null` 時の fallback | 単一 toggle 動作 |
-| 3.1 / 3.2 | 件数連動した選択ツールバー表示 | items.html / items_bulk_selection.js / items_bulk_actions.js | `data-bulk-toolbar` の `hidden` 属性切替 + `data-bulk-count` テキスト | 選択件数 0 ⇄ 1+ で hidden 切替 |
+| 3.1 / 3.2 | 件数連動した選択ツールバー表示 | items.html / items_bulk_selection.js / items_bulk_actions.js | `data-bulk-toolbar` の `hidden` 属性切替 + `data-bulk-count` テキスト（`<N> / 100 件選択中` で上限を常時併記 / NFR 2.1 pre-announce） | 選択件数 0 ⇄ 1+ で hidden 切替 |
 | 3.3 | 一括削除 / 一括タグ付け / 選択解除ボタン | items.html | 3 ボタンを SSR | |
 | 3.4 | 選択解除 | items_bulk_selection.js | Set クリア + DOM 上の checkbox の checked / `.is-selected` 一括解除 | |
 | 3.5 | スクロール中も到達可能 | style.css | `position: sticky` で画面下部に固定 | |
-| 3.6 | 件数の追随 | items_bulk_selection.js | `selection-changed` custom event を発火、ツールバーが listen | |
+| 3.6 | 件数の追随 | items_bulk_selection.js | `bulkselection:changed` custom event を発火、ツールバーが listen | |
 | 4.1 / 4.2 / 4.3 / 4.4 | 確認ダイアログ → 削除 | items_bulk_actions.js | 既存 confirm overlay 再利用、approve → fetch POST /v1/items/bulk-delete | |
 | 4.5 / 4.6 | 成功時の DOM 退場 + ツールバー非表示 | items_bulk_actions.js | レスポンスの `succeeded[]` を DOM から fade-out 削除 | |
 | 4.7 / 4.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持 | items_bulk_actions.js + server response | レスポンスに `failed: [{item_id, title, url, reason}]` を含める | toast.error + 当該 checkbox を checked のまま |
@@ -222,13 +222,13 @@ static/
 | 5.9 | 空タグでの無動作 | items_bulk_actions.js | dialog confirm 時に正規化結果が空文字なら fetch しない + 入力欄に focus 戻す | |
 | 6.1 / 6.2 / 6.3 | キーボード `x` トグル + 既存衝突なし + 入力欄フォーカス時抑止 | items_bulk_selection.js | 既存 app.js keyboard handler と同じ pattern (TAG === INPUT / TEXTAREA / SELECT / isContentEditable のときは return) + `x` のみ捕捉 | document.addEventListener('keydown') |
 | 6.4 / 6.5 | 選択ツールバーのキーボード到達 + 同等挙動 | items.html | 全ボタンをネイティブ `<button>` で実装、Tab 順序が自然なので追加処理不要 | |
-| 7.1 / 7.2 / 7.5 | タブ・フィルタ・検索・ソート・ページ送り・fragment 差し替え時のリセット | items_bulk_selection.js | `[data-items-region]` の `innerHTML` 差し替えを `MutationObserver` で検知 → Set クリア + `selection-changed` 発火 | fragment 差替後にチェックボックスは全 unchecked SSR されるので Set とも整合 |
+| 7.1 / 7.2 / 7.5 | タブ・フィルタ・検索・ソート・ページ送り・fragment 差し替え時のリセット | items_bulk_selection.js | `[data-items-region]` 上の `MutationObserver(childList)` で fragment 差し替えを検出して Set クリア + `bulkselection:changed` 発火。**fragment 差し替えと per-item `article.remove()` の区別**は (a) `addedNodes.length > 0` ならフラグメント差し替えとみなす、(b) `beginActionMutation()` ブラケット中の mutation はリセット対象外、の 2 条件で行う（後述「Components / Selection state」節参照）。これにより、部分失敗時の DOM 退場（succeeded のみ remove）で failed 選択が失われないことを保証する（Req 4.8 / 5.8 と両立） | fragment 差替後にチェックボックスは全 unchecked SSR されるので Set とも整合 |
 | 7.3 / 7.4 | リロード・back/forward でリセット | items_bulk_selection.js | ページ init 時に Set が空 + popstate ハンドラで Set クリア（ただし fragment 差替経路も別途 reset するので二重防御） | 自然に初期状態 |
 | 8.1 / 8.2 / 8.3 | 認可・存在チェック | server.handleBulkDeleteItems / handleBulkTagItems / store.BulkDeleteItems / BulkAddItemTag | **「先に所有確認 → 全件所有していなければ 1 件も変更せず 207 で全件失敗扱い」** ではなく、**「user_id を WHERE に含めて UPDATE/DELETE/INSERT を実行し、actually 影響を受けた行 id 集合を成功とし、残りの id を `failed[{reason: "not_found"}]` として返す」** 方針（後述「Error Handling」節「部分失敗時の atomicity 方針」参照） | |
 | NFR 1.1 | 選択操作 200ms 以内の視覚反映 | items_bulk_selection.js | change イベント → 同期 DOM クラス + 件数同期更新 | 全て同期 DOM 操作のため明示計測不要 |
 | NFR 1.2 | 100 件以下で 1 秒以内の操作完了視覚 | items_bulk_actions.js | click 直後にツールバーを `is-busy` 化（ボタン disabled + spinner） | |
 | NFR 1.3 | 結果反映中もちらつかない | items_bulk_actions.js | items_list 全体 innerHTML 置換は行わず、対象 article のみ DOM から removeChild | |
-| NFR 2.1 / 2.2 | 上限 100 件 | items_bulk_selection.js + server bulk handlers | JS 側で 100 件超選択を抑止し toast.error。Server 側でも `len(itemIDs) > 100` で 400 `payload_too_large` を返す（二重防御） | |
+| NFR 2.1 / 2.2 | 上限 100 件 | items.html / items_bulk_selection.js + server bulk handlers | 選択ツールバー件数表示は **`<N> / 100 件選択中`** 形式で上限を常時併記（NFR 2.1 pre-announce）。JS 側で 100 件超選択を抑止し toast.error。Server 側でも `len(itemIDs) > 100` で 400 `payload_too_large` を返す（二重防御） | |
 | NFR 3.1〜3.5 | 後方互換性 | 全層 | 既存 ハンドラ・テンプレ・JS module を **削除・改名・挙動変更しない** | |
 | NFR 4.1〜4.3 | アクセシビリティ | items.html / style.css / dialog | ネイティブ HTML 要素 + aria-label + テキスト併用 | |
 | NFR 5.1 | 構造化ログ | server bulk handlers | `slog.Info("items.bulk.delete" / "items.bulk.tag", "user_id", "item_ids", "succeeded_ids", "failed_ids", "request_id")`。Cookie / token / 本文の生値は含めない | |
@@ -241,7 +241,7 @@ static/
 
 | Field | Detail |
 |-------|--------|
-| Intent | 一覧上の選択状態（Set<itemID>）を管理し、Shift+クリック範囲・キーボード `x`・リセット契機を吸収して `selection-changed` custom event を発火する |
+| Intent | 一覧上の選択状態（Set<itemID>）を管理し、Shift+クリック範囲・キーボード `x`・リセット契機を吸収して `bulkselection:changed` custom event を発火する |
 | Requirements | 1.1, 1.2, 1.3, 1.4, 2.1〜2.4, 3.4, 3.6, 6.1, 6.2, 6.3, 7.1, 7.2, 7.5, NFR 1.1, NFR 2.1, NFR 2.2 |
 
 **Responsibilities & Constraints**
@@ -252,11 +252,21 @@ static/
   - 件数を `data-items-region` の `dispatchEvent(new CustomEvent('bulkselection:changed', {detail: {count, ids}}))` で配信する
   - 上限 100 件超の選択操作を抑止し、`win.altpocketToast.error('一括操作は最大 100 件までです')` で通知する（NFR 2.2）
 - ドメイン境界: 選択状態の唯一の保持者（actions 側は read-only に dispatch から受信する）
-- データ所有権: 内部 Set はモジュール privately 保持。global 公開しない（テストからは `init()`
-  の戻り値経由でアクセス可能にする）
+- データ所有権: 内部 Set はモジュール privately 保持。テストからは `init()` の戻り値経由で
+  アクセスする
+- **inter-module API**: 本リポジトリは bundler 無しの独立 IIFE 構成のため、`items_bulk_actions.js`
+  から selection モジュールに到達するための **明示的な global namespace** として
+  `window.altpocketBulkSelection` を公開する（既存 `window.altpocketToast` と同じ流儀）。
+  selection 側の `init()` 末尾で `window.altpocketBulkSelection = { getSelectedIDs, clear,
+  removeFromSelection, beginActionMutation, endActionMutation }` を設定し、actions 側は
+  この global を参照する。これにより script 読み込み順への依存を排除できる
 - invariants:
   - DOM 上の `.item-select[checked]` と内部 Set は常に同期する（change イベント駆動）
-  - fragment 差替後（`MutationObserver` 観測の `childList` 変更）に Set は空にリセットされる
+  - fragment 差替後（`addedNodes.length > 0` または `beginActionMutation()` ブラケット外で
+    observe された `childList` 変更）に Set は空にリセットされる
+  - 部分失敗時の per-item `article.remove()`（actions モジュールが `beginActionMutation()` /
+    `endActionMutation()` で囲んで実行）はリセット対象外であり、failed の id が Set に残置される
+    （Req 4.8 / 5.8）
 
 **Dependencies**
 - Inbound: `[data-items-region]` 内の `input.item-select` 要素（change source）、ドキュメント全体の `keydown`（`x` capture）
@@ -269,6 +279,8 @@ static/
 
 ```javascript
 // Public init API (for production code and tests).
+// init() also assigns the same object to window.altpocketBulkSelection so
+// that items_bulk_actions.js can reach it without script-load-order coupling.
 function init({document, window} = {}) {
   return {
     // Returns the current selected item IDs as an array (DOM order).
@@ -279,6 +291,13 @@ function init({document, window} = {}) {
     // Programmatic remove (called by items_bulk_actions.js after server
     // returns `succeeded[]` for tag operation — failed items stay selected).
     removeFromSelection(ids: string[]): void,
+    // Bracket actions-module DOM mutations (article.remove() per succeeded id)
+    // so the MutationObserver below does NOT treat per-item removal as a
+    // fragment swap and wipe failed-item selections (Req 4.8 / 5.8).
+    // Calls are reference-counted; safe to nest. endActionMutation flushes any
+    // mutation records observed during the bracket without firing the reset.
+    beginActionMutation(): void,
+    endActionMutation(): void,
   };
 }
 ```
@@ -295,10 +314,29 @@ stateDiagram-v2
   Empty --> NonEmpty: checkbox click / keyboard `x` / shift+click
   NonEmpty --> NonEmpty: more toggles within limit
   NonEmpty --> Empty: clear() / select-all-off / fragment swap
+  NonEmpty --> NonEmpty: per-item article.remove() inside beginActionMutation bracket (failed selections preserved)
   NonEmpty --> AtLimit: count reaches 100
   AtLimit --> NonEmpty: deselect any item
   AtLimit --> AtLimit: ignored additional select (with toast warning)
 ```
+
+##### Fragment swap vs per-item removal の判定ロジック
+
+MutationObserver は `[data-items-region]` の `childList` 変更だけを観測する。発火時の判定:
+
+1. **`beginActionMutation()` ブラケット中**: `_actionMutationDepth > 0` の間に観測した
+   MutationRecord は **無視** する。actions モジュールは succeeded id ごとの `article.remove()`
+   を `begin → remove → end` で囲む（reference counted で nest 安全）
+2. **`addedNodes.length > 0`**: fragment 差し替え（`innerHTML = newHTML` / `replaceChildren(...)`）
+   とみなし、Set を空にリセット + `bulkselection:changed` を `{count: 0, ids: []}` で発火
+3. **`addedNodes.length === 0` かつブラケット外**: 通常運用ではこのパターンは発生しない（per-item
+   削除は必ず actions ブラケット内、空 fragment swap は SSR 側で空セクションが入る）。**保守的に
+   リセット**する（既存挙動と一致 / Req 7.5 を満たす）。これにより SSR 側の挙動変化に対しても
+   選択状態の意図しない持ち越しを防ぐ
+
+`MutationObserver.takeRecords()` を `endActionMutation()` の冒頭で呼び出し、ブラケット中に蓄積した
+records を捨てる。これにより actions の bulk DOM 操作完了直後の callback タイミングずれによる
+リセット誤発火を防ぐ。
 
 #### items_bulk_actions.js（新規モジュール）
 
@@ -315,8 +353,17 @@ stateDiagram-v2
   - 「選択解除」click → `selection.clear()` を呼ぶ
   - 成功時: succeeded[] の id を DOM から fade-out で削除（削除）/ タグ chip 列に append（タグ付け） → `selection.removeFromSelection(succeeded ids)` でクリア
   - 部分失敗時: failed[] を `toast.error` で list 形式表示（タイトル または URL を含む） + 当該 id は Set 残存（Req 4.7 / 4.8 / 5.7 / 5.8）
+  - **DOM 削除のブラケット**: succeeded id の `article.remove()` を一括で行う前に
+    `selection.beginActionMutation()` を呼び、削除完了後に `selection.endActionMutation()` を
+    呼ぶ。これにより selection 側の MutationObserver が per-item 削除を fragment 差し替えと
+    誤認して Set を空にすることを防ぐ（failed 選択保持 / Req 4.8 / 5.8）
 - ドメイン境界: モジュール内で fetch 失敗時の retry は **しない**（明示的にユーザーへ通知し、選択は残す）
 - データ所有権: 選択状態は **selection モジュール側に委譲**、actions 側は読み取り + clear / removeFromSelection 経由でのみ更新
+- **失敗 toast の表示文言**: server レスポンスの `failed[].title` / `failed[].url` は leak 防止
+  のため空文字（後述「Security Considerations」節）。client は **DOM 上の対象 article**
+  （`[data-item-id="<failed id>"] .item-title` / `.tile-link[href]`）から title / url を取得して
+  toast 本文に組み立てる（Req 4.7 / 5.7。`article.remove()` をブラケット内で済ませているため、
+  失敗 id の article は DOM に残存している）
 
 **Dependencies**
 - Inbound: `[data-bulk-toolbar]` 内の `button.bulk-delete` / `button.bulk-tag` / `button.bulk-clear` の click、`bulkselection:changed` event
@@ -350,7 +397,10 @@ function init({document, window, selection /* selection.init() の戻り値 */, 
 - バリデーション:
   - `len(item_ids) == 0` → 400 `{"error":"invalid_request"}`
   - `len(item_ids) > 100` → 400 `{"error":"payload_too_large"}`（NFR 2.1 server 側防御）
-  - 各 id は UUID 風文字列（厳格 UUID 検証はしない / 既存 single API と同じく chi URL param を信頼）
+  - **各 id の UUID 形式検証**: `uuid.Parse(id)` で per-id 検証する。**不正な文字列は store
+    レイヤに渡さず**、handler 側で `failed[{item_id: <as-is>, reason: "not_found"}]` に
+    collapse する（Req 8.3 / Security Considerations の「不正 id による DB エラー誘発」遮断）。
+    valid な id だけを `validIDs` として store.BulkDeleteItems に渡す
 - 認証なし → 401 `{"error":"unauthorized"}`（既存 requireAuth 経由）
 - rate limit 越え → 429 `{"error":"rate_limited"}`（既存 limiter 流用）
 - 成功時 → 200 `BulkDeleteResponse`（後述）
@@ -376,9 +426,14 @@ type BulkDeleteResponse struct {
 
 type BulkFailureDetail struct {
     ItemID string `json:"item_id"`
-    Title  string `json:"title,omitempty"` // 失敗時のクライアント表示用（"not_found" の場合は空文字）
-    URL    string `json:"url,omitempty"`   // 同上
-    Reason string `json:"reason"`          // "not_found"（owned by other user OR deleted）/ "db_error"
+    // Title / URL は **常に空文字** を返す（leak 防止 / Security Considerations 節）。
+    // クライアント側 toast は対象 article の DOM 表示要素 (`[data-item-id="<id>"] .item-title`
+    // / `.tile-link[href]`) から識別文字列を組み立てる方針。サーバはユーザー識別情報を
+    // レスポンスに含めない（他ユーザー所有の id でも 404 collapse なので、サーバ側に
+    // 表示可能な title が存在しないケースもある）
+    Title  string `json:"title,omitempty"` // 常に空 (互換用に omitempty で残す)
+    URL    string `json:"url,omitempty"`   // 常に空 (同上)
+    Reason string `json:"reason"`          // "not_found"（owned by other user OR deleted OR invalid uuid）/ "db_error"
 }
 ```
 
@@ -394,6 +449,8 @@ type BulkFailureDetail struct {
 - バリデーション:
   - `len(item_ids) == 0` → 400 `{"error":"invalid_request"}`
   - `len(item_ids) > 100` → 400 `{"error":"payload_too_large"}`
+  - **各 id の UUID 形式検証**: handleBulkDeleteItems と同じ流儀。不正 id は store に渡さず
+    `failed[{item_id: <as-is>, reason: "not_found"}]` に collapse する
   - サーバ側で `tag.Normalize` した結果が空文字 → 400 `{"error":"invalid_tag"}`（Req 5.9 二重防御）
 - 認証なし → 401 / rate limit / 403 csrf は handleBulkDeleteItems と同じ
 - 成功時 → 200 `BulkTagResponse`
@@ -547,7 +604,7 @@ markup を追加する:
 
 ```html
 <div class="bulk-toolbar" data-bulk-toolbar role="region" aria-label="一括操作" hidden>
-  <span class="bulk-toolbar-count"><span data-bulk-count>0</span> 件選択中</span>
+  <span class="bulk-toolbar-count"><span data-bulk-count>0</span> / <span data-bulk-limit>100</span> 件選択中</span>
   <div class="bulk-toolbar-actions">
     <button type="button" class="btn-danger bulk-delete">一括削除</button>
     <button type="button" class="btn-secondary bulk-tag">一括タグ付け</button>
@@ -622,13 +679,19 @@ sequenceDiagram
   API->>API: slog.Info("items.bulk.delete", ...)
   API-->>UI: 200 {succeeded: [...], failed: [...]}
   alt 全件成功
+    UI->>UI: selection.beginActionMutation()
     UI->>UI: 全 succeeded を DOM から fade-out 削除
+    UI->>UI: selection.endActionMutation()
     UI->>UI: selection.clear() + toolbar 隠す
     UI->>U: toast.success "N 件削除しました"
   else 部分失敗
-    UI->>UI: succeeded を DOM 削除 + selection.removeFromSelection
-    UI->>U: toast.error "failed: ..." (タイトル一覧 / Req 4.7)
-    UI->>UI: failed の id は selection に残置 (Req 4.8)
+    UI->>UI: failed のタイトル / url を残存 article DOM から先に収集
+    UI->>UI: selection.beginActionMutation()
+    UI->>UI: succeeded を DOM 削除
+    UI->>UI: selection.endActionMutation()
+    UI->>UI: selection.removeFromSelection(succeeded ids)
+    UI->>U: toast.error "failed: タイトル一覧" (Req 4.7、DOM から収集した文字列)
+    Note over UI: failed の id は selection に残置 + DOM 上の article も残存 (Req 4.8)
   end
 ```
 
@@ -720,7 +783,11 @@ sequenceDiagram
 
 - JS が `fetch.then.catch` / `res.status >= 500` を捕捉した場合は「すべての選択を保持」して
   `toast.error('ネットワークエラー')` 程度の通知のみ（DOM は触らない）
-- 200 + 部分失敗の場合は succeeded の DOM 削除 + failed の toast.error 列挙
+- 200 + 部分失敗の場合は succeeded の DOM 削除 + failed の toast.error 列挙。toast 本文の
+  識別文字列（タイトル / URL）は **対象 article の DOM** から取得する（`failed[].title` /
+  `failed[].url` は常に空 / 上記 BulkFailureDetail 注記参照）。`article.remove()` は
+  `selection.beginActionMutation()` / `selection.endActionMutation()` ブラケットで囲み、
+  失敗 id の article は DOM 残存させた状態で文字列収集を完了させる
 - 400 invalid_request / payload_too_large / invalid_tag の場合は「クライアント側のバグ or
   上限超過」なので toast.error で具体的メッセージ + 選択を保持
 
@@ -788,8 +855,14 @@ sequenceDiagram
   `item_ids` / `tag_normalized` / `succeeded_count` / `failed_count` のみ
 - **CSRF 保護**: 既存 `s.checkCSRF` middleware が `/v1/*` の非 GET request に強制適用される
 - **ID 列挙対策**: 上限 100 件で 1 リクエストあたりの enumeration speed を制限。rate limiter も適用
-- **PII リーク防止**: failed[].title / url は **own deletion 時のみ**（他ユーザー所有・存在しない
-  id では空文字）として返す。これにより「他ユーザーのタイトル」をクライアントに露出しない
+- **PII リーク防止**: failed[].title / url は **常に空文字** で返す。クライアント側は対象 article
+  の DOM 表示要素 (`[data-item-id="<failed id>"] .item-title` / `.tile-link[href]`) から
+  toast 文言を組み立てる。これにより「他ユーザーのタイトル」をサーバから返さない設計を保ちつつ、
+  Req 4.7 / 5.7 の「failed をタイトルまたは URL を含むメッセージで通知」を満たす。クライアントは
+  そもそも自分が submit した id しか知らないため、DOM 由来の文字列は所有・閲覧権限上問題ない
+- **UUID 形式の事前検証**: クライアントが送信する `item_ids` の各文字列を `uuid.Parse` で検証し、
+  不正な文字列は store 層に渡さず `failed[{reason: "not_found"}]` に collapse する。これにより
+  不正 id を送り付けて DB エラー（500）を誘発する攻撃面を閉じる
 
 ## Performance & Scalability
 
