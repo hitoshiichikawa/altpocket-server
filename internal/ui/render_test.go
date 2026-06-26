@@ -35,11 +35,14 @@ func TestPageTitleFormat(t *testing.T) {
 			"items shows article list title",
 			"items",
 			map[string]interface{}{
-				"Title":      "記事一覧",
-				"Page":       1,
-				"TotalPages": 1,
-				"PerPage":    30,
-				"Sort":       "newest",
+				"Title":         "記事一覧",
+				"Page":          1,
+				"TotalPages":    1,
+				"PerPage":       30,
+				"Sort":          "newest",
+				"StatusTab":     "unread",
+				"StatusTabURLs": testStatusTabURLs(),
+				"StatusQuery":   "",
 			},
 			"<title>記事一覧 | altpocket</title>",
 		},
@@ -99,8 +102,27 @@ type testItemRow struct {
 	Title       string
 	Excerpt     string
 	FetchStatus string
-	CreatedAt   time.Time
-	Tags        []testItemTag
+	// Status mirrors store.Item.Status (the user-visible lifecycle state
+	// introduced by Issue #119). items_list.html references `.Status` on every
+	// item row (status badge / mark-read / archive toggle), so the test row
+	// type must carry it or the template render fails with "can't evaluate
+	// field Status".
+	Status    string
+	CreatedAt time.Time
+	Tags      []testItemTag
+}
+
+// testStatusTabURLs returns the per-tab navigation URLs that items.html's
+// status-tabs nav reads via `{{index .StatusTabURLs "unread"}}` (Issue #119).
+// handleUIItems always sets this map (server.go: buildStatusTabURLs), so the
+// older items-page render tests must supply it too; a missing key would leave
+// the template indexing an untyped nil and fail the render.
+func testStatusTabURLs() map[string]string {
+	return map[string]string{
+		"unread":   "/ui/items?status=unread",
+		"all":      "/ui/items?status=all",
+		"archived": "/ui/items?status=archived",
+	}
 }
 
 func renderItemsWith(t *testing.T, items []testItemRow) string {
@@ -123,6 +145,9 @@ func renderItemsWith(t *testing.T, items []testItemRow) string {
 		"PerPageOptions": []int{10, 20, 30, 40, 50},
 		"PrevURL":        "",
 		"NextURL":        "",
+		"StatusTab":      "unread",
+		"StatusTabURLs":  testStatusTabURLs(),
+		"StatusQuery":    "",
 	}
 	rr := httptest.NewRecorder()
 	if err := r.Render(rr, "items", data); err != nil {
@@ -151,6 +176,7 @@ func TestRenderFragmentItemsList(t *testing.T) {
 				Title:       "Fragment記事",
 				Excerpt:     "本文抜粋",
 				FetchStatus: "completed",
+				Status:      "unread",
 				CreatedAt:   now,
 				Tags:        nil,
 			}},
@@ -232,6 +258,7 @@ func TestItemsPageEmbedsFragment(t *testing.T) {
 		Title:       "埋め込み記事",
 		Excerpt:     "本文抜粋",
 		FetchStatus: "completed",
+		Status:      "unread",
 		CreatedAt:   now,
 	}})
 
@@ -256,6 +283,7 @@ func TestItemsTagsDivRendering(t *testing.T) {
 			Title:       "タグなし記事",
 			Excerpt:     "本文抜粋",
 			FetchStatus: "completed",
+			Status:      "unread",
 			CreatedAt:   now,
 			Tags:        nil,
 		}})
@@ -280,6 +308,7 @@ func TestItemsTagsDivRendering(t *testing.T) {
 			Title:       "タグあり記事",
 			Excerpt:     "本文抜粋",
 			FetchStatus: "completed",
+			Status:      "unread",
 			CreatedAt:   now,
 			Tags: []testItemTag{
 				{Name: "Go", NormalizedName: "go"},
@@ -322,6 +351,7 @@ func TestItemsTagsDivRendering(t *testing.T) {
 				Title:       "タグなし記事",
 				Excerpt:     "e1",
 				FetchStatus: "completed",
+				Status:      "unread",
 				CreatedAt:   now,
 				Tags:        nil,
 			},
@@ -331,6 +361,7 @@ func TestItemsTagsDivRendering(t *testing.T) {
 				Title:       "タグあり記事",
 				Excerpt:     "e2",
 				FetchStatus: "completed",
+				Status:      "unread",
 				CreatedAt:   now,
 				Tags:        []testItemTag{{Name: "Go", NormalizedName: "go"}},
 			},
@@ -368,6 +399,7 @@ func TestItemsTagSelectedState(t *testing.T) {
 				Title:       "選択テスト",
 				Excerpt:     "e",
 				FetchStatus: "completed",
+				Status:      "unread",
 				CreatedAt:   now,
 				Tags: []testItemTag{
 					{Name: "Go", NormalizedName: "go"},
@@ -385,6 +417,9 @@ func TestItemsTagSelectedState(t *testing.T) {
 			"PerPageOptions": []int{10, 20, 30, 40, 50},
 			"PrevURL":        "",
 			"NextURL":        "",
+			"StatusTab":      "unread",
+			"StatusTabURLs":  testStatusTabURLs(),
+			"StatusQuery":    "",
 		}
 		rr := httptest.NewRecorder()
 		if err := r.Render(rr, "items", data); err != nil {
@@ -459,6 +494,7 @@ func renderItemsWithActiveFilters(t *testing.T, active []testActiveFilter, clear
 			Title:       "x",
 			Excerpt:     "e",
 			FetchStatus: "completed",
+			Status:      "unread",
 			CreatedAt:   now,
 		}},
 		"Tags":             []testItemTag{},
@@ -474,6 +510,9 @@ func renderItemsWithActiveFilters(t *testing.T, active []testActiveFilter, clear
 		"PerPageOptions":   []int{10, 20, 30, 40, 50},
 		"PrevURL":          "",
 		"NextURL":          "",
+		"StatusTab":        "unread",
+		"StatusTabURLs":    testStatusTabURLs(),
+		"StatusQuery":      "",
 	}
 	rr := httptest.NewRecorder()
 	if err := r.Render(rr, "items", data); err != nil {
@@ -626,6 +665,7 @@ func TestActiveFiltersFragmentRendering(t *testing.T) {
 			Title:       "Fragment記事",
 			Excerpt:     "本文抜粋",
 			FetchStatus: "completed",
+			Status:      "unread",
 			CreatedAt:   now,
 		}},
 		"ActiveTagFilters": []testActiveFilter{
