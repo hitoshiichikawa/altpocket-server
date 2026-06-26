@@ -510,7 +510,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Static_
   - _Depends: 6_
 
-- [ ] 10. CSS: 状態タブ / data-status カード / status-badge スタイル + #12 との非衝突確認
+- [x] 10. CSS: 状態タブ / data-status カード / status-badge スタイル + #12 との非衝突確認
   - `static/style.css`:
     - `.status-tabs` をルートに追加（`.active-filters` と同じ余白トークン）。`a[role="tab"]`
       の通常 / hover / aria-selected="true" の 3 状態
