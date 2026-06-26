@@ -52,6 +52,11 @@
     },
   };
 
+  // 他モジュール（items_status_actions.js 等）が同一の toast UI を共有できるよう
+  // window 経由で公開する。本オブジェクトは show / success / error / info を持ち、
+  // toast-container が DOM に無ければ no-op で安全に降格する。
+  window.altpocketToast = toast;
+
   /* =============================================
      Utility: Confirmation Dialog (replaces confirm())
      ============================================= */

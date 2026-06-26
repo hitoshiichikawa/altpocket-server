@@ -1272,6 +1272,155 @@ button:disabled,
 }
 
 /* =============================================
+   Item Status (Issue #119 - read / archived)
+   ============================================= */
+
+/* --- 状態タブ (Unread / All / Archived) ---
+   検索バー直下に表示される状態フィルタタブ。
+   `<nav class="status-tabs" role="tablist">` 内に
+   `<a class="status-tab" role="tab" aria-selected="true|false">` が並ぶ。
+   active なタブは aria-selected="true" または .is-active クラスで primary 反転表示。
+   #115 active-filters と並んでも余白が暴れないよう同じトークンを使う。 */
+.status-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-4);
+  padding: var(--space-2) 0 0;
+  border-bottom: 1px solid var(--separator);
+}
+
+.status-tab {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--type-subhead-size);
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color var(--motion-fast) var(--ease-default),
+              border-color var(--motion-fast) var(--ease-default),
+              background var(--motion-fast) var(--ease-default);
+}
+
+.status-tab:hover {
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.status-tab:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.status-tab.is-active,
+.status-tab[aria-selected="true"] {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+/* --- カードの状態別表現 (data-status="read" / "archived") ---
+   #12 の `.item-card.failed` (border-left: 3px solid danger) と軸を直交させるため、
+   read / archived は **border-left を使わない**（Req 4.2 / 4.3 / design.md #8）。
+   read は文字色弱化＋透明度、archived は背景弱化＋左側 inset インジケータで
+   視覚化する。failed + archived 同時成立時も border-left は .failed のみが
+   担い、archived 側の inset 表現と重ねて 2 軸を直交表示する。 */
+.item-card[data-status="read"] h3 {
+  color: var(--text-tertiary);
+}
+
+.item-card[data-status="read"] {
+  opacity: 0.85;
+}
+
+.item-card[data-status="archived"] {
+  background: var(--bg-grouped);
+}
+
+/* .tile::before は既に top accent bar として使われているため、archived の
+   左側インジケータは ::after で実装する。border-left は使わない（Req 4.3）。 */
+.item-card[data-status="archived"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--text-quaternary);
+  pointer-events: none;
+}
+
+/* 状態切替中の同期 visual ack（NFR 1.3 / Reviewer r6 指摘 #2 / r4 指摘 #3）
+   items_status_actions.js が click 直後に synchronous で付与する class。
+   応答完了またはエラー時に解除される。一覧の `.item-card` と詳細の `.detail-card`
+   両方に適用することで、詳細画面のマウス操作経路も同等に抑止する（race 防止の
+   1 次防御。2 次防御として JS 側で同一カード内の status ボタン両方を disabled
+   にしている）。 */
+.item-card.is-status-updating,
+.detail-card.is-status-updating {
+  opacity: 0.65;
+  pointer-events: none;
+  transition: opacity var(--motion-fast) var(--ease-default);
+}
+
+/* タブ条件で除外された card の退場アニメーション（JS 側で約 300ms 後に DOM 削除） */
+.item-card.fade-out {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity var(--motion-moderate) var(--ease-default),
+              transform var(--motion-moderate) var(--ease-default);
+}
+
+/* --- 状態バッジ (item-status-badge) ---
+   meta 行に置く小さな状態バッジ。status-pill と同じ「ドット + テキスト」
+   パターンで色覚多様性に配慮する（Req 4.4: 色のみ依存禁止）。 */
+.item-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--type-caption-1-size);
+  font-weight: 500;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.item-status-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.item-status-badge[data-status="unread"] {
+  color: var(--color-primary);
+}
+
+.item-status-badge[data-status="unread"]::before {
+  background: var(--color-primary);
+}
+
+.item-status-badge[data-status="read"] {
+  color: var(--text-tertiary);
+}
+
+.item-status-badge[data-status="read"]::before {
+  background: var(--text-tertiary);
+}
+
+.item-status-badge[data-status="archived"] {
+  color: var(--text-quaternary);
+}
+
+.item-status-badge[data-status="archived"]::before {
+  background: transparent;
+  border: 1.5px solid var(--text-quaternary);
+}
+
+/* =============================================
    Actions
    ============================================= */
 .item-actions,

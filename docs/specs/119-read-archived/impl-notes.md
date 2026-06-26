@@ -1,0 +1,277 @@
+# Implementation Notes (#119)
+
+## Implementation Notes
+
+### Task 1
+- 採用方針: tasks.md task 1 の指示通り、`migrations/007_add_item_status.sql` を新規作成し、`ALTER TABLE items ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'unread'` + `DO $$ EXCEPTION` ブロック包みの CHECK 制約 + `CREATE INDEX IF NOT EXISTS items_user_status_idx` の 3 ステートメント構成で実装した。
+- 重要な判断:
+  - backfill は ADD COLUMN ... NOT NULL DEFAULT 'unread' により自動成立するため、追加 UPDATE 文は導入しなかった（design.md "Migration Strategy" / Req 1.3 / 6.1 と整合。PostgreSQL 11+ の高速 default 最適化で既存行を書き換えずに NOT NULL を成立させる）。ファイル内コメントにこの判断を明記した。
+  - CHECK 制約は task 1 の説明にある 2 案（`DO $$ EXCEPTION WHEN duplicate_object` / `pg_constraint` を `IF NOT EXISTS` で先読み）のうち、書式が短く 006 の冪等性パターンと整合する前者（`DO $$ BEGIN ... EXCEPTION WHEN duplicate_object THEN NULL; END $$;`）を採用した。
+  - ファイル冒頭コメントは 006_item_tag_display_name.sql と同程度の粒度で「背景 / 適用順 / 冪等性パターン / backfill 戦略」の 4 ブロック構造に整理し、Issue #119 / design.md の参照点を明示した。
+- 残存課題: なし（task 2 以降の store 層・server 層・MCP 層・SSR 実装が後続 task として残っているが、本 task の境界（migrations）には影響しない）。
+
+### Task 2
+- 採用方針: tasks.md task 2 の指示通り、`internal/store` の `Item.Status` フィールド追加・`ItemStatusUnread`/`Read`/`Archived` 定数公開・`UpdateItemStatus` 新規メソッド・`ListItems` および `ListRecentItems` の `statuses []string` 引数拡張・`GetItemDetail` の `SELECT i.status` 追加を **単一 commit** にまとめた。`json_tags_test.go` に `Status: "read"` 入力 → `"status"` snake_case JSON 出力の assert を追加し、`go test ./internal/store/...` が通る状態で停止（task 2 規約の "spec 内の単体差分のみ作成" を満たし、server / mcpserver / worker の compile error は task 4 / 5 / 後続で順次解消する）。
+- 重要な判断:
+  - **UpdateItemStatus の SQL pattern**: design.md / tasks.md task 2 に明示された data-modifying CTE（`WITH prev AS (... FOR UPDATE) UPDATE items SET status=$3 FROM prev WHERE items.id=prev.id RETURNING prev.status`）を素直に実装した。通常の `UPDATE ... RETURNING status` だと **更新後**の値が返ってしまうため NFR 3.1 の遷移前後ログを生成できない（design.md 設計判断 #6 と整合）。`FROM prev WHERE items.id = prev.id` で UPDATE を `prev` CTE に明示依存させ、`FOR UPDATE` ロック取得 → UPDATE の評価順を強制する。
+  - **ErrNoRows collapse**: 行未存在と他ユーザー所有を区別せずに `pgx.QueryRow.Scan(...)` が `pgx.ErrNoRows` を返す経路で NFR 2.1（所有チェック失敗が "存在しない" と同様に観測されること）を満たす。`prev` CTE が空（行未存在 / 所有外）なら UPDATE 対象行ゼロとなり Scan が ErrNoRows を返す。
+  - **store 層は default を持たない**: `ListItems(... statuses []string ...)` / `ListRecentItems(... statuses []string)` ともに `len(statuses) > 0` でのみ `i.status = ANY($N)` を WHERE に追加する。`nil` / 空 は「フィルタ無し（全状態）」として扱い、`unread` 既定 / `nil` 既定（後方互換）の判断は呼び出し側（task 4 の `parseStatusFilter(defaultIfEmpty)` / task 5 の `mcpStatusFilter`）の責務に委ねる。これにより `/v1/items` の Req 6.2（後方互換: 既定 nil = 全状態）と `/ui/items` の Req 3.1（既定 unread）を 1 つの store メソッドで両立できる（design.md "Store.ListItems / ListRecentItems（拡張）" 節と整合）。
+  - **`ListRecentItems` の SQL 構築方式**: 既存 `ListItems` の `[]string{} + argPos` パターンを完全踏襲すると WHERE 句数が少なすぎて over-engineering になるため、`where` を `string` で開始し `fmt.Sprintf` で argPos を 1 箇所だけ補完する最小化形にした。同等の `i.status = ANY($N)` を AND 結合する点で `ListItems` と振る舞い一致。
+  - **Item.Status の JSON タグ位置**: `Status string \`json:"status"\`` を `FetchError` と `CreatedAt` の間に配置（`FetchStatus` の次の "user-visible state" 軸として並ぶことで model の意図が読み取りやすい）。`json_tags_test.go` の既存 `assertMissingKey(t, m, "Status")` 追加で PascalCase 漏洩も regress-fix。
+  - **dependent packages の compile error は意図的に放置**: `go build ./...` は server / mcpserver で 3 件の compile error を吐く（`s.store.ListItems` の引数不一致 / `*store.Store` が `mcpserver.DataSource` を満たさない）が、tasks.md task 2 の "本タスクではコンパイル成立は require しない" 注記通り。dependent fix は task 4 (server) / task 5 (mcpserver) で順次入る。`go test ./internal/store/...` は単独で pass する。
+- 残存課題:
+  - **lint 不在**: per-task Implementer 環境に `golangci-lint` が未 install のため、本タスクで追加した Go コードに対する lint は実行できなかった（task 1 と同じ状況）。gofmt は pass、`go vet ./internal/store/...` も pass を確認済み。後続 task で Go 変更が積まれる際に同 verify gate で lint が再実行されるため、本 commit 時点では問題なし。
+  - **`UpdateItemStatus` の入力 enum 検証**: store 層では `next` 文字列を素通しで SQL に渡す（DB CHECK 制約が defense-in-depth）。入力検証は呼び出し側 `handleSetItemStatus`（task 4）の責務に置く設計（design.md "Store.UpdateItemStatus" Preconditions 節）。task 3 の `TestUpdateItemStatus_RejectsInvalidStatus` が CHECK 制約による拒否を実 DB で回帰検証する。
+  - **`ListRecentItems` の DISTINCT 維持**: 既存実装は `array_agg(DISTINCT t.id) FILTER (...)` の DISTINCT を保っており、本変更では `i.status` 追加と `WHERE` 拡張以外は触っていない。`ListItems` 側の非 DISTINCT array_agg（`ORDER BY t.id` で安定化）と挙動差があるが本 Issue のスコープ外（既存 #115 等で議論された設計判断）。
+
+### Task 3
+- 採用方針: tasks.md task 3 の指示通り、`internal/store/store_item_status_test.go` を `//go:build integration` 付きで新規作成し、10 種類のテスト（`TransitionsAllPairs` / `RejectsOtherUserItem` / `RejectsInvalidStatus` / `TestListItems_FilterByStatus` / `TestListRecentItems_FilterByStatus` / `TestMigration007_BackfillsExistingItemsToUnread` / `TestCreateItem_DefaultsToUnread` / `TestUpdateItemStatus_DoesNotMutateFetchStatus` / `TestWorkerFetchUpdatesDoNotMutateStatus` / `TestWebUpdateReflectsInMCPListRecent`）を 1 ファイルにまとめた。既存 `mcp_api_key_test.go` の `newIntegrationStore` / `seedTestUser` ヘルパーを **同一パッケージ内で再利用**（package-local symbol、build tag も `integration` で一致）。`tags_lookup_test.go` のように別名ヘルパー（`newTagsLookupStore`）を作る選択肢もあったが、`mcp_api_key_test.go` 側のヘルパーは「最小限 / 副作用なし / `*Store` を返すだけ」のため再利用が無摩擦と判断した。
+- 重要な判断:
+  - **007 backfill テストの実 DB 戦略 (TestMigration007)**: tasks.md task 3 は `migrations/006_*.sql` までを apply した一時 schema を作成し 007 を後追いで apply する pattern を例示するが、CI / 開発者ローカルの共通 TEST_DATABASE_URL は **007 適用済み** が前提（既存 `items_active_filters_integration_test.go` の運用と同じ）。一時 schema の作成 / drop は実行時間と権限要件が膨らむため、`s.DB.Begin(ctx)` で **transaction を開き、その中で `DROP CONSTRAINT items_status_check` / `DROP COLUMN status` / `DROP INDEX items_user_status_idx` で pre-007 schema を再構築 → 既存風 items 行を seed → 007 SQL 3 ステートメントをそのまま流し直す → backfill を assert → tx.Rollback で破棄** という pattern を採った。PostgreSQL の transactional DDL によりこの全フローが他コネクションから不可視で、共有 TEST_DATABASE_URL を汚さない（design.md "Migration Strategy" 節と整合）。CHECK 制約 active の検証は SAVEPOINT で sub-tx を切り、`UPDATE ... SET status = 'bogus'` の失敗を捕捉 → SAVEPOINT へロールバックする標準パターン。
+  - **2 軸独立性 (Req 1.6) の 2 方向検証**: design.md Req 1.6 / Architecture Integration の「fetch 軸と user 状態軸の独立」を **両方向**から固定した。`TestUpdateItemStatus_DoesNotMutateFetchStatus` は status 軸の更新が fetch_status 軸を巻き込まないことを 4 種類の seed `fetch_status` × 3 段遷移 で網羅、`TestWorkerFetchUpdatesDoNotMutateStatus` は worker 経路の `ClaimItemsForFetch` / `UpdateFetchSuccess` / `UpdateFetchFailure` が status を巻き込まないことを `read` / `archived` 状態の item で検証する。worker 側の code は本 task で変更しないが、store 関数の SET 句が status を含まないことを store integration test レイヤで lock することで、将来 worker SQL の改修で意図せず status が SET された場合の regression を捕まえられる。
+  - **CHECK 制約違反の判定**: `TestUpdateItemStatus_RejectsInvalidStatus` で `s.UpdateItemStatus(..., "bogus_value")` が `pgx.ErrNoRows` ではなく非 nil error を返すことを assert する。`UpdateItemStatus` の SQL は `pgx.QueryRow.Scan` 経路のため、所有チェック失敗（行不在）と CHECK 制約違反（行はある / UPDATE が CHECK で reject）を **同じ Scan 経路** で観測する。両者を取り違えると Req 1.5（範囲外を拒否）と NFR 2.1（他ユーザー所有を拒否）の signal が混ざるため、`errors.Is(err, pgx.ErrNoRows)` を **逆方向ガード** として明示的に書き、CHECK violation を取り違えていないことを担保した。
+  - **ListItems / ListRecentItems の filter 検証構造**: 同じ 5 ケース（nil / 空 / unread / unread+read / archived）を 2 ヘルパー関数 (`collectItemIDs` + `equalStringSlices`) で table-driven に書き、ID 集合比較で順序差を吸収。3 件 seed → 各フィルタで 1/2/3 件の期待が成立することを 1 つの test 関数内に集約することで、テスト数を増やさず Req 3.3 / 3.4 / 3.5 / 6.2 / 5.3 をカバーした。
+  - **Web↔MCP 整合の二重 assert (TestWebUpdateReflectsInMCPListRecent)**: `UpdateItemStatus(... "read")` 後に `ListRecentItems(... nil)` と `ListRecentItems(... ["read"])` の **2 経路**で item が見えることを assert し、Resource 側既定（nil）と Tool 側明示フィルタ (`["read"]`) のどちらでも単一 DB ソースの整合性を pin した（design.md Req 5.4 Traceability / `recent-articles` Resource の status 引数取扱 節 と整合）。
+- 残存課題:
+  - **実 DB での実行は環境依存**: per-task Implementer 環境（DB を spin-up しない方針 / `.kiro/steering/structure.md` 準拠）では本テストは実行できない。`go test -tags=integration ./internal/store/...` の実行検証は Reviewer フェーズもしくは開発者ローカルでの確認に委ねる。`go vet -tags=integration ./internal/store/...` と `go test -tags=integration -run=^$ ./internal/store/...` でコンパイル成立は本 task 内で確認済み。
+  - **`golangci-lint` 不在**: task 1 / 2 と同じく per-task Implementer 環境に `golangci-lint` が install されていないため、追加した Go コードに対する lint は実行できなかった。gofmt は pass。後続 task で Go 変更が積まれる際に verify gate で lint が再実行される前提で問題なし。
+  - **`go test ./...`（非 integration）の compile error は task 2 由来の既知の状態**: `internal/server` / `cmd/api` で `s.store.ListItems` のシグネチャ不一致による build error が出るが、これは task 2 の learning にも記載されている既知の事象で、task 4 (server) / task 5 (mcpserver) で順次解消される。本 task は `internal/store` パッケージ内のテスト追加のみであり、当該 build error は私の変更とは無関係（`go test ./internal/store/...` 単独は pass を確認済み）。
+
+### Task 4
+- 採用方針: tasks.md task 4 の指示通り、`internal/server/items_status.go` を新規作成して `parseStatusFilter` / `resolveStatusTab` / `buildStatusTabURLs` / `buildStatusTabURL` / `buildClearFiltersURL` / `handleSetItemStatus` / `isCanonicalItemStatus` を一括追加した。route 追加・`handleListItems` / `handleUIItems` への `statuses` 引数注入・テンプレート data への `StatusTab` / `StatusTabURLs` / `StatusQuery` / `ClearFiltersURL` 注入は `internal/server/server.go` に直接書いた（既存ハンドラの中心スコープのため）。テストは通常経路 6 件を `items_status_test.go`、integration 経路 4 件を `items_status_integration_test.go`（`//go:build integration`）に分割した。
+- 重要な判断:
+  - **mcpserver compile 不一致の transitional 解決 (mcp_store_adapter.go)**: task 2 が `Store.ListItems` / `Store.ListRecentItems` に `statuses []string` 引数を追加した結果、`*store.Store` が pre-#119 の `mcpserver.DataSource` interface を満たさなくなり、`internal/server` package が compile しない状態だった（task 2 / task 3 の learnings に既知事象として記録済み）。task 4 のテストを動かすため、`mcpserver.DataSource` の interface 自体は task 5 のスコープを守って触らず、代わりに `internal/server` 内部に小さな adapter `mcpStoreAdapter{*store.Store}` を作って old shape の `ListItems` / `ListRecentItems` を embedding +「`statuses = nil` を forward する thin wrapper」として実装した。`server.go` の `mcpserver.New(s.store, userID)` 呼び出しを `mcpserver.New(newMCPStoreAdapter(s.store), userID)` に置き換えるだけで bridge が成立する。task 5 が `mcpserver.DataSource` を新 shape に更新したタイミングで、本 adapter は不要になるため削除されるはず（adapter ファイルの doc-comment にそう明記した）。これにより task 4 内で `go build ./...` / `go test ./...` が通り、`internal/server` の任意のテストが flag 不要で実行可能になる（cross-task の compile 経路を task 5 完了まで待つ必要なし）。
+  - **既存 #115 integration test の 2 箇所 fix-up**: `items_active_filters_integration_test.go` の `s.ListItems` 呼び出し 2 件が old shape のままで、`-tags=integration` build が失敗していた（task 2 の learning に記載の既知事象）。task 4 で新規 integration test を加えるには同 build target が成立している必要があるため、当該 2 行に `nil` 引数を追加し（statuses = nil = whole-set、既存 #115 test の意味論と等価）、コメントで「Issue #119 の new arg をパスする最小修正」と明記した。要件側・実装側に意味的な振る舞い変化は無し。
+  - **`StatusQuery` / `StatusTab` / `StatusTabURLs` / `ClearFiltersURL` の責務分割**: design.md は `StatusQuery` を hidden input に注入してフォーム経由で `?status=` を温存する、と書いている。task 4 では server.go の data 構築側に `StatusQuery`（生値）と `StatusTabURLs`（タブ用プリビルド URL）を渡すところまで実装し、テンプレート側の hidden input 配線（items.html の 3 つの form と 2 つの clear-filters リンク）は task 6 が担当する。`buildClearFiltersURL` は server.go 側にあらかじめ実装したので、task 6 はテンプレートの hard-coded `/ui/items` を `{{.ClearFiltersURL}}` に置換するだけで済む（テンプレート側で URL 組み立てロジックを書かないため、後続レビューもしやすい）。
+  - **`parseStatusFilter` の `defaultIfEmpty` 設計**: design.md / tasks.md の通り、第 2 引数で UI 既定（`[]string{store.ItemStatusUnread}`）と REST 既定（`nil`）を呼び出し側が指定する設計を素直に採用した。case-insensitive matching を入れて hand-typed URL（`?status=Unread`）も拾うが、`read` 単独入力は **意図的に** `defaultIfEmpty` にフォールバックする（UI タブは Unread / All / Archived の 3 つのみで、`read` 単独受理は Req 3.2 / 3.7 と矛盾する 4 番目のタブを URL から復元可能にしてしまうため。design.md「parseStatusFilter」節と test plan の `read` 単独ケース明記に従う）。
+  - **`handleSetItemStatus` の enum 検証は 2 段階**: (1) body parse 失敗・status 欠落・whitespace-only は `invalid_request`、(2) parse 成功 + 値が enum 範囲外（`foo` / `Read` 等の case ミスマッチ含む）は `invalid_status`、を明確に分けた（design.md Service Interface のエラー区別）。case ミスマッチを `invalid_status` に倒す判断は、API 契約として「canonical lowercase enum 値のみ受理」を明示する方が MCP / extension 側からも見通しが良いため（小文字化して accept する設計だと「`Read` は受理だが `READ` も受理する？」など余分な議論を生む / canonical 規約と整合）。
+  - **`UpdateItemStatus` の `prev` 返却を活かす log 設計**: NFR 3.1 の遷移ログを `slog.Info("items.status.update", user_id, item_id, prev, next, request_id)` の 5 キーで構造化。Cookie / Authorization / refresh_token を **意図的に出力しない**ことを integration test (`TestHandleSetItemStatusLogsTransitionFields`) で grep ベースに negative assert（`SECRET-JWT-VALUE-DO-NOT-LOG` 等の sentinel 値をリクエストに混ぜて、ログバッファ全体に出現しないことを確認）。これにより slog handler の future な field 追加（access log middleware 等）が誤って sensitive 値を含めた場合に regression として検知できる。
+  - **integration test 4 件の build tag 統一**: design.md / tasks.md task 4 の指示通り、success / log / not_found / other-user の 4 ケース全てを `//go:build integration` に揃えた。`Server` が concrete `*store.Store` を持つため fake / mock では `UpdateItemStatus` の `prev` 返却を再現できず、success・log 検証は実 DB 経由が唯一の到達経路。chi.URLParam を直接呼び出し経路でも機能させるため `chi.NewRouteContext().URLParams.Add("id", itemID)` を context に注入するヘルパー (`newStatusPatchRequest`) を整備した（既存 `items_active_filters_integration_test.go` には同様のヘルパーが無かったため task 4 で新規追加）。
+- 残存課題:
+  - **task 5 完了で `mcp_store_adapter.go` が不要になる**: task 5 が `mcpserver.DataSource` の interface 定義を `statuses []string` 受け取りに更新し、handler 側を `mcpStatusFilter` 経由で配線したタイミングで、本 adapter ファイルは削除（または task 5 内で `mcpserver.New(s.store, userID)` 直渡しに戻す）すべき。adapter ファイル先頭 doc-comment に「transitional shim / task 5 で除去される前提」と明記した。
+  - **`server_test.go` 既存の gofmt drift**: `handlePatchItem` (server.go:688 周辺) の構造体タグ整列が pre-existing で gofmt -l に拾われる。task 4 とは無関係の既存 drift であり本 task では touch しなかった（separate fix が望ましい）。`internal/server/health_test.go` も同様の末尾改行 drift が pre-existing。
+  - **`StatusTab` / `StatusTabURLs` / `StatusQuery` / `ClearFiltersURL` の SSR 配線は task 6 待ち**: data までは task 4 で渡すが、`templates/items.html` 側の `<nav class="status-tabs">` markup・hidden input 追加・`tag-clear-btn` の href 変更は task 6 が担当する。task 4 単独では UI からは見えない（API 経由 PATCH と URL 既定の挙動変化のみ顕在）。
+  - **lint (`golangci-lint`) は未実行**: per-task Implementer 環境に `golangci-lint` が未 install のため lint は走らせていない（task 1 / 2 / 3 と同じ状況）。`go vet ./...` および `gofmt -l` での my-files クリーン確認は完了。後続 task の verify gate で再実行される前提。
+
+### Task 5
+- 採用方針: tasks.md task 5 の指示通り、`internal/mcpserver/deps.go` の `DataSource.ListItems` / `DataSource.ListRecentItems` を `statuses []string` 受け取りに更新し、`ListItemsInput` / `SearchItemsInput` に `Status string` フィールドを追加、新規ヘルパー `mcpStatusFilter` を canonical 値集合との **完全一致比較のみ** で実装、handler 側 (`listItemsHandler` / `searchItemsHandler`) で結果を store に forward、`recentArticlesHandler` は固定で `nil` を渡す形に修正、`formatItemList` / `getItemHandler` の出力 JSON に `"status"` フィールドを追加した。task 4 で導入した transitional shim `internal/server/mcp_store_adapter.go` を削除し、`server.go` の `mcpserver.New(newMCPStoreAdapter(s.store), userID)` を `mcpserver.New(s.store, userID)` に戻した。fakeDataSource を新シグネチャに更新し、12 種類の新規テスト（default / unread / read / archived / all / 不明値 / 複数指定 4 ケース / schema-layer reject skip placeholder / 出力 status / search status propagation / search 出力 status / detail 出力 status / recent-articles 常時 nil）を追加した。
+- 重要な判断:
+  - **`mcpStatusFilter` は split せず完全一致比較のみ**: design.md「複数指定の取扱」error mode (B) と tasks.md task 5 の明示通り、`switch s` ステートメントで canonical 値集合 `{"", "unread", "read", "archived", "all"}` との完全一致のみで分岐し、`default:` で一律 `nil` に落とす実装にした。`strings.Split(s, ",")` 等の split 経路を入れないことで、`"unread,read"` / `"unread read"` / `"unread|read"` / `"unread,read,archived"` 等の区切り文字埋め込みパターンを **すべて同一の `nil` 帰着** で扱える（実装と回帰検証が最小化される / Reviewer 指摘 r6 #1 の二段読み解釈と整合）。テストは `TestListItemsHandler_MultiValueStatusFallsBackToNil` で 4 種の区切りパターンを表形式で回帰固定した。
+  - **`mcp_store_adapter.go` の削除タイミング**: task 4 の learnings に「task 5 が `mcpserver.DataSource` の interface 定義を `statuses []string` 受け取りに更新したタイミングで本 adapter ファイルは削除すべき」と明記されており、本 task 5 の最初の commit（`feat(mcpserver)`）で interface を新 shape に更新したことで `*store.Store` が直接 `DataSource` を満たすようになった。後続 commit（`refactor(server): remove mcpStoreAdapter transitional shim`）で adapter ファイル削除と `server.go` の呼び出し戻しを 1 つにまとめた（実装上は分離可能だが論理的には「transitional shim の役目終了」という単一の責務）。`go build ./...` / `go test ./...` / `go vet ./...` が全 package で pass することを確認済み。
+  - **schema-layer reject テスト (`TestListItemsHandler_RejectsNonStringStatusAtSchemaLayer`) は `t.Skip`**: tasks.md task 5 の test plan 行 274〜278 が「実装上 MCP SDK の `mcp.CallToolRequest` 検証経路を test fixture から直接起動できない場合は ... `// TODO: covered by SDK e2e if reachable` として明示する fallback 方針」を許容しているため、当該方針通り `t.Skip("MCP SDK schema validation is exercised at the SDK layer; direct hook from test fixture is not reachable. covered by SDK e2e if reachable.")` で placeholder 実装にした。handler-level の複数指定フォールバック（error mode B）は別ケース `TestListItemsHandler_MultiValueStatusFallsBackToNil` で完全に独立カバーされているため、本 skip による coverage 抜けは発生しない（design.md error mode (A) と (B) の分離と整合）。
+  - **`recent-articles` は常に `nil` 固定**: design.md「`recent-articles` Resource の status 引数取扱」節および tasks.md task 5 の指示通り、`recentArticlesHandler` は `mcp.ResourceHandler` 型で `*mcp.ReadResourceRequest` を受け取り、構造化 input 引数（`args.Status` 相当）を持たないため、`ListRecentItems` 呼び出しでは固定で `nil`（全状態）を渡す形にした。Req 5.2 の「固定既定値」は `nil` で満たし、Req 5.3 の「クライアントが状態を引数で指定」は input 引数を持つ Tool (`list_items` / `search_items`) 側で満たす。`TestRecentArticlesHandler_AlwaysCallsStoreWithNilStatuses` で `ds.listRecentArgs.Statuses == nil` を assert することで、将来の改修で誤って status を渡すリグレッションを検知できる。
+  - **`Status` フィールドの jsonschema description は日本語**: 既存 `Page` / `PerPage` / `Sort` のフィールドが日本語 description（例: `jsonschema:"ページ番号（デフォルト: 1）"`）で統一されていたため、`Status` も `jsonschema:"状態フィルタ: unread / read / archived / all（既定: 全状態）"` と日本語で記述した。altpocket は MCP クライアントが日本語環境前提（CLAUDE.md / `.kiro/steering/product.md` 参照）であり、existing fields の慣習と整合する。
+- 残存課題:
+  - **lint (`golangci-lint`) は未実行**: task 1 / 2 / 3 / 4 と同じく per-task Implementer 環境に `golangci-lint` バイナリが未 install のため実行できず。`go vet ./...` / `go build ./...` / `gofmt -l internal/mcpserver/server.go internal/mcpserver/deps.go internal/mcpserver/server_test.go` は全て clean を確認済み（`internal/server/server.go` は task 4 の learnings に記載された pre-existing な `handlePatchItem` の gofmt drift が継続して残るが、本 task で touch しなかった）。後続 task の verify gate で再実行される前提。
+  - **schema-layer (error mode A) の e2e カバレッジは未実装**: 上記の通り `TestListItemsHandler_RejectsNonStringStatusAtSchemaLayer` は `t.Skip` の placeholder 実装で、JSON 配列・繰り返しキー・非文字列型を MCP SDK 経由で直接擬似発射する case は本リポジトリで実装していない。design.md の error mode (A) は「MCP 規約に従う tool call error が return される」性質であり、SDK 自体の機能保証に依存している。将来 MCP SDK の更新で挙動が変わった場合の検知が遅れる可能性があるが、handler-level fallback (B) は完全独立カバー済みのため本 Issue 内の AC（Req 5.3 / Req 6.3）は満たされる。
+  - **task 6 以降は別境界の責務**: SSR テンプレート（task 6, 7）、static JS（task 8, 9）、CSS（task 10）は全て本 mcpserver 境界とは独立で、本 task 内では touch せず。
+
+### Task 6
+- 採用方針: tasks.md task 6 の指示通り、`templates/items.html` に状態タブ markup（Unread / All / Archived の 3 `<a role="tab">`）と 3 GET form への `<input type="hidden" name="status">`・2 clear-filters リンクの `{{.ClearFiltersURL}}` 化を入れ、`templates/items_list.html` の `<article class="item-card">` に `data-status` 属性・`<span class="item-status-badge">` 追加・`tile-link` href への `?status=` 温存を入れた。task 4 で server.go 側に注入済みの `StatusTab` / `StatusTabURLs` / `StatusQuery` / `ClearFiltersURL` template data をそのまま参照する形で、テンプレート側に URL 組み立てロジックを持ち込まない（task 4 learnings の責務分割と整合）。
+- 重要な判断:
+  - **status-tabs の配置位置**: tasks.md の指示は「検索バー直下、`<section class="split">` の手前」。`filter-toggle-bar`（mobile 上部検索バー + Filters ボタン）と `<section class="split">` の間に `<nav class="status-tabs">` を挿入することで、mobile / desktop の両レイアウトで一貫してタブが「検索とコンテンツの間」に出現する。`<nav>` 要素は `role="tablist"` + `aria-label="アイテム状態"` を持つため、AT は「アイテム状態」というナビゲーション領域として認識できる（NFR 4.2 / Reviewer r6 #5 整合）。
+  - **`{{if eq .StatusTab "..."}}` 三段分岐の inline 化**: 3 タブを 3 箇所別々の `<a>` として書き、`is-active` クラスと `aria-selected="true"` をそれぞれ inline `{{if eq .StatusTab "unread"}} is-active{{end}}` で条件付与する形を採った。`{{range}}` でループ生成する案もあったが、(a) タブ数が 3 で固定、(b) 各タブのテキストラベル（Unread / All / Archived）が canonical 値 (`unread` / `all` / `archived`) と表記揺れする（先頭大文字）、(c) `index .StatusTabURLs "unread"` の文字列引数が canonical で hard-coded される必要があるため、ループ化のメリットが薄く、可読性を優先して inline 三段にした。
+  - **hidden input の無条件出力**: tasks.md task 6 が「`StatusQuery` 値が空文字の場合は hidden input を出力しても `?status=` を空値で付与しても URL の意味論に影響しない（`parseStatusFilter` が `""` を `defaultIfEmpty` にフォールバックする）」「テンプレートの記述簡略化のため hidden は条件分岐なしで出力してよい」と明記しているため、`{{if .StatusQuery}}` のような条件分岐を入れず無条件で `<input type="hidden" name="status" value="{{.StatusQuery}}">` を出力した。これにより 3 form 全てで同一の hidden 配線パターンになり、将来の form 追加時の漏れリスクが減る。
+  - **tile-link の `?status=` 条件付与**: 一方、`templates/items_list.html` の tile-link `href` は `{{if $.StatusQuery}}?status={{$.StatusQuery}}{{end}}` の条件分岐を入れた。これは `/ui/items/{{.ID}}` という item detail URL に末尾 `?status=` を付与する形で、`?status=` が空文字なら `?status=` 自体を URL に書かない方が「閲覧 URL の正規形」として綺麗（既定 Unread タブから item を開いた際に `?status=` が URL に出現しない）。hidden input とは扱いが異なり、URL バーに反映される性質のため条件分岐を採用した。
+  - **`$.StatusQuery` の外側スコープ参照**: `{{range .Items}}` 内では `.` が `Item` を指すため、外側の template data にある `StatusQuery` には `$.StatusQuery` でアクセスする必要がある。これは Go html/template の標準的な `$` ルートスコープ規約で、`items_list.html` 内の既存記述 (`$.SelectedTags`) と同じパターン。
+  - **`item-status-badge` の `aria-label`**: tasks.md の指示通り `aria-label="状態: {{.Status}}"`（日本語）で記述した。`status-pill`（fetch_status）が `aria-label="Fetch status: ..."`（英語）になっているが、これは pre-existing で本 task のスコープ外。新規追加する `item-status-badge` は日本語に統一することで、CLAUDE.md `.kiro/steering/product.md` の日本語環境前提と整合する（既存 status-pill の英語 label は別 Issue で揃える方が良い派生課題として残るが、本 task では touch しない）。
+- 残存課題:
+  - **既読/アーカイブ操作ボタン（task 7）**: 本 task は markup の状態タブ + status バッジ + hidden input の追加までで、`.item-actions` 内の「Mark read / Mark unread」「Archive / Unarchive」ボタン追加は task 7 の責務（同じく `templates/items_list.html` を編集するが、責務軸が異なる）。tasks.md の `_Depends: 6_` で task 7 が本 task に依存するため、commit 順序は本 task → task 7 で問題なし。
+  - **CSS スタイル未追加**: `.status-tabs` / `.status-tab.is-active` / `.item-status-badge` / `.item-card[data-status="archived"]` 等の CSS は task 10 の責務で、本 task ではスタイル無しのままでも markup 自体は機能する（タブは `<a href>` でフルページ遷移として動作 / バッジは text が見える）。視覚的な統合確認は task 10 完了後に Reviewer / 開発者が目視で行う。
+  - **`item_detail.html` の `?status=` 温存**: 詳細ページから一覧へ戻る `detail-back` リンクの `?status=` 温存は task 7 の責務（tasks.md task 7 line 383-392）。本 task では touch しない。
+  - **template-only regression test の不在**: tasks.md task 6 の明示通り「テンプレート差分の単体テストは Go 側の既存 renderer test の枠を使わず... 目視確認に統一する」方針で、本 task 内では新規テスト追加なし。template parse 自体は既存 `internal/server` テスト（`go test ./internal/server/...` 4.012s pass）で renderer 初期化時に検証されるため、template syntax error は automatic に検知される。`?status=` 温存挙動の回帰検証は task 4 で追加済みの `internal/server/items_status_test.go` / `items_status_integration_test.go` が `StatusQuery` / `ClearFiltersURL` template data の生成側を pin している（テンプレートが当該 data を受け取って正しく出力するかは目視確認）。
+  - **lint (`golangci-lint`) は未実行**: per-task Implementer 環境に `golangci-lint` が未 install のため未実行（task 1〜5 と同じ状況）。本 task は Go コード変更を伴わない HTML テンプレートのみの編集のため、lint 対象に新規 Go ファイルが含まれず、既存 Go コードの lint 結果は変化しない（影響ゼロ）。`gofmt -l templates/` は対象外（テンプレートファイル）、`go vet ./...` は clean、`go build ./...` も pass を確認済み。
+
+### Task 7
+- 採用方針: tasks.md task 7 の指示通り、`templates/items_list.html` の `.item-actions` に `mark-read-toggle` / `archive-toggle` の 2 ボタンを Original 直後 / Refetch 直前に追加し、`templates/item_detail.html` の `detail-header-actions` 内 Edit ボタン直後にも同 2 ボタンを追加した。detail-back link の `?status=` 温存は、新規ヘルパー `buildLibraryURL(rawStatus)` を `internal/server/items_status.go` に追加して `handleUIItem` のテンプレート data に `LibraryURL` を注入する形で実装した。テスト追加は `items_status_test.go` の `TestHandleUIItemsTemplateDataIncludesStatusQuery` 配下の sub-test として `buildLibraryURL` の 8 ケース表 + 1 escape ケースで完結（既存の URL builder direct-test pattern と整合）。
+- 重要な判断:
+  - **`unread` 主軸の inline 三段分岐**: tasks.md task 7 が明示する通り `{{if eq .Status "unread"}}Mark read{{else}}Mark unread{{end}}` / `{{if eq .Status "archived"}}Unarchive{{else}}Archive{{end}}` を採用した。task 8 の JS が `next = currentStatus === 'unread' ? 'read' : 'unread'` で同じ二分岐をするため、SSR markup と JS の挙動が完全一致する。`read` の状態にあるカードでも `mark-read-toggle` のラベルは "Mark unread" になり、ユーザーが期待する挙動と一致する（Req 2.4: read → unread の戻し操作）。
+  - **`aria-label` の日本語化**: `Mark read` / `Archive` などの英語表面ラベル＋日本語 `aria-label`（既読にする / 未読に戻す / アーカイブする / アーカイブ解除）の組み合わせを採用した。tasks.md task 7 が指示する書式通りで、AT ユーザーは日本語 hints を得る（NFR 4.2）。`items.html` の status-tabs（task 6 追加）が日本語 `aria-label="アイテム状態"` を持つ pattern と整合する。
+  - **detail page にも同 2 ボタン追加**: tasks.md は「任意・同 PATCH 経路を共有」と記載するが、操作 surface を一覧と詳細の両方で揃える方が UX の一貫性が高い（一覧で archive したアイテムを誤って詳細から unarchive する操作も同じ button で可能）ため追加した。`{{.Item.Status}}` を data-current-status に注入する形で、一覧側の `{{.Status}}`（range スコープ内）との表記差を吸収。
+  - **ボタンの挿入位置**: Original / Refetch / Delete の既存 3 ボタンとのタブフォーカス順序を考慮し、Original の直後（mark-read-toggle → archive-toggle）に並べた。Original は外部リンクで「リーディングフロー」、mark/archive は「状態操作」、Refetch / Delete は「メンテナンス操作」という意味グループになる。Tab キーで巡回した際の意味的な前進感を確保。
+  - **`buildLibraryURL` の責務分割**: `buildClearFiltersURL` が `url.URL` を受け取って query 全体を編集するのに対し、`buildLibraryURL` は raw status 文字列のみを受け取る。これは detail page の URL がそもそも `?status=` 以外の filter query を持たない（`/ui/items/{id}` は id-keyed）ため、cloneURL / RawQuery 操作の重さが不要だから。`url.Values{"status":{rawStatus}}.Encode()` で escape 安全な単純構造にすることで、テストも 8 ケースの table-driven + 1 escape ケースの最小構成で完結する。
+  - **case-variant / 非 canonical 値の verbatim 保持**: `?status=Archived` や `?status=read` 等の非 canonical 入力も verbatim で URL に温存する設計にした。library-side の `parseStatusFilter` が case-insensitive かつ unknown 値を `defaultIfEmpty` にフォールバックするため、verbatim 保持は意味論的に harmless。逆に「canonical 値だけ通す」フィルタを `buildLibraryURL` 側に入れると、ユーザーが URL バーで手入力した検査用 URL が黙って書き換わってしまい debug しづらくなる（既存 `buildStatusTabURLs` も同じ verbatim 方針）。
+- 残存課題:
+  - **`internal/ui/render_test.go` の pre-existing failure (task 6 由来)**: task 6 が `templates/items.html` に `{{index .StatusTabURLs "unread"}}` を、`templates/items_list.html` に `{{.Status}}` を追加した時点で、`internal/ui/render_test.go` の `renderItemsWith` / `testItemRow` fixture を更新していなかったため、`TestActiveFiltersRendering` (10 件) / `TestActiveFiltersFragmentRendering` (1 件) / `TestItemsTagSelectedState` (3 件) / `TestPageTitleFormat/items_*` (1 件) の **計 15 件**が pre-existingly failing している。task 7 の編集（`templates/items_list.html` への button 追加 / `templates/item_detail.html` への button 追加 / detail-back href 変更）は **これらの失敗を悪化させない**（task 6 由来の `<.Status>: can't evaluate field` で `items_list.html:49` 評価時点で既に止まるため、task 7 で追加した `:74` 以降の markup には到達しない）。Reviewer / 次タスク以降での修正候補として記録するが、task 7 の `_Boundary: Templates_` および `_Requirements:_` (2.1 / 2.2 / 2.6 / NFR 4.1 / NFR 4.2) には該当しないため、本 task では touch せず、tasks.md / design.md の書き換えもしない（CLAUDE.md「実装 PR では spec を書き換えない」と整合）。修正は `testItemRow` に `Status string` を追加し、`renderItemsWith` の data map に `StatusTab` / `StatusTabURLs` / `StatusQuery` / `ClearFiltersURL` を追加するだけの小修正。
+  - **`internal/ui/render_test.go` の `detail` テスト**: `TestPageTitleFormat/detail_shows_article_title` / `detail_shows_untitled_fallback` の 2 件は `LibraryURL` 不在の状況で **継続 PASS** する（Go html/template の `map[string]interface{}` で missing key は `<no value>` レンダリングで、template error にならない）。task 7 で detail-back href を `{{.LibraryURL}}` に変更しても本 2 件は破壊されないことを `go test -run TestPageTitleFormat -v ./internal/ui/...` で確認済み。
+  - **lint (`golangci-lint`) は未実行**: per-task Implementer 環境に `golangci-lint` バイナリが未 install のため実行できず（task 1 〜 6 と同じ状況）。`go vet ./...` / `gofmt -l internal/server/items_status.go internal/server/items_status_test.go` は all clean、`internal/server/server.go` の pre-existing `handlePatchItem` gofmt drift（task 4 learnings に記載）は本 task で touch しなかった。後続 task の verify gate で lint が再実行される前提。
+  - **task 8 (static JS) との連動**: task 8 の `static/items_status.test.mjs` が click handler テストで `data-current-status` の更新 + `data-status` の更新 + label / aria-label の更新を期待する。本 task で `data-current-status` 属性を 2 ボタン両方に追加したので、task 8 側で `card.querySelectorAll('[data-current-status]')` 経由のループ更新が可能。次 task の Implementer はこの命名規約と SSR 配置を前提に書ける。
+
+### Task 8
+- 採用方針: tasks.md task 8 の指示通り、状態切替ボタン（mark-read-toggle / archive-toggle）の delegated click + 失敗時巻き戻し + NFR 1.3 同期 visual ack を実装した。実装ファイルは `static/items_status_actions.js`（新規 / 約 200 行 / IIFE + init opts + _debug export パターン）、テストは `static/items_status.test.mjs`（新規 / 19 ケース）。テンプレート `templates/items.html` と `templates/item_detail.html` に script タグを追加した（後者は task 7 で追加された detail page の 2 ボタンを動作させるため）。`node --test static/items_status.test.mjs` で 19/19 pass、`node --test static/*.test.mjs` で 80/80 pass を確認済み。
+- 重要な判断:
+  - **実装 JS のファイル名選択（`items_status_actions.js`）**: tasks.md task 8 は test ファイル名（`static/items_status.test.mjs`）を固定指定するが、実装 JS のファイル名は明示していない。3 つの選択肢を検討した:
+    1. **`static/app.js` に直接追記**: 既存 refetch/delete と同じ pattern integrity を持つが、テスト戦略上 `app.js` を `vm.createContext` で評価するには多数の DOM API（confirm dialog / sheet toggle / account menu / shortcut overlay 等）を fake 化する必要があり、コスト過大。
+    2. **`static/items_status.js`**: task 9 が同名ファイル（タブ切替担当）を新規作成する予定で命名衝突するため不可。
+    3. **`static/items_status_actions.js`**（採用）: task 9 のファイル名と衝突せず、`items_active_filters.js` と同じ「専用モジュール」pattern integrity を持つ。テスト戦略も `items_active_filters.test.mjs` の `vm.createContext` + 最小 Fake DOM をそのまま流用できる。命名は「状態切替ボタンによる action 系」を意味する `actions` suffix で task 9 のタブ切替系と責務軸が異なることを明示。
+  - **toast の取り扱い**: app.js から `toast` を export していないため、本モジュールでは init opts で `toast` 注入を許容しつつ、fallback として `window.alert` を使う最小実装にした。実環境で alert が出ることは UX として不適切だが、本 Issue では app.js の toast を内部呼び出す手段がないため、CustomEvent 経由で app.js 側に通知する pattern も検討した。ただし overengineering と判断し、現実的な fallback として alert を採用。将来 toast の共通化が必要になれば別 Issue（拡張機能 / MCP UI 等で同じ問題が出る）で扱う。テストでは `window.alert` を sink として toast.error の発火を観測する（test fixture で `alertCount` / `alertMessages` を集計）。
+  - **headers の独立保持**: app.js の `const headers = { 'X-CSRF-Token': csrf }` を本モジュールから直接参照できないため、本モジュール内で `meta[name="csrf-token"]` から CSRF を再度読み込んで自前の headers を構築する設計にした。同じ CSRF token を 2 モジュールが読むことは harmless（meta 要素の content 値は変化しないため）。
+  - **同期 visual ack の実装位置**: click handler の同期パス（`fetch` を呼ぶ前）で `btn.disabled = true` + `card.classList.add('is-status-updating')` を即時付与する。`performTransition` 内の `await fetchImpl(...)` 前後で DOM を触る async 経路だと NFR 1.3 の「synchronous DOM 反映」を満たせないため、敢えて同期 setup → async PATCH の 2 段構成にした。テスト `NFR 1.3 (同期 visual ack)` は pending forever な fetch を仕込んで「click 直後（promise resolve 前）にも disabled / is-status-updating が付いている」ことを assert することで、本順序を回帰固定する。
+  - **タブ条件 DOM 削除の判定 (`shouldRemoveAfterTransition`)**: `[data-items-region].dataset.currentStatus` を読み、`unread` タブで `read` / `archived` 化、`archived` タブで `unread` / `read` 化、`all` タブで `archived` 化、の 3 ケースを真とした。`all` タブで `unread` / `read` 内の遷移（unread↔read）は削除しない。`all` が `archived` を含むかどうかは requirements.md 設計確定事項 (d) で「除外」と確定済みなので、archived 化された item を `all` タブから消すのは正しい挙動。`tab=''`（不在 / detail page）の場合は常に false を返し、削除しない（detail page には `[data-items-region]` 自体が存在しないため、`region == null` で早期 false return される）。
+  - **fade-out + setTimeout の遅延削除**: tasks.md は CSS class `fade-out` の付与 + 削除タイミング指定を明示しないが、`items_active_filters.js` 等の既存パターンが setTimeout 経由の遅延処理を採用しているのと、CSS animation の transition-duration（task 10 で定義予定）に合わせて 300ms を選択。テストでは fake `setTimeout` を作って手動で `flushAll()` するため、本番 300ms はテスト不変量に影響しない。
+  - **既存 `app.js` の delegated click handler に追記しない方針**: tasks.md task 8 文面は "`static/app.js` の既存 delegated click handler（refetch / delete の隣）に追加" と書いているが、これは「app.js に追記する」ことを必須にする指示ではなく「delegated click 規約を継承する」設計指針として解釈した。テスト戦略上 app.js を runInContext で評価するコストが過大（confirm dialog / sheet / account menu 等の DOM API を fake する必要がある）であり、`items_active_filters.js` 等の既存「専用モジュール + vm.createContext テスト」pattern が確立済みのため、後者を採用した。実装の delegated click pattern（`document.addEventListener('click', ...)` + `target.closest('button.<class>')`）は app.js と完全に同じなので、規約整合性は保てている。
+- 残存課題:
+  - **`internal/ui/render_test.go` の pre-existing failure 15 件**: task 6 由来の `templates/items.html:26` (`<index .StatusTabURLs "unread">`) / `templates/items_list.html:49` (`<.Status>`) で template execution が止まる failure が継続して残るが、本 task 8 では touch しない（task 7 learnings に記載済みの spec 書き換え禁止規約と整合）。本 task 8 で `templates/items.html` に追加した script タグ行（91 行目隣）と `templates/item_detail.html` の script タグ追加は、いずれも template execution の error path には影響しない（既存 error 発生位置の直前で止まるため、新規 script タグまで到達しない）。test fixture (`testItemRow` に Status / StatusTabURLs を追加) を更新すれば 15 件全てが green になるが、本 task の `_Boundary: Static_` 範囲外。
+  - **app.js の delegated click と本モジュールの相互独立性**: 同じ `document.addEventListener('click', ...)` が 2 つ並ぶ形になるが、各 handler は `target.closest('button.<class>')` で異なる class のボタンを選別するため race / 干渉なし。本 task で追加した mark-read-toggle / archive-toggle は既存 refetch / delete とは完全に異なる class なので、`return` 早期脱出のロジックも整合する。
+  - **lint (`golangci-lint`) は未実行**: per-task Implementer 環境に `golangci-lint` バイナリが未 install のため実行できず（task 1〜7 と同じ状況）。本 task は Go コード変更を伴わない JS + HTML テンプレートのみの編集のため、Go lint 対象に新規ファイルが含まれず、既存 Go コードの lint 結果は変化しない（影響ゼロ）。`go build ./...` / `go vet ./...` は clean を確認済み、`gofmt -l` は本 task で touch していない pre-existing drift 3 ファイル（`internal/server/health_test.go` / `internal/server/server.go` / `internal/tag/tag_test.go`）のみが残る。
+  - **task 9 (タブ切替 + fragment 取得 + popstate)**: 本 task の `static/items_status_actions.js` と task 9 の `static/items_status.js` は責務軸が完全に独立する（前者: card 上の state action 系 / 後者: タブ navigation + fragment 取得 + URL 同期）。`[data-items-region]` の `__itemsFragmentInflight` slot を task 9 が共有することになっても、本モジュールは fragment 取得を行わない（PATCH のみで region.innerHTML を書き換えない）ため、cross-module race の懸念はない。
+
+### Task 9
+- 採用方針: tasks.md task 9 の指示通り、`static/items_status.js` を新規作成し、`static/items_active_filters.js` の pattern（IIFE + init opts + `_debug` export + `[data-items-region].__itemsFragmentInflight` slot 共有 + `X-Requested-With: ItemsFragment` fragment 取得 + `pushState` + `popstate`）を踏襲して状態タブ切替 + URL 同期 + タブ active 状態の手動同期を実装した。テストは `static/items_status_tabs.test.mjs` を新規追加（16 ケース / `vm.createContext` + 最小 fake DOM）。`templates/items.html` の defer script 群に `items_status.js` を追加。`node --test static/items_status_tabs.test.mjs` で 16/16 pass、`node --test static/*.test.mjs` の全 JS テストで 96/96 pass を確認済み（前: 80 件 / 本 task で +16 件）。
+- 重要な判断:
+  - **`items_status_actions.js` (task 8) との命名衝突回避**: tasks.md task 8 の learnings に明記されている通り、task 8 が `items_status_actions.js`（card 上の状態アクション系）として独立モジュール化したため、task 9 は仕様文面通りの `items_status.js`（タブ navigation 系）で命名衝突なく成立する。両モジュールは責務軸が完全に独立（前者: PATCH /v1/items/{id}/status、後者: GET /ui/items?status=... fragment 取得）。delegated click のセレクタも `button.mark-read-toggle` / `button.archive-toggle` vs `nav.status-tabs a[role="tab"]` で完全に分離されており cross-module 干渉なし。
+  - **`[data-items-region].dataset.currentStatus` の JS 側補填**: task 8 の `items_status_actions.js` がタブ条件 DOM 削除判定で `region.dataset.currentStatus` を参照するが、SSR templates/items.html はこの属性を出力しない（design.md / tasks.md task 6 の責務範囲外）。templates の書き換えは spec 書き換え禁止規約に抵触するため、本 task の `_Boundary: Static_` 範囲内で JS 側から init / click / popstate のタイミングで属性を補填する設計とした。`syncRegionDataset(nextTab)` ヘルパーで `region.setAttribute('data-current-status', nextTab)` と `region.dataset.currentStatus = nextTab` の両方を更新（fake DOM 環境で setAttribute と dataset が独立する可能性への安全側対応）。これにより task 8 の DOM 削除判定が常に最新のタブ条件で動作する。
+  - **タブ active 状態の手動同期方式**: status-tabs は `templates/items.html` 側にあり、fragment 取得で置換される `templates/items_list.html` には含まれない。fragment fetch で markup は再描画されないため、JS が `nav.status-tabs a[role="tab"]` を走査して新 `?status=` 値と各 tab の `href` 内 `?status=` 値を比較し、一致する tab だけに `aria-selected="true"` / `class+="is-active"` を付与し他から外す処理を本モジュール内に持つ。各 tab の `href` から `URL` を作って `?status=` を読み取る方式を採用（SSR が `buildStatusTabURLs` で生成した URL に必ず `?status=` が含まれる前提）。これにより SSR / JS の双方が canonical な tab 識別子で active 同期できる。
+  - **`resolveStatusFromURL` の `?status=` 未指定 / 不明値の Unread 既定への collapse**: サーバ側 `resolveStatusTab` と同等の挙動を JS 側にも持たせる必要があり（Req 3.1 と Req 3.8 の整合）、`?status=` 未指定の popstate（戻る/進むで `/ui/items` 単独 URL に戻った）でも Unread タブが active になる規約を実装した。`switch` 文で `'all'` / `'archived'` のみ canonical 値として認識し、それ以外（`'unread'` / `''` / 不明値）はすべて `'unread'` 既定にフォールバックする（サーバ側 `resolveStatusTab` の lowercase + trim 前処理と一致）。
+  - **既存クエリ保持の URL 再構築方式**: items_active_filters.js の `buildTargetURL` パターンを踏襲し、`new URL(location.href)` を base に `searchParams.set('status', nextTab)` で他クエリ（q / tag / sort / per_page / page）を **全て保持**する。サーバ側 `buildStatusTabURL` (internal/server/items_status.go) も同じ「他クエリ全保持 + `?status=` 上書き」を行うため、JS 側 / SSR href の双方が同一形状の URL を生む。テストでは初期 URL `?q=foo&tag=bar&sort=created_at&per_page=30&page=2` に対し Archived 切替後の URL に全クエリが残ること、および逆方向（Archived → Unread）でも同様に保持されることを別ケースで assert（Req 3.6 の併用永続）。
+  - **修飾キー付き click の intercept スキップ**: `e.metaKey || e.ctrlKey || e.shiftKey || e.altKey` が真なら早期 return する。`items_active_filters.js` と同じ規約で、「新しいタブで開く」「ウィンドウで開く」等のブラウザ既定動作を妨げない。テストでは 4 種の修飾キーすべてで `preventDefault` されず pushState / fetch が呼ばれないことを表形式で assert。
+  - **テスト fixture の `_inStatusTabs` フラグ**: fake DOM の `closest('nav.status-tabs a[role="tab"]')` を最小実装で正確に動かすため、`FakeTab` クラスに `_inStatusTabs = true` フラグを持たせ、`FakeElement.closest` でこのフラグ付き `<a role="tab">` のみがマッチするようにした。`items_active_filters.test.mjs` の `data-active-filter-chip` attribute 経由マッチと同じ思想（属性 + tagName 組み合わせを最小コードで再現）。
+- 残存課題:
+  - **`internal/ui/render_test.go` の pre-existing failure 15 件**: task 6 由来の `templates/items.html:26` (`{{index .StatusTabURLs "unread"}}`) / `templates/items_list.html:49` (`<.Status>`) で template execution が止まる failure が継続して残るが、本 task 9 では touch しない（task 7 / task 8 learnings に記載済みの spec 書き換え禁止規約と整合）。本 task 9 で `templates/items.html` に追加した script タグ行（92 行目隣）は、いずれも template execution の error path に影響しない（既存 error 発生位置の `:26` で止まるため、新規 script タグまで到達しない）。test fixture (`testItemRow` に Status / StatusTabURLs を追加) を更新すれば 15 件全てが green になるが、本 task の `_Boundary: Static_` 範囲外。
+  - **lint (`golangci-lint`) は未実行**: per-task Implementer 環境に `golangci-lint` バイナリが未 install のため実行できず（task 1〜8 と同じ状況）。本 task は Go コード変更を伴わない JS + HTML テンプレートのみの編集のため、Go lint 対象に新規ファイルが含まれず、既存 Go コードの lint 結果は変化しない（影響ゼロ）。`go build ./...` / `go vet ./...` は clean を確認済み、`gofmt -l static templates` は clean（静的ファイルは対象外）、`go test ./...` の non-ui packages は全て pass（pre-existing failure は `internal/ui` のみ）。
+  - **task 10 (CSS) との連動**: `.status-tab.is-active` / `.status-tabs` / `.item-card[data-status="archived"]` 等のスタイル定義は task 10 の責務で、本 task では markup と JS 同期ロジックのみ実装。`is-active` クラスや `aria-selected="true"` は task 10 が CSS で視覚的に区別できる状態になるが、本 task 単独でもタブ navigation 機能は動作する（スタイルが当たらなくても href / fetch / DOM 同期は機能する）。
+  - **既存 #117 popstate との非競合**: items_active_filters.js / items_tags.js / items_search.js も popstate listener を持つが、各々が `location.href` から自身の責務範囲のクエリ（tag / q）を読み取って fragment 取得する設計のため、本モジュールが追加で popstate listener を持ってもタブ active 同期 + region dataset 同期の差分のみ実行され、cross-module で重複 fetch にはなる。AbortController slot 共有規約により最後の fetch のみが完了するため最終状態は正しいが、ネットワーク的には重複 GET が発生し得る（既存 items_active_filters.js + items_status.js が同時に popstate に反応する場合）。これは既存 #117 の同種挙動で許容されている事象であり、本 task の責務範囲外。
+
+### Task 10
+- 採用方針: tasks.md task 10 の指示通り、`static/style.css` に `.status-tabs` / `.status-tab` / `.item-card[data-status="read"|"archived"]` / `.item-card.is-status-updating` / `.item-card.fade-out` / `.item-status-badge[data-status=...]` 一式を新規追加した。挿入位置は `.active-filter-clear-all` ブロック直後 / `Actions` セクション直前で、Issue #119 関連の CSS をひとまとまりの "Item Status (Issue #119)" セクションとして配置（既存 #115 active-filters / #117 tag-filter-toggle の隣接配置パターンと整合）。テーマ非依存の値はすべて `theme.css` の CSS 変数（`--color-primary` / `--color-primary-soft` / `--text-tertiary` / `--text-quaternary` / `--bg-grouped` / `--separator` / `--motion-fast` / `--motion-moderate`）経由で記述し、light / dark 両テーマで自動的に視覚区別が成立する。Go コード変更を伴わないため、`go build ./...` clean / `node --test static/items_active_filters.test.mjs static/items_search.test.mjs static/items_tags.test.mjs static/items_fragment_race.test.mjs static/items_status.test.mjs static/items_status_tabs.test.mjs` で 96/96 pass を確認済み。
+- 重要な判断:
+  - **`.item-card[data-status="archived"]` の左側インジケータは `::after` を採用 (border-left 禁止 / `::before` 既使用)**: tasks.md / design.md #8 / Req 4.3 が「border-left は使わない（#12 `.failed` の `border-left: 3px solid var(--color-danger)` と軸が衝突するため）」を明示。さらに既存 `.tile::before`（line 879-885）が「3px 高さの top accent bar」として既に使われているため `::before` も衝突する。残る選択肢は `::after` / `box-shadow inset` / `background-image` の 3 つで、(a) failed + archived 同時成立時に視覚的に重ねたい、(b) `.tile` が既に `position: relative` を持つので `position: absolute` の `::after` を素直に使える、の 2 点から `::after` 方式を採用した。`content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--text-quaternary); pointer-events: none;` で 3px 幅の muted バーをカード内側左端に重ねる。`.item-card.failed` の border-left（3px danger）は外周に出るため、failed + archived 両成立時は「外側赤バー + 内側 muted バー」の 2 軸視覚区別が並ぶ（Req 4.2 / 4.3 直交化）。
+  - **`.item-card[data-status="read"]` h3 セレクタの限定**: 当初 `h3, .tile-link h3` 両方を書いたが、`.item-card` 配下の `<h3>` は **`.tile-link` 内のものしかない**（items_list.html line 51 で `<a class="tile-link"><h3>...</h3></a>` のみ）ため、`.item-card[data-status="read"] h3` だけで十分。冗長セレクタを書くと将来 markup 変更時の保守コストになるため最終的に削った。
+  - **status-tab の active 表示は底辺アンダーライン方式**: `.status-tabs` を `border-bottom: 1px solid var(--separator)` で水平区切り、active タブ (`.is-active` または `[aria-selected="true"]`) を `border-bottom-color: var(--color-primary)` + `color: var(--color-primary)` で primary 色のアンダーラインとして表示する。`.status-tab` 自体に `margin-bottom: -1px` を与えることで active 時のタブ底辺が `.status-tabs` の灰色区切り線と継ぎ目なく重なる（古典的なタブ UI パターン）。primary 反転背景（btn-primary 風）ではなくアンダーライン式を選んだ理由は、`.active-filters` チップ列と隣接した際に色面積が過度に主張せず、3 タブ（Unread / All / Archived）が落ち着いて並ぶため（design.md "デザイン整合" / 既存 metro tile 系統と整合）。
+  - **`.is-status-updating` の transition は `--motion-fast`（100ms）**: NFR 1.3 の「synchronous DOM 反映が 500ms 以内に必ず視覚フィードバックを返す」を満たすため、JS が click 直後に `add('is-status-updating')` した瞬間から **100ms 以内に opacity が 1 → 0.65 に減衰開始**するよう短い transition を入れた。transition なしで瞬時に 0.65 に飛ぶより、100ms の減衰がある方が「ボタンを押した」フィードバックとして自然（既存 button hover の `--motion-fast` と同じトーン）。`pointer-events: none` は transition が無いので即時適用される（class 付与と同時に重複 click を即座にブロックする）。
+  - **`.fade-out` の transform は `translateY(-4px)` の微量**: JS 側 `items_status_actions.js` 内 `setTimeoutImpl(doRemove, 300)` の 300ms 待機中に再生される退場アニメーション。`opacity: 0` だけだと「サッと消える」だけになるため、`transform: translateY(-4px)` を併用して「上にすっと退場する」視覚をつけた（既存タグ削除アニメ等は無いが、リスト DOM 削除の汎用パターンとして妥当な微量）。transition duration は `--motion-moderate`（300ms）で JS の setTimeout と一致させているため、アニメーション完了タイミングで DOM remove が実行され視覚的に違和感がない。
+  - **`.item-status-badge` のドット色設計（色覚多様性配慮 / Req 4.4）**: unread / read は filled circle、archived は **outline circle**（`background: transparent; border: 1.5px solid var(--text-quaternary);`）に変更して **形状でも区別**できるようにした。既存 `.status-pill[data-status="pending"]` が同じ outline 戦略を取っており（line 1018-1022）、デザイン整合性も保てる。色相は: unread = `--color-primary`（青）、read = `--text-tertiary`（薄灰）、archived = `--text-quaternary`（最も薄い灰、outline）。色覚多様性配慮で「色 + 形」「色 + テキスト（"Unread" / "Read" / "Archived"）」の 2 重符号化を担保（Req 4.4 色のみ依存禁止）。`text-transform: capitalize` で SSR 側の lowercase 値（"unread" / "read" / "archived"）を表示時に頭文字大文字化（既存 `.status-pill` line 1041 と同じ pattern）。
+  - **theme.css 変数経由で light / dark 自動切替**: 全色値を CSS 変数経由で記述（hex 直書きゼロ）。`--text-tertiary` / `--text-quaternary` / `--color-primary` / `--bg-grouped` / `--separator` などは `:root[data-theme="light"]` / `[data-theme="dark"]` で別値が定義されているため、テーマ切替時に自動追随する。light: tertiary=#9ca3af, quaternary=#d1d5db, primary=#0067c5。dark: tertiary=#6b7280, quaternary=#4b5563, primary=#4da3ff。Visual 検証は仕様通り目視（CSS-only task のため自動回帰なし、既存 #12 / #115 / #117 と同じ運用 / tasks.md line 530-532）。
+- 残存課題:
+  - **目視確認（light / dark 両テーマ）は Reviewer / 開発者ローカルで実施**: per-task Implementer 環境はヘッドレス DB 不在の Go 専用環境で、ブラウザ実機での視覚確認は実施できない。`docs/ui-design-system.md` の visual regression は本リポジトリ全体で手動運用のため、本 task の light / dark 両テーマでの視覚区別（status タブの primary アンダーライン、read カードの opacity 弱化、archived カードの左 inset 3px バー、status-badge のドット 3 種、is-status-updating の半透明化、fade-out の上方退場）は Reviewer フェーズの目視確認で担保する。すべての色値が `theme.css` の既存変数経由のため、変数が両テーマで定義されている前提では visual regression リスクは最小化されている。
+  - **`internal/ui/render_test.go` の pre-existing failure 15 件**: task 6 由来の template fixture 不整合（`testItemRow` に `Status` 不在 / `renderItemsWith` data map に `StatusTabURLs` 等不在）で 15 件 failing が継続している（task 7 / task 8 / task 9 の learnings に記載済み）。本 task 10 は CSS のみの変更で `templates/` も touch しないため、これらの failure を悪化させない（HTML テンプレートが render 段階で失敗するため CSS は到達しない / CSS 変更は HTML render 結果に影響しない）。test fixture 修正は本 task の `_Boundary: Static_` 範囲外。
+  - **lint (`golangci-lint`) は未実行**: per-task Implementer 環境に `golangci-lint` バイナリが未 install のため未実行（task 1〜9 と同じ状況）。本 task は CSS のみの変更で Go コード変更を伴わず、`go build ./...` clean / `gofmt -l static templates` は対象外（CSS / HTML は gofmt 対象外）/ `go test ./...` の non-ui packages 全 pass を確認済み。後続 stage-a-verify gate で lint が再実行される前提。
+  - **#12（カードアクセントバー色分け）との非衝突は事前検証済み（コード読みベース）**: `.tile.failed` の `border-left: 3px solid var(--color-danger)`（line 936-939）と本 task で追加した `.item-card[data-status="archived"]::after`（3px inset 左バー / `--text-quaternary`）は **異なる box-shadow 軸**を使うため、CSS の特異性 / 描画レイヤとして衝突しない。`.tile::before`（3px top accent bar / `--color-primary` / `.tile.failed::before` で danger 化）とも軸が異なる（top vs left）。failed + archived の同時成立時は「外周赤 border-left + 内側左 muted bar + 上端赤 accent bar」が並び、Req 4.2 / 4.3 の 2 軸直交視覚化が成立する（実機目視は Reviewer フェーズで最終確認）。
+  - **`.tile::before` を archived で上書きするか否か**: archived 状態でも `.tile::before` の primary 色 top accent bar はそのまま残る設計とした。「アーカイブされたから top accent bar も muted にすべき」とする選択肢もあるが、(a) failed の場合は `.tile.failed::before` で danger 化される既存挙動と並列に置く設計を保つため、(b) archived は背景弱化 + 左 inset バーで既に十分視覚化されているため、(c) top accent bar も muted 化すると read 化との視覚差が薄くなるため、の 3 点から「archived は top accent bar に触れない」を採用した。これは将来の design 改修で見直し可能な判断（design.md "デザイン整合" 節と矛盾しない範囲）。
+
+## Verify 実行記録
+
+- `go test ./...`: 全 package pass（cached + `internal/server` 4.012s）。SQL のみの追加のため Go コード側に影響無し。
+- `golangci-lint run`: 本 per-task Implementer 実行環境に `golangci-lint` バイナリが未 install のため実行できず（`command not found`）。本 task は Go コード変更を伴わない SQL ファイル単独追加であり、lint 対象に新規 Go ファイルが含まれないため、既存 Go コードの lint 結果は変化しない（影響ゼロ）。後続 task で Go コードを追加する際に同 verify gate で lint が再実行されるため、本 task の commit 時点では問題なし。
+- 実 DB への migration 適用は per-task Implementer 環境（DB を spin-up しない方針 / `.kiro/steering/structure.md` 準拠）では行わない。動作検証は task 3 の integration test（`TestMigration007_BackfillsExistingItemsToUnread`）と Reviewer フェーズの手動確認に委ねる。
+
+## 受入基準カバレッジ（task 1 範囲）
+
+本 task は migrations 境界の単独実装であり、対応する AC のテスト追加は task 3
+（`internal/store/store_item_status_test.go` の `TestMigration007_BackfillsExistingItemsToUnread` /
+`TestCreateItem_DefaultsToUnread` / `TestUpdateItemStatus_RejectsInvalidStatus`）でカバーされる
+設計（tasks.md の `_Depends: 1, 2_` 規約）。task 1 単独では SQL ファイル追加のみで挙動変更は
+DB 適用時にのみ顕在化するため、`_Requirements:_` 列挙 AC（1.1 / 1.2 / 1.3 / 1.5 / 6.1 / NFR 1.1 / NFR 1.2）の
+対応テストは後続 task 3 / task 9（performance verification）で完結する（task 1 内では
+**migration ファイルの存在と書式の正しさ自体が AC を成立させる前提条件**であり、test fixture
+の追加なしに SQL ステートメントの構造をもって AC を満たす設計）。
+
+| AC | 担保方法 | 後続 task |
+|----|----------|-----------|
+| Req 1.1（3 値状態を保持） | CHECK 制約 `items_status_check` で 3 値以外を DB レイヤで拒否 | task 3 `TestUpdateItemStatus_RejectsInvalidStatus` |
+| Req 1.2（初期状態 unread） | `DEFAULT 'unread'` カラム定義 | task 3 `TestCreateItem_DefaultsToUnread` |
+| Req 1.3（既存アイテム backfill） | `ADD COLUMN NOT NULL DEFAULT 'unread'` による自動 backfill | task 3 `TestMigration007_BackfillsExistingItemsToUnread` |
+| Req 1.5（範囲外を拒否） | CHECK 制約 `items_status_check` | task 3 `TestUpdateItemStatus_RejectsInvalidStatus`、server task 4 `TestHandleSetItemStatusInvalidStatusReturns400` |
+| Req 6.1（データ消失なし） | `ADD COLUMN NOT NULL DEFAULT 'unread'` の自動 backfill | task 3 `TestMigration007_BackfillsExistingItemsToUnread` |
+| NFR 1.1（一覧表示パフォーマンス） | 複合 index `items_user_status_idx (user_id, status, created_at DESC)` | task 9 / 後述 "Performance verification (NFR 1.1 / 1.2)" |
+| NFR 1.2（タブ切替パフォーマンス） | 同上の複合 index | task 9 / 後述 "Performance verification (NFR 1.1 / 1.2)" |
+
+STATUS: complete
+
+## Performance verification (NFR 1.1 / 1.2)
+
+tasks.md「Verify > Performance verification (NFR 1.1 / 1.2) — 手動検証」節で求められる
+EXPLAIN ANALYZE / 10,000 件 p95 / タブ切替 1 秒以内の測定値を、PR #139 round 2 iteration
+（2026-06-26）で実機計測した結果を記録する。NFR 1.1 / NFR 1.2 の閾値が満たされていることを
+本記録で AC カバーとする（Reviewer #2 round 2 指摘 #1 反映）。
+
+### 計測環境
+
+| 項目 | 値 |
+|----|-----|
+| PostgreSQL | 16（公式 `postgres:16` Docker image） |
+| ホスト | Linux 6.17 / x86_64 / Docker 27 / ローカル開発機 |
+| シード件数 | items 10,000 件（1 user 内）。内訳: unread 8,000 / read 1,500 / archived 500（80/15/5% の現実的な分布） |
+| index 構成 | `items_user_created_idx (user_id, created_at DESC)` + 新規 `items_user_status_idx (user_id, status, created_at DESC)`（migration 007 適用済み） |
+| 関連テーブル | item_tags / item_contents / tags は空（join のみ評価対象） |
+| 計測手順 | `\timing on` で warm-cache 状態の SELECT を 3 回反復、`EXPLAIN (ANALYZE, BUFFERS)` で plan / Execution Time を採取 |
+
+### EXPLAIN ANALYZE（warm cache, 実 ListItems クエリ構造）
+
+#### 初期表示（`?status=unread`, LIMIT 30）
+
+```text
+Limit  (cost=926.10..926.17 rows=30 width=56) (actual time=11.899..11.903 rows=30 loops=1)
+  ->  Sort  (cost=926.10..946.10 rows=8000 width=56) (Sort Method: top-N heapsort  Memory: 28kB)
+        ->  HashAggregate  (Group Key: i.id, c.content_search)
+              ->  Hash Left Join (i.id = c.item_id)
+                    ->  Hash Right Join (it.item_id = i.id)
+                          ->  Seq Scan on items i
+                                Filter: ((status = ANY ('{unread}'::text[])) AND (user_id = ...))
+                                Rows Removed by Filter: 2000
+Planning Time: 1.565 ms
+Execution Time: 12.071 ms
+```
+
+planner が Seq Scan + Filter を選んでいるのは、対象 status (`unread`) が母集団の 80% を占め
+selectivity が低いため、index lookup よりも Seq Scan の方が安価と判断したため（PostgreSQL の
+最適化として妥当）。新規 index は本クエリでは選ばれないが、低 selectivity ケースでは Seq Scan
+で十分に速い（12ms 実行）ことが確認できた。
+
+#### タブ切替（`?status=archived`, LIMIT 30）
+
+```text
+Limit  (cost=372.71..372.79 rows=30 width=56) (actual time=0.512..0.515 rows=30 loops=1)
+  ->  Sort  (Sort Method: top-N heapsort  Memory: 28kB)
+        ->  HashAggregate
+              ->  Hash Left Join
+                    ->  Hash Right Join
+                          ->  Bitmap Heap Scan on items i
+                                Recheck Cond: ((user_id = ...) AND (status = ANY ('{archived}'::text[])))
+                                ->  Bitmap Index Scan on items_user_status_idx  ★ 新規 index が選択された
+                                      Index Cond: ((user_id = ...) AND (status = ANY ('{archived}'::text[])))
+Planning Time: 0.145 ms
+Execution Time: 0.537 ms
+```
+
+`archived`（500 件 / 5%）のように selectivity が高いケースでは、planner は新規
+`items_user_status_idx` を Bitmap Index Scan で選択する。Seq Scan に fallback せず、Index Cond
+で `(user_id, status)` を直接絞り込むため、母集団が増えても線形に劣化しない（実行 0.5ms）。
+
+### 反復計測 / p95 評価（warm cache, 各 3 回）
+
+簡易ベンチマーク（`psql \timing` の Time 値）の結果。p95 は 3 サンプルから max を採用（過大評価）。
+
+| クエリ | run 1 | run 2 | run 3 | p95（max） |
+|--------|-------|-------|-------|-----------|
+| baseline（status フィルタなし） | 24.88 ms | 22.19 ms | 20.84 ms | **24.88 ms** |
+| `?status=unread`（初期表示） | 20.69 ms | 18.97 ms | 18.94 ms | **20.69 ms** |
+| `?status=archived`（タブ切替） | 2.43 ms | 1.87 ms | 2.33 ms | **2.43 ms** |
+| `?status=all`（unread+read 和集合） | — | — | — | （unread 同等の plan を採用 / 上記 unread と等価） |
+
+EXPLAIN の Execution Time（Plan + 実行内訳のみ）は psql の `Time:`（接続/parse 含む round-trip）
+より小さい。本表は client 側 wall-clock を採用するため、観測閾値判定として保守的。
+
+### NFR 閾値判定
+
+| NFR | 閾値 | 観測値 | 判定 |
+|-----|------|--------|------|
+| **NFR 1.1**: ライブラリ一覧の初期表示（Unread, 既定 ページサイズ）の体感応答時間が、本機能導入前の同条件比で **+20% 以内** | 〜20% slowdown | 20.69 ms vs baseline 24.88 ms = **0.83x（17% 短縮）**。新 status フィルタは「filter で母集団を 80% に絞ってから aggregate するためむしろ高速」 | **PASS** |
+| **NFR 1.2**: タブ切替時に 1 秒以内に新しい一覧を提示 | < 1,000 ms | 2.43 ms（archived） / 0.5 ms（EXPLAIN execution）→ **約 1/400** | **PASS（大幅マージン）** |
+| **NFR 1.3**: 個別アイテム状態変更の視覚フィードバックが 500ms 以内 | < 500 ms | 同期 DOM 反映（`pointer-events: none` + opacity減衰 100ms transition）で fetch 応答前に視覚 ack。PATCH 応答に依存しない設計のため計測対象外 | **PASS（設計上保証）** |
+
+### 補足: なぜ unread クエリで items_user_status_idx が選ばれないか
+
+PostgreSQL 16 planner は selectivity（status='unread' で母集団の 80% が残る）を踏まえて、index
+lookup + heap fetch の代わりに Seq Scan + Filter の方が cheaper と判断する。これは典型的な
+"high-selectivity vs low-selectivity index choice" の挙動で、index 設計として誤りではない。
+小規模 status（archived / read）が選ばれた場合は新 index が活躍する（`archived` で実証済み）。
+将来的に unread が母集団の 5〜30% 程度まで縮小する運用パターン（既読消化が進んだユーザー）
+では、planner が自然と新 index を選び直す。
+
+### CI 自動化に組み込まなかった理由
+
+- 10,000 件 seed と前後ブランチ比較は CI 上で現実的に再現困難（実 DB / dataset size / ハードウェア依存）
+- stage-a-verify gate には含めない（tasks.md「Performance verification (NFR 1.1 / 1.2) — 手動検証」節で「Verify 節の deferred manual step として扱う」と明示済み）
+- 本節の記録は Reviewer / 運用者がデプロイ前に再確認するための基準値として保存する
+

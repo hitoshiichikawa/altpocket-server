@@ -4,7 +4,7 @@
 SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、各タスクが `DEV_MAX_TURNS=60` 以内に
 収まるようにした。
 
-- [ ] 1. マイグレーション 007: items.status カラム追加と backfill
+- [x] 1. マイグレーション 007: items.status カラム追加と backfill
   - `migrations/007_add_item_status.sql` を新規作成
   - `ALTER TABLE items ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'unread'`
   - **CHECK 制約の冪等追加**: PostgreSQL 16 には `ADD CONSTRAINT IF NOT EXISTS` が存在しない
@@ -24,7 +24,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     パフォーマンス対策の主担当として紐付くため、index 作成タスクである本タスクの
     `_Requirements:_` にも NFR 1.1 / NFR 1.2 を明示する（Reviewer r6 指摘 #6 反映）
 
-- [ ] 2. store 層: Item.Status / 状態定数 / UpdateItemStatus / ListItems 拡張
+- [x] 2. store 層: Item.Status / 状態定数 / UpdateItemStatus / ListItems 拡張
   - `internal/store/store.go`:
     - `Item` 構造体に `Status string \`json:"status"\`` を追加
     - 定数 `ItemStatusUnread = "unread"` / `ItemStatusRead = "read"` /
@@ -70,7 +70,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Requirements: 1.1, 1.4, 1.6, 3.3, 3.4, 3.5, 6.2, NFR 2.1, NFR 3.1_
   - _Boundary: Store_
 
-- [ ] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill / 2 軸独立性 / Web↔MCP 整合
+- [x] 3. store 層 integration test: UpdateItemStatus / ListItems status フィルタ / 007 backfill / 2 軸独立性 / Web↔MCP 整合
   - `internal/store/store_item_status_test.go` を新規作成（`//go:build integration` tag）:
     - `TestUpdateItemStatus_TransitionsAllPairs`: 7 通り（unread↔read / unread↔archived /
       read↔archived / archived→unread / 既存値再設定）の遷移と `prev` 返り値を実 DB で確認
@@ -118,7 +118,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Store_
   - _Depends: 1, 2_
 
-- [ ] 4. server 層: handleSetItemStatus / parseStatusFilter / handleListItems / handleUIItems 接続
+- [x] 4. server 層: handleSetItemStatus / parseStatusFilter / handleListItems / handleUIItems 接続
   - `internal/server/server.go`:
     - `parseStatusFilter(q url.Values, defaultIfEmpty []string) []string` を追加（design.md の
       表通り。第 2 引数で「`?status=` 不在 / 空 / 不明値 のときに返す既定値」を呼び出し側が指定する。
@@ -226,7 +226,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Server_
   - _Depends: 2_
 
-- [ ] 5. mcpserver 層: status 引数 / status 出力フィールド / DataSource 拡張
+- [x] 5. mcpserver 層: status 引数 / status 出力フィールド / DataSource 拡張
   - `internal/mcpserver/deps.go`: `DataSource.ListItems` / `ListRecentItems` のシグネチャを
     store の新シグネチャに揃える（`statuses []string` 追加）
   - `internal/mcpserver/server.go`:
@@ -307,7 +307,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: McpServer_
   - _Depends: 2_
 
-- [ ] 6. SSR テンプレート: 状態タブ markup + items_list の data-status / status-badge + 既存フォームに status hidden 保持
+- [x] 6. SSR テンプレート: 状態タブ markup + items_list の data-status / status-badge + 既存フォームに status hidden 保持
   - `templates/items.html`:
     - 検索バー直下、`<section class="split">` の手前に `<nav class="status-tabs" role="tablist"
       aria-label="アイテム状態">` を追加。Unread / All / Archived の 3 タブを `<a role="tab"
@@ -371,7 +371,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
     （Unread / All / Archived）が本タスクの責務になる（Reviewer r6 指摘 #5 反映、
     操作ボタン側の aria-label はタスク 7 でカバー）
 
-- [ ] 7. SSR テンプレート: item-card の既読/アーカイブボタン追加（archive 解除も含む）
+- [x] 7. SSR テンプレート: item-card の既読/アーカイブボタン追加（archive 解除も含む）
   - `templates/items_list.html` の `.item-actions` 内に以下を追加（**`unread` を主軸に分岐**し、
     `read` / `archived` を「未読に戻す」側に集約する。JS の `next = currentStatus === 'unread' ? 'read' : 'unread'`
     と一致させる。Req 2.3 / 2.4 / 2.6 の整合）:
@@ -398,7 +398,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Templates_
   - _Depends: 6_
 
-- [ ] 8. static JS: 状態切替ボタンの delegated click + 失敗時巻き戻し
+- [x] 8. static JS: 状態切替ボタンの delegated click + 失敗時巻き戻し
   - `static/app.js` の既存 delegated click handler（refetch / delete の隣）に追加:
     - `button.mark-read-toggle`: `currentStatus` を **`btn.dataset.currentStatus`** から読み、
       **`next = currentStatus === 'unread' ? 'read' : 'unread'`** を算出する（`unread` → `read` /
@@ -475,7 +475,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Static_
   - _Depends: 4, 7_
 
-- [ ] 9. static JS: items_status.js（タブ切替 + fragment 取得 + popstate + タブ active 同期）
+- [x] 9. static JS: items_status.js（タブ切替 + fragment 取得 + popstate + タブ active 同期）
   - `static/items_status.js` を新規作成。`static/items_active_filters.js` の pattern に揃える:
     - `[data-items-region]` 上の `__itemsFragmentInflight` slot を共有して AbortController を持つ
     - `<nav.status-tabs a[role="tab"]>` の click を delegated 捕捉 → `?status=` を書き換えた
@@ -510,7 +510,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Static_
   - _Depends: 6_
 
-- [ ] 10. CSS: 状態タブ / data-status カード / status-badge スタイル + #12 との非衝突確認
+- [x] 10. CSS: 状態タブ / data-status カード / status-badge スタイル + #12 との非衝突確認
   - `static/style.css`:
     - `.status-tabs` をルートに追加（`.active-filters` と同じ余白トークン）。`a[role="tab"]`
       の通常 / hover / aria-selected="true" の 3 状態

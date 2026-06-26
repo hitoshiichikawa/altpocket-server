@@ -18,6 +18,7 @@ func TestItemListRowJSONUsesSnakeCase(t *testing.T) {
 			Excerpt:          "excerpt",
 			FetchStatus:      "success",
 			FetchError:       "",
+			Status:           "read",
 			CreatedAt:        time.Unix(1700000000, 0).UTC(),
 			RefetchRequested: true,
 		},
@@ -32,6 +33,12 @@ func TestItemListRowJSONUsesSnakeCase(t *testing.T) {
 	assertHasKey(t, m, "created_at")
 	assertHasKey(t, m, "refetch_requested")
 	assertHasKey(t, m, "tags")
+	// Req 1.1 / 5.1: the user-visible 3-state field is exposed as `status`
+	// in snake_case JSON to keep parity with all other Item fields.
+	assertHasKey(t, m, "status")
+	if got, _ := m["status"].(string); got != "read" {
+		t.Fatalf("expected status=read, got %v", m["status"])
+	}
 
 	assertMissingKey(t, m, "ID")
 	assertMissingKey(t, m, "UserID")
@@ -39,6 +46,7 @@ func TestItemListRowJSONUsesSnakeCase(t *testing.T) {
 	assertMissingKey(t, m, "CreatedAt")
 	assertMissingKey(t, m, "RefetchRequested")
 	assertMissingKey(t, m, "Tags")
+	assertMissingKey(t, m, "Status")
 }
 
 func TestItemDetailJSONUsesSnakeCase(t *testing.T) {

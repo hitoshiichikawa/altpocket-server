@@ -46,14 +46,15 @@
 {{end}}
 
 {{range .Items}}
-  <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" aria-labelledby="item-title-{{.ID}}">
-    <a class="tile-link" href="/ui/items/{{.ID}}">
+  <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" data-status="{{.Status}}" aria-labelledby="item-title-{{.ID}}">
+    <a class="tile-link" href="/ui/items/{{.ID}}{{if $.StatusQuery}}?status={{$.StatusQuery}}{{end}}">
       <h3 id="item-title-{{.ID}}">{{.Title}}</h3>
       <p class="excerpt-clamp">{{.Excerpt}}</p>
     </a>
 
     <div class="meta item-meta">
       <span class="status-pill" data-status="{{.FetchStatus}}" role="status" aria-label="Fetch status: {{.FetchStatus}}">{{.FetchStatus}}</span>
+      <span class="item-status-badge" data-status="{{.Status}}" role="status" aria-label="状態: {{.Status}}">{{.Status}}</span>
       <span>{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
     </div>
 
@@ -73,6 +74,12 @@
 
     <div class="actions item-actions">
       <a class="btn-secondary action-button" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Original</a>
+      <button type="button" class="btn-secondary mark-read-toggle" data-item-id="{{.ID}}"
+        data-current-status="{{.Status}}"
+        aria-label="{{if eq .Status "unread"}}既読にする{{else}}未読に戻す{{end}}">{{if eq .Status "unread"}}Mark read{{else}}Mark unread{{end}}</button>
+      <button type="button" class="btn-secondary archive-toggle" data-item-id="{{.ID}}"
+        data-current-status="{{.Status}}"
+        aria-label="{{if eq .Status "archived"}}アーカイブ解除{{else}}アーカイブする{{end}}">{{if eq .Status "archived"}}Unarchive{{else}}Archive{{end}}</button>
       <button type="button" class="btn-secondary refetch" data-item-id="{{.ID}}">Refetch</button>
       <button type="button" class="btn-danger delete" data-item-id="{{.ID}}">Delete</button>
     </div>

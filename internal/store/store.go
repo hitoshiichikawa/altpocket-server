@@ -89,18 +89,36 @@ type TagInput struct {
 }
 
 type Item struct {
-	ID               string    `json:"id"`
-	UserID           string    `json:"user_id"`
-	URL              string    `json:"url"`
-	CanonicalURL     string    `json:"canonical_url"`
-	CanonicalHash    string    `json:"canonical_hash"`
-	Title            string    `json:"title"`
-	Excerpt          string    `json:"excerpt"`
-	FetchStatus      string    `json:"fetch_status"`
-	FetchError       string    `json:"fetch_error"`
+	ID            string `json:"id"`
+	UserID        string `json:"user_id"`
+	URL           string `json:"url"`
+	CanonicalURL  string `json:"canonical_url"`
+	CanonicalHash string `json:"canonical_hash"`
+	Title         string `json:"title"`
+	Excerpt       string `json:"excerpt"`
+	FetchStatus   string `json:"fetch_status"`
+	FetchError    string `json:"fetch_error"`
+	// Status is the user-visible item lifecycle state introduced by Issue #119.
+	// Values are constrained by the items_status_check CHECK constraint
+	// (added in migrations/007) to one of ItemStatusUnread / ItemStatusRead /
+	// ItemStatusArchived, which forms the second axis (orthogonal to
+	// FetchStatus) of the item state model. Surfaced in JSON as `status`
+	// so MCP clients and the extension API can both observe it (Req 5.1).
+	Status           string    `json:"status"`
 	CreatedAt        time.Time `json:"created_at"`
 	RefetchRequested bool      `json:"refetch_requested"`
 }
+
+// ItemStatusUnread / ItemStatusRead / ItemStatusArchived are the canonical
+// string values for items.status. They mirror the values constrained by the
+// items_status_check CHECK constraint added by migrations/007_add_item_status.sql
+// and MUST be used by callers in place of bare string literals
+// (CLAUDE.md "マジックナンバーは定数化" 規約 / Req 1.1).
+const (
+	ItemStatusUnread   = "unread"
+	ItemStatusRead     = "read"
+	ItemStatusArchived = "archived"
+)
 
 type ItemDetail struct {
 	Item
@@ -380,7 +398,15 @@ func upsertItemTags(ctx context.Context, tx pgx.Tx, itemID string, tagInputs []T
 	return nil
 }
 
-func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int, q string, tags []string, sort string) ([]ItemListRow, Pagination, error) {
+// ListItems returns a paginated slice of the user's items. The optional
+// statuses argument (nil / empty = no filter) is the user-visible state
+// filter introduced by Issue #119; when non-empty it AND-joins
+// `i.status = ANY($N)` to the WHERE clause so the result is constrained
+// to the requested 3-value subset. The default (whole-set) value is the
+// caller's responsibility — `/v1/items` passes nil to preserve
+// Req 6.2 backward compatibility while `/ui/items` passes
+// []string{ItemStatusUnread} for Req 3.1's Unread-first default.
+func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int, q string, tags []string, statuses []string, sort string) ([]ItemListRow, Pagination, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -410,6 +436,15 @@ func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int,
 		args = append(args, selectedTag)
 		argPos++
 	}
+	// Status filter (Issue #119 / Req 3.3-3.5 / Req 5.3): only add the
+	// predicate when the caller supplied a non-empty slice. The
+	// store layer never applies a default — callers
+	// (parseStatusFilter / mcpStatusFilter) decide what "absent" means.
+	if len(statuses) > 0 {
+		where = append(where, fmt.Sprintf("i.status = ANY($%d)", argPos))
+		args = append(args, statuses)
+		argPos++
+	}
 
 	whereSQL := strings.Join(where, " AND ")
 	orderBy := "i.created_at DESC"
@@ -432,7 +467,7 @@ func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int,
 
 	selectSQL := fmt.Sprintf(`
 		SELECT i.id, i.user_id, i.url, i.canonical_url, i.canonical_hash, i.title, i.excerpt,
-			i.fetch_status, COALESCE(i.fetch_error,''), i.created_at, i.refetch_requested,
+			i.fetch_status, COALESCE(i.fetch_error,''), i.status, i.created_at, i.refetch_requested,
 			COALESCE(array_agg(t.id ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_ids,
 			COALESCE(array_agg(it.display_name ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_names,
 			COALESCE(array_agg(t.normalized_name ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_norms,
@@ -476,7 +511,7 @@ func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int,
 		var tagNorms []string
 		var score float64
 		if err := rows.Scan(&row.ID, &row.UserID, &row.URL, &row.CanonicalURL, &row.CanonicalHash, &row.Title, &row.Excerpt,
-			&row.FetchStatus, &row.FetchError, &row.CreatedAt, &row.RefetchRequested, &tagIDs, &tagNames, &tagNorms, &score); err != nil {
+			&row.FetchStatus, &row.FetchError, &row.Status, &row.CreatedAt, &row.RefetchRequested, &tagIDs, &tagNames, &tagNorms, &score); err != nil {
 			return nil, Pagination{}, err
 		}
 		row.Tags = make([]Tag, 0, len(tagIDs))
@@ -495,7 +530,7 @@ func (s *Store) ListItems(ctx context.Context, userID string, page, perPage int,
 func (s *Store) GetItemDetail(ctx context.Context, userID, itemID string) (ItemDetail, error) {
 	row := s.DB.QueryRow(ctx, `
 		SELECT i.id, i.user_id, i.url, i.canonical_url, i.canonical_hash, i.title, i.excerpt,
-			i.fetch_status, COALESCE(i.fetch_error,''), i.created_at, i.refetch_requested,
+			i.fetch_status, COALESCE(i.fetch_error,''), i.status, i.created_at, i.refetch_requested,
 			COALESCE(c.content_full,''),
 			COALESCE(array_agg(t.id ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_ids,
 			COALESCE(array_agg(it.display_name ORDER BY t.id) FILTER (WHERE t.id IS NOT NULL), '{}') AS tag_names,
@@ -512,7 +547,7 @@ func (s *Store) GetItemDetail(ctx context.Context, userID, itemID string) (ItemD
 	var tagNames []string
 	var tagNorms []string
 	if err := row.Scan(&detail.ID, &detail.UserID, &detail.URL, &detail.CanonicalURL, &detail.CanonicalHash, &detail.Title, &detail.Excerpt,
-		&detail.FetchStatus, &detail.FetchError, &detail.CreatedAt, &detail.RefetchRequested, &detail.ContentFull, &tagIDs, &tagNames, &tagNorms); err != nil {
+		&detail.FetchStatus, &detail.FetchError, &detail.Status, &detail.CreatedAt, &detail.RefetchRequested, &detail.ContentFull, &tagIDs, &tagNames, &tagNorms); err != nil {
 		return ItemDetail{}, err
 	}
 	detail.Tags = make([]Tag, 0, len(tagIDs))
@@ -571,6 +606,49 @@ func (s *Store) RequestRefetch(ctx context.Context, userID, itemID string) error
 		return pgx.ErrNoRows
 	}
 	return nil
+}
+
+// UpdateItemStatus transitions items.status to next for itemID owned by
+// userID, returning the previous status value so callers can emit a
+// structured `items.status.update` log line (NFR 3.1).
+//
+// Implementation detail: a naive `UPDATE ... RETURNING status` would
+// return the *post*-update value because PostgreSQL evaluates RETURNING
+// against the updated row. To capture the pre-update value we use a
+// data-modifying CTE that first locks the matching row with FOR UPDATE
+// (collapsing both "row missing" and "owned by another user" into the
+// same empty-result case for NFR 2.1) and then drives the UPDATE off
+// that CTE so the lock is acquired before the UPDATE runs and `prev` is
+// the genuine pre-update value (design.md `## Components and Interfaces`
+// "Store.UpdateItemStatus" / setup #6).
+//
+// Returns:
+//   - pgx.ErrNoRows when no row matches user_id+id (not found OR owned
+//     by another user — collapsed for NFR 2.1).
+//   - any other DB error untouched (including a violation of the
+//     items_status_check CHECK constraint when next is not one of the
+//     canonical enum values; defense-in-depth against caller bugs).
+//
+// next MUST be one of ItemStatusUnread / ItemStatusRead /
+// ItemStatusArchived; callers (handleSetItemStatus) validate the value
+// before invocation.
+func (s *Store) UpdateItemStatus(ctx context.Context, userID, itemID, next string) (prev string, err error) {
+	row := s.DB.QueryRow(ctx, `
+		WITH prev AS (
+			SELECT id, status FROM items
+			WHERE id = $1 AND user_id = $2
+			FOR UPDATE
+		)
+		UPDATE items
+		SET status = $3
+		FROM prev
+		WHERE items.id = prev.id
+		RETURNING prev.status
+	`, itemID, userID, next)
+	if err = row.Scan(&prev); err != nil {
+		return "", err
+	}
+	return prev, nil
 }
 
 // PatchItem updates an item's title and/or tags atomically within a transaction.
