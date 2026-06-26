@@ -70,8 +70,15 @@ altpocket はレイヤード Go モノレポで、入口 `cmd/api` から `inter
   本機能は新規エンドポイント追加（既存変更なし）なので **契約は壊れない**
 - **既存単一 API**: `DELETE /v1/items/{id}` / `PUT /v1/items/{id}/tags` / `PATCH /v1/items/{id}` は
   変更しない（NFR 3.4: 既存の単一アクションは引き続き同等に提供）
-- **CSRF 保護**: `s.checkCSRF` は `/v1/*` の非 GET リクエストで強制される。一括 API も既存
-  middleware を経由する（既存 chain `requireAuth` → `limiter` → CSRF 検証パターンを踏襲）
+- **CSRF 保護 / rate limiter / 認証の順序**: 実ルート chain は `requireAuth` middleware を経由
+  する。`requireAuth` 内部では **`checkCSRF` が `authenticate` より先**に走り、Authorization
+  header が無く `altpocket_session` cookie のみのリクエストで `X-CSRF-Token` 不一致なら 403
+  csrf を返す（`internal/server/server.go:1317-1331 requireAuth` / `:1459-1482 checkCSRF`）。
+  **rate limiter（`s.limiter.Allow(user.ID)`）は middleware には含まれず、各 handler 冒頭から
+  明示的に呼ぶ既存規約**（既存 `handleCreateItem` / `handleDeleteItem` / `handleSetItemStatus`
+  と同じ pattern）。本機能の bulk handler も「①Bearer JWT 遮断 → ②`requireAuth` 通過後の
+  authenticated session → ③handler 内 `s.limiter.Allow` 検査 → ④`http.MaxBytesReader`
+  → ⑤decode + validation」の順で揃える
 
 解消・回避する technical debt:
 
@@ -515,7 +522,7 @@ type BulkDeleteResponse struct {
 
 type BulkFailureDetail struct {
     ItemID string `json:"item_id"`
-    Reason string `json:"reason"`          // "not_found"（owned by other user OR deleted OR invalid uuid）/ "db_error"
+    Reason string `json:"reason"`          // "not_found" のみ（owned by other user OR deleted OR invalid uuid を leak 防止のため collapse）。DB エラーは 500 db_error として返し failed[] には含めない（Error Categories 節と契約一致）
     // NOTE: Title / URL は **レスポンスに含めない**（leak 防止 / Security Considerations 節）。
     // サーバは他ユーザー所有 id を `not_found` に collapse するため、表示可能な title を
     // 保持していないケースが恒常的に存在する。クライアント側は対象 article の DOM 表示要素
@@ -1139,12 +1146,18 @@ sequenceDiagram
     を持つ Server で 429 `{"error":"rate_limited"}` を返す（既存単一 API と同じ pattern）
   - `TestHandleBulkDeleteItems_RejectsBearerAuthReturns403`: `Authorization: Bearer <jwt>` 付きで
     呼び出し → 403 `{"error":"forbidden"}`（拡張機能 / MCP の `/v1/items/bulk-*` 到達を遮断）
-  - `TestHandleBulkTagItems_EmptyTagReturns400InvalidTag`: `{"tag": "   "}` → 400 invalid_tag（Req 5.9）
+  - `TestHandleBulkTagItems_EmptyTagReturns400InvalidTag`: **valid な `item_ids` を含めて** `{"item_ids": ["<valid-uuid>"], "tag": "   "}` を送る → 400 invalid_tag（Req 5.9）。`item_ids` を空にすると先に `invalid_request` で 400 になり tag 検証に到達しないため、tag 検証経路の回帰固定には valid な id 1 件以上が必須（validation 順序: ①`http.MaxBytesReader` → ②item_ids 空/超過 → ③UUID per-id 検証 → ④tag.Normalize 空判定）
   - `TestHandleBulkTagItems_RateLimitedReturns429`: 上記の bulk-tag 版
   - `TestHandleBulkTagItems_RejectsBearerAuthReturns403`: 上記の bulk-tag 版
-  - **UUID 形式不正の collapse は handler unit では検証しない**: `Server.store` は `*store.Store`
-    の concrete 型で fake 化が困難なため、当該テストは Integration Tests 節（後述 task 4）に
-    移管する。handler 単体では fake 不能な経路を素直に integration に寄せる
+  - **UUID 形式不正の collapse / 部分失敗 / 構造化ログは fake `bulkItemsStore` で handler 単体検証**:
+    本 design「Handler-side store interface」節で導入した `bulkItemsStore` package-private
+    interface（test seam / Server.bulkStore field 経由）により、Server.store の concrete 型に
+    妨げられず handler 単体で fake 注入が可能になった。具体的な fake-store ベースの unit
+    テスト群（UUID collapse / 部分失敗レスポンス / DB エラー 500 / 構造化ログ / request body
+    バイト境界）は tasks.md task 3 に列挙する。CI 実行可能な `go test ./...` 経路で認可境界 /
+    部分失敗振る舞いを退行検出できる（round 4 review feedback）。実 DB 経由の SQL 経路
+    （WHERE user_id 条件 / RETURNING の認可境界 leak 検証）は Integration Tests 節
+    （task 2 / task 4）に残置し、handler 層と store 層で役割分担する
 - **`static/` (node:test, fake DOM)**:
   - `items_bulk_selection.test.mjs`:
     - 単一カード checkbox click → 内部 Set に追加 + `.is-selected` 付与 + event 発火
@@ -1192,9 +1205,11 @@ sequenceDiagram
 
 ### Performance (manual / observation)
 
-- 100 件削除の p95 を `EXPLAIN ANALYZE DELETE FROM items WHERE id = ANY($1) AND user_id = $2`
-  で確認。Index Scan + Bitmap Heap Scan を期待。100 件あたり < 100 ms 想定（NFR 1.2: UI 側
-  視覚フィードバックは別途 1 秒以内なので、サーバ応答が 100 ms 程度なら余裕）
+- 100 件削除の p95 を `EXPLAIN ANALYZE DELETE FROM items WHERE id = ANY($1::uuid[]) AND user_id = $2`
+  で確認（**`::uuid[]` 明示キャスト必須**。pgx v5 は Go `[]string` を `text[]` として encode する
+  ため、`items.id UUID` 列との比較で `operator does not exist: uuid = text` を回避する。本書中の
+  他 SQL pattern と統一）。Index Scan + Bitmap Heap Scan を期待。100 件あたり < 100 ms 想定
+  （NFR 1.2: UI 側視覚フィードバックは別途 1 秒以内なので、サーバ応答が 100 ms 程度なら余裕）
 
 ## Security Considerations
 

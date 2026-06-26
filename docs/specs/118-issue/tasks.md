@@ -206,12 +206,18 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestHandleBulkTagItems_OverLimitReturns400PayloadTooLarge`: 同上
     - `TestHandleBulkTagItems_RejectsBearerAuthReturns403`: 上の bulk-tag 版
     - `TestHandleBulkTagItems_RateLimitedReturns429`: 上の bulk-tag 版
-    - `TestHandleBulkTagItems_EmptyTagReturns400InvalidTag`: `{"tag": "   "}` または `{"tag": ""}`
-      または `{}`（`tag` フィールド欠落）→ 400 `{"error":"invalid_tag"}`。`invalid_request` には
-      collapse しないことを assert（Req 5.9 server 二重防御 / クライアント側 invalid_tag 専用
-      処理の dispatch 契約を固定）
-    - `TestHandleBulkTagItems_NormalizationEmptyTagReturns400InvalidTag`: `{"tag": "　 "}`
-      （全角空白等の正規化後空文字パターン） → 400 invalid_tag
+    - `TestHandleBulkTagItems_EmptyTagReturns400InvalidTag`: **valid な `item_ids` を含めて**
+      `{"item_ids":["<valid-uuid>"], "tag": "   "}` / `{"item_ids":["<valid-uuid>"], "tag": ""}` /
+      `{"item_ids":["<valid-uuid>"]}`（`tag` フィールド欠落）の 3 ケース → いずれも 400
+      `{"error":"invalid_tag"}`。`invalid_request` には collapse しないことを assert（Req 5.9
+      server 二重防御 / クライアント側 invalid_tag 専用処理の dispatch 契約を固定）。
+      **`item_ids` を空にすると先に `invalid_request` で 400 になり tag 検証に到達しない**ため、
+      tag 検証経路の回帰固定には valid な id 1 件以上が必須（validation 順序: ①Bearer 遮断
+      → ②`s.limiter.Allow` → ③`http.MaxBytesReader` → ④decode + `item_ids` 空/超過
+      → ⑤UUID per-id 検証 → ⑥`tag.Normalize` 空判定 / round 2 review feedback）
+    - `TestHandleBulkTagItems_NormalizationEmptyTagReturns400InvalidTag`: 同じく valid な `item_ids`
+      を含めた `{"item_ids":["<valid-uuid>"], "tag": "　 "}`（全角空白等の正規化後空文字パターン）
+      → 400 invalid_tag。`item_ids` 空での invalid_request 先行回避は上記と同じ理由
     - **UUID 形式 collapse / 部分失敗 / 構造化ログを fake store で固定**（round 4 review feedback /
       CI 実行 unit test 経路で認可境界・部分失敗 振る舞いを退行検出する）:
       - `TestHandleBulkDeleteItems_InvalidUUIDsCollapseToFailedNotFound_FakeStore`: handler に
