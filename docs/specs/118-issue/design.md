@@ -222,7 +222,7 @@ static/
 | 4.7 / 4.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持 | items_bulk_actions.js + server response | レスポンスに `failed: [{item_id, reason}]` のみを含める（**title / url は含めない / leak 防止**）。クライアントは対象 article の DOM (`[data-item-id="<failed id>"]` の `h3#item-title-*` / `.tile-link[href]`) から title / url を取得し、**failed 全件分** を支援技術 reachable な領域（後述「Client-side error handling」節の `<dialog role="alertdialog">` または scrollable な `[aria-live="polite"]`）に列挙する | toast / alert + 当該 checkbox を checked のまま |
 | 5.1 / 5.2 | タグ入力 UI + 正規化 | items.html (タグ入力 dialog) + items_bulk_actions.js | 単一タグ文字列入力 → JS 側は `normalizeTagName`（NFKC + lowercase）で **空判定のみ** を行い、POST する body の `tag` は **原文字列を保持**（既存単一アイテム編集の `normalizeTagInputs` が `Name` に原文字列を保持して chip 表示の casing を維持する規約と一致 / Req 5.2） | dialog confirm → fetch (body=原文字列) |
 | 5.3 / 5.4 | 全アイテムに付与 + 重複なし | server: handleBulkTagItems → store: BulkAddItemTag | item_tags への `INSERT ... ON CONFLICT DO NOTHING`（一意制約: `(item_id, tag_id)`） | |
-| 5.5 | 一覧の対象カードにタグ反映 | items_bulk_actions.js | レスポンスの `succeeded[].tags` を当該カードのタグ chip 列に反映する。chip ノードは既存 SSR と **同じ contract**（`button.tag.tag-filter-toggle` + `data-tag-filter-toggle` + `data-tag-normalized="<normalized>"` + `aria-label="タグで絞り込み: <name>"` + テキストノードに `<name>`）を満たす形で `document.createElement('button')` + `setAttribute` + `textContent` で組み立てる（`innerHTML` / `insertAdjacentHTML` は禁止 / XSS 防御 + #117 chip クリック絞り込み契約維持 / NFR 3.3）。**現在 active なタグフィルタとの照合**: `new URL(window.location.href).searchParams.getAll('tag')` で得た **active tag name 集合** を比較対象とし、各 chip の `tag.normalized_name` が active 集合の各要素を `tag.Normalize` 同等の正規化（JS 側は `window.altpocketNormalizeTagName` または fallback で NFKC + lowercase + trim）した値と一致する場合は **`is-selected` class 付与 + `aria-pressed="true"`**、一致しない場合は `aria-pressed="false"`（class 無）とする。これにより、タグフィルタ中（例: `?tag=GoLang` でフィルタ中）に bulk-tag 成功で chip が再構築されても、フィルタ中タグの `is-selected` 視覚状態が新規付与タグ列でも維持される（NFR 3.2 active-filters chip 連携 / NFR 3.3 tag chip クリック絞り込み契約 / round 2 review feedback） | |
+| 5.5 | 一覧の対象カードにタグ反映 | items_bulk_actions.js | レスポンスの `succeeded[].tags` を当該カードのタグ chip 列に反映する。chip ノードは既存 SSR と **同じ contract**（`button.tag.tag-filter-toggle` + `data-tag-filter-toggle` + `data-tag-normalized="<normalized>"` + `aria-label="タグで絞り込み: <name>"` + テキストノードに `<name>`）を満たす形で `document.createElement('button')` + `setAttribute` + `textContent` で組み立てる（`innerHTML` / `insertAdjacentHTML` は禁止 / XSS 防御 + #117 chip クリック絞り込み契約維持 / NFR 3.3）。**現在 active なタグフィルタとの照合**: `new URL(window.location.href).searchParams` から **canonical 形式 `tag=` の repetition と legacy 形式 `tags=csv` の両方** を読み取り、active tag name 集合を合成する。具体的には `searchParams.getAll('tag')` の配列に加え、`searchParams.get('tags')` が非 null なら `String(value).split(',')` で展開した配列を concat（既存 server `parseTagFilters`（`internal/server/server.go:1557`）が両形式を受理する規約の JS 側ミラー / round 4 review feedback。SSR の `buildTagRemovedURL` は canonical `?tag=` repetition への migration を行うが、初回 page load 直後の URL や bookmark / 手動 URL 入力経路で `?tags=go,rust` が残ることがあるため、JS 側も両形式を見る）。合成後の各要素を `tag.Normalize` 同等の正規化（JS 側は `window.altpocketNormalizeTagName` または fallback で NFKC + lowercase + trim）した `Set<string>`（`activeNormalizedNames`）と各 chip の `tag.normalized_name` を比較し、含まれる場合は **`is-selected` class 付与 + `aria-pressed="true"`**、含まれない場合は `aria-pressed="false"`（class 無）とする。これにより、タグフィルタ中（例: `?tag=GoLang` / `?tags=go,rust` でフィルタ中）に bulk-tag 成功で chip が再構築されても、フィルタ中タグの `is-selected` 視覚状態が新規付与タグ列でも維持される（NFR 3.2 active-filters chip 連携 / NFR 3.3 tag chip クリック絞り込み契約 / round 2 review feedback） | |
 | 5.6 | 成功時のリセット + ツールバー非表示 | items_bulk_actions.js | Set クリア + tag dialog 閉鎖 | |
 | 5.7 / 5.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持、成功は選択解除 | items_bulk_actions.js + server response | レスポンス `failed[]`（`{item_id, reason}` のみ） / `succeeded[]` を使い、succeeded の id を Set から除去・failed の id は保持。失敗一覧の title / url は対象 article の DOM から **全件** 取得して支援技術 reachable な領域に列挙（4.7 / 4.8 と同じ規約） | |
 | 5.9 | 空タグでの無動作 | items_bulk_actions.js | dialog confirm 時に正規化結果が空文字なら fetch しない + 入力欄に focus 戻す | |
@@ -365,9 +365,21 @@ record 種別を判定し、`addedNodes.length > 0` の record（fragment 差替
    - `_actionMutationDepth === 0` のとき（bracket 外）は **保守的にリセット**する（既存挙動と
      一致 / Req 7.5 を満たす）
 
-`MutationObserver.takeRecords()` を `endActionMutation()` の冒頭で呼び出し、ブラケット中に蓄積した
-records を捨てる。これにより actions の bulk DOM 操作完了直後の callback タイミングずれによる
-リセット誤発火を防ぐ。
+**`endActionMutation()` での `takeRecords()` 取り扱い**（round 3 review feedback / 過去
+draft の「records を捨てる」記述を改訂）: `endActionMutation()` の冒頭で
+`observer.takeRecords()` を呼び出すが、**取り出した records を黙って捨ててはならない**。
+取り出した records を上記「per-record 判定ロジック」（`addedNodes.length > 0` の
+fragment 差替 record と `addedNodes.length === 0` の per-item 削除 record の分岐）に
+**そのまま再入力**し、fragment 差替 record があれば bracket 状態に関係なく reset を
+実行する。これにより、300ms fade-out bracket 中に状態タブ切替・タグフィルタ・検索・
+ソート・ページ送り・popstate で `[data-items-region].innerHTML` が新 SSR に置換された
+record が pending queue に貯まっていた場合でも、`takeRecords()` で取り出した瞬間に
+Req 7.1 / 7.2 / 7.5 のリセットが確実に発火する（fragment 差替 record の取りこぼし防止）。
+per-item 削除 record（`addedNodes.length === 0`）のみが bracket 抑止対象として decrement
+直前に discard される（順序: `takeRecords()` → fragment 差替 record を per-record 判定で
+処理 → per-item 削除 record を discard → decrement）。これにより actions の bulk DOM 操作
+完了直後の callback タイミングずれによるリセット誤発火を防ぎつつ、fragment 差替を
+取りこぼさない。
 
 **Per-record 判定の根拠**: `MutationObserver` の callback は MutationRecord の **配列**を渡す。
 fragment 差替（`innerHTML = newHTML` / `replaceChildren(...)`）と per-item 削除（`article.remove()`）が
@@ -700,7 +712,14 @@ markup を追加する:
 
 <dialog class="bulk-tag-dialog" data-bulk-tag-dialog aria-labelledby="bulk-tag-dialog-title">
   <h2 id="bulk-tag-dialog-title">選択中のアイテムにタグを付与</h2>
-  <form method="dialog">
+  <!-- NOTE: `method="dialog"` の submit は **ブラウザのネイティブ挙動として dialog を即座に close する**。
+       本 UI は invalid_tag（空文字 / 正規化後空 / 400 invalid_tag response）時に dialog を
+       開いたまま入力欄に focus 戻しが必要なため（Req 5.9）、actions モジュールの submit
+       ハンドラ冒頭で **`event.preventDefault()` を必ず呼び**、close 判定を JS 側に委ねる規約と
+       する（round 4 review feedback）。具体的には、success 時のみ `dialog.close()` を明示呼び、
+       invalid_tag / fetch 失敗時は `preventDefault()` 済みなので dialog はそのまま開いたまま
+       維持される。 -->
+  <form method="dialog" data-bulk-tag-form>
     <label class="field">
       <span class="field-label">タグ名</span>
       <input class="input" type="text" data-bulk-tag-input autofocus required>
@@ -853,12 +872,17 @@ sequenceDiagram
     `aria-pressed`（active 一致時は `"true"`、それ以外は `"false"`） /
     `aria-label="タグで絞り込み: <name>"`
   - テキストノード: `<name>`（`textContent` で代入、`innerHTML` 禁止 / XSS 防御）
-  - **active タグフィルタとの照合**: `new URL(window.location.href).searchParams.getAll('tag')`
-    で active tag name 集合を取得し、各 active 名を `window.altpocketNormalizeTagName` または
-    fallback（NFKC + lowercase + trim）で正規化した値の Set を作る。chip ごとに
-    `tag.normalized_name` が active set に含まれるかを判定して `is-selected` / `aria-pressed`
-    を分岐する（既存 SSR が `SelectedTags` template field を見て同一判定を行っているのを JS
-    側で再現 / NFR 3.2 active-filters 連携の維持 / round 2 review feedback）
+  - **active タグフィルタとの照合**（canonical `tag=` repetition + legacy `tags=csv` 両形式
+    対応 / round 4 review feedback）: `const params = new URL(window.location.href).searchParams;`
+    から canonical `params.getAll('tag')` の配列に加え、`params.get('tags')` が非 null なら
+    `String(value).split(',')` で展開した配列を concat して active tag name の生集合を作る
+    （既存 server `parseTagFilters`（`internal/server/server.go:1557`）が両形式を受理する規約
+    の JS 側ミラー）。各要素を `window.altpocketNormalizeTagName` または fallback
+    （NFKC + lowercase + trim）で正規化し、空文字を除外した `Set<string>`（`activeNormalizedNames`）
+    を構築する。chip ごとに `tag.normalized_name` が active set に含まれるかを判定して
+    `is-selected` / `aria-pressed` を分岐する（既存 SSR が `SelectedTags` template field を
+    見て同一判定を行っているのを JS 側で再現 / NFR 3.2 active-filters 連携の維持 / round 2
+    review feedback）
   - 配置: 既存 `<div class="tags">` 直下に `replaceChildren(...newButtons)` で全置換
     （SSR と同じ生成順 = response の `succeeded[].tags` 順 = `normalized_name` 昇順）
   - 既存 chip 列が無い card（タグ 0 件 SSR）の場合は `<div class="tags">` を `createElement` で

@@ -196,8 +196,10 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       照合）。`/{id}` ワイルドカード route と前者の静的セグメントが競合しない（404 にならない）
       ことを併せて確認
   - `extension_contract_test.go` は **変更しない**（既存契約に影響なし / NFR 3.4 / 3.5）
-  - **テスト追加（同 task 内）**: 上記 13 件の handler unit テスト（基本 10 件 + Bearer 拒否 2 件 +
-    rate limit 429 2 件 - UUID 検証 2 件を task 4 に移管 + ルート登録 1 件）を本タスクで完結させる
+  - **テスト追加（同 task 内）**: 上記 15 件の handler unit テスト（Delete 系 6 件
+    [unauth / invalid JSON / empty ids / over-limit / bearer reject / rate limit] + Tag 系 8 件
+    [unauth / invalid JSON / empty ids / over-limit / bearer reject / rate limit / empty tag
+    invalid_tag / normalize empty invalid_tag] + ルート登録 1 件）を本タスクで完結させる
     （Req 5.9 / 8.1 / NFR 2.1 / NFR 3.4 / NFR 5.1 のうち、handler 単体で観測可能な 400 / 401 /
     403 / 429 / payload_too_large 系 + 静的ルートと `/{id}` ワイルドカードの非競合 + Bearer 拒否は
     通常 `go test ./...` で実行可能 / 同 task 内テスト必須カテゴリに該当）。UUID 形式不正の
@@ -286,6 +288,11 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
           <button type="button" class="btn-tertiary bulk-clear">選択解除</button>
         </div>
       </div>
+      <!-- NOTE: `method="dialog"` の submit はブラウザのネイティブ挙動として dialog を
+           即座に close する。invalid_tag（Req 5.9）時に dialog を開いたまま input に
+           focus 戻しが必要なため、task 7 の actions モジュールの submit ハンドラ冒頭で
+           **必ず `event.preventDefault()` を呼び**、close 判定を JS 側に委ねる（task 7 の
+           「bulk-tag dialog submit 規約」節 / round 4 review feedback）。 -->
       <dialog class="bulk-tag-dialog" data-bulk-tag-dialog aria-labelledby="bulk-tag-dialog-title">
         <h2 id="bulk-tag-dialog-title">選択中のアイテムにタグを付与</h2>
         <form method="dialog" data-bulk-tag-form>
@@ -420,9 +427,14 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
            間は **無視する**（reset を行わない / Req 4.8 / 5.8 failed 選択保持）。actions 側は
            `selection.beginActionMutation()` で削除前にカウンタを +1、
            `selection.endActionMutation()` で −1 にする（reference counted, nest 安全）。
-           `endActionMutation()` 冒頭で `observer.takeRecords()` を呼び出してブラケット中に
-           蓄積した records を破棄してから decrement することで、microtask boundary 越しの遅延
-           callback でも誤発火しない
+           `endActionMutation()` 冒頭で `observer.takeRecords()` を呼び出し、**取り出した
+           records は per-record 判定（上記 1 / 2）を通してから discard する**（取り出した
+           records を一律に黙って捨てると、bracket 中に貯まった fragment 差替 record の
+           Req 7.1 / 7.2 / 7.5 リセットが失われる / round 4 review feedback）。具体的な順序は
+           「`takeRecords()` → fragment 差替 record（`addedNodes.length > 0`）を per-record
+           判定で処理して reset 実行 → per-item 削除 record（`addedNodes.length === 0`）は
+           bracket 中なので discard → decrement」。これにより microtask boundary 越しの遅延
+           callback でも誤発火せず、かつ fragment 差替を取りこぼさない
          - `_actionMutationDepth === 0`（bracket 外）→ 通常運用では発生しないが、保守的に
            reset を実行（`Set.clear()` + `lastClickedID = null` + event 発火）。SSR 側が将来空
            fragment を返す経路を追加しても Req 7.5 を満たす
@@ -515,13 +527,23 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       + event 発火 + 新規 disabled checkbox の enable が走ることを assert（300ms fade-out
       bracket 中の状態タブ切替・タグフィルタ・検索・ソート・ページ送りで Req 7.1 / 7.2 / 7.5 の
       リセットが脱落しないことの回帰固定 / round 2 review feedback）
+    - `TestEndActionMutationProcessesQueuedFragmentSwapBeforeDiscard`: fragment 差替 record が
+      MutationObserver の **pending queue** に貯まっている（callback がまだ発火していない）状態
+      で `endActionMutation()` が呼ばれるパスを擬似的に再現する。bracket 中に
+      `region.innerHTML = newSSR` を実行 → MutationObserver callback が microtask boundary 越しで
+      未発火のまま `endActionMutation()` を呼ぶ → `endActionMutation()` 冒頭の `takeRecords()` が
+      fragment 差替 record を取り出し、per-record 判定で `Set.clear()` + `lastClickedID = null` +
+      event 発火 + 新 checkbox の enable が走ることを assert。**取り出した records を黙って
+      捨てると Req 7.1 / 7.2 / 7.5 のリセットが失われる** ので、その分岐を明示的に固定する
+      （round 4 review feedback）
     - `TestInitialStateIsEmpty`: init 直後の `getSelectedIDs()` が空配列を返す（Req 7.3 リロード時
       の自然な空状態を回帰固定）
     - `TestClearAllProgrammatic`: `init()` 戻り値の `clear()` 呼出 → Set 空 + DOM 上の全
       checkbox が unchecked + 全 `.is-selected` 解除（Req 3.4）
-  - **テスト追加（同 task 内）**: 上記 13 件の selection モジュールテストを本タスクで完結させる
-    （Req 1.1〜1.4 / 2.1〜2.4 / 3.4 / 3.6 / 6.1〜6.3 / 7.1〜7.5 / NFR 2.2 / NFR 3.1〜3.3 の同 task
-    内テスト必須カテゴリに該当）
+  - **テスト追加（同 task 内）**: 上記 21 件の selection モジュールテストを本タスクで完結させる
+    （Req 1.1〜1.4 / 2.1〜2.4 / 3.4 / 3.6 / 6.1〜6.3 / 7.1〜7.5 / NFR 2.2 / NFR 3.1〜3.3 / NFR 3.5
+    の同 task 内テスト必須カテゴリに該当、`takeRecords()` 経由の queued fragment 差替 record
+    処理の回帰固定を含む）
   - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.6, 2.1, 2.2, 2.3, 2.4, 3.4, 3.6, 6.1, 6.2, 6.3, 7.1, 7.2, 7.3, 7.4, 7.5, NFR 1.1, NFR 2.1, NFR 2.2, NFR 3.1, NFR 3.2, NFR 3.3, NFR 3.5_
   - _Boundary: Static_
   - _Depends: 5_
@@ -563,7 +585,20 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         cancel / Escape では approve callback が発火しないため、追加コード無しで「キャンセル時に
         何もしない」が成立する（既存 `confirm.show` の挙動）（Req 4.2 / 4.3）
       - `button.bulk-tag` → `<dialog data-bulk-tag-dialog>` を `showModal()`、フォーム submit で
-        `<input data-bulk-tag-input>` の値を取得。**空判定のためだけに**
+        `<input data-bulk-tag-input>` の値を取得。
+        **bulk-tag dialog submit 規約**（round 4 review feedback / `method="dialog"` 自動 close
+        対策）: form の `submit` ハンドラ冒頭で **必ず `event.preventDefault()` を呼び**、
+        ブラウザのネイティブ dialog close を抑止する。これにより、空判定で no-op となるケース
+        （Req 5.9）や 400 invalid_tag レスポンスを返すケース（Req 5.9 二重防御）で dialog が
+        意図せず閉じてしまい input に focus 戻しが不可能になる事故を防ぐ。dialog の close は
+        以下のいずれの経路に対しても **JS 側から明示的に `dialog.close()` を呼ぶ** ことで完結
+        させる:
+          - 200 OK（全成功 / 部分失敗いずれも）→ 結果反映後に `dialog.close()`
+          - cancel ボタン押下（`data-bulk-tag-cancel`）→ click ハンドラで `dialog.close()`
+          - Escape キー → ブラウザの `<dialog>` 標準で `cancel` event 発火 → dialog 自身が close
+            （`preventDefault()` の対象外）
+          - 空判定 / 400 invalid_tag → close せず focus を `data-bulk-tag-input` に戻す
+        **空判定のためだけに**
         `(window.altpocketNormalizeTagName || ((v) => v.normalize('NFKC').toLowerCase().trim()))(value)`
         を実行し、正規化結果が空文字なら no-op + input に focus 戻す（Req 5.9）。
         **POST 時は正規化前の原文字列をそのまま送る**（NFKC + lowercase を JS 側で強制適用しない /
@@ -617,11 +652,23 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - **一括タグ付けレスポンス処理**:
       - 200 OK + 全成功: succeeded[].tags を当該カードの `.tags` chip 列に反映する。**chip ノード
         は既存 SSR と同じ contract**（`items_list.html` line 65-70 と一致）で組み立てる:
-        - **active タグフィルタ集合の事前算出**: chip 構築前に
-          `new URL(window.location.href).searchParams.getAll('tag')` で active tag name 配列を
-          取得し、各要素を `(window.altpocketNormalizeTagName || ((v) => v.normalize('NFKC').toLowerCase().trim()))(name)`
-          で正規化した値の `Set<string>` を作る（`activeNormalizedNames`）。1 回の chip 再構築
-          サイクルで複数 card に適用するため、card ループの外で 1 度だけ算出する
+        - **active タグフィルタ集合の事前算出**（canonical `tag=` repetition + legacy
+          `tags=csv` 両形式対応 / round 4 review feedback）: chip 構築前に
+          `const params = new URL(window.location.href).searchParams;` を取得し、以下を順次
+          concat して active tag name の生集合を作る:
+          ```javascript
+          const rawTagNames = [
+            ...params.getAll('tag'),                                  // canonical 形式
+            ...(params.get('tags')?.split(',') ?? []),                // legacy CSV 形式
+          ];
+          ```
+          既存 server `parseTagFilters`（`internal/server/server.go:1557` 付近）が両形式を
+          受理する規約を JS 側でミラーするため両形式を見る。SSR の `buildTagRemovedURL` は
+          canonical `?tag=` repetition への migration を行うが、初回 page load 直後の URL や
+          bookmark / 手動 URL 入力経路で `?tags=go,rust` が残ることがある。各要素を
+          `(window.altpocketNormalizeTagName || ((v) => v.normalize('NFKC').toLowerCase().trim()))(name)`
+          で正規化し、空文字を除外した値の `Set<string>` を作る（`activeNormalizedNames`）。
+          1 回の chip 再構築サイクルで複数 card に適用するため、card ループの外で 1 度だけ算出する
         - tag 要素: `document.createElement('button')`
         - `setAttribute('type', 'button')`
         - **class / aria-pressed の active 一致判定**: `const isActive =
@@ -671,8 +718,16 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       タスク 6 で実装する `selection.beginActionMutation` / `endActionMutation` の reference
       counting 仕様（design.md「Selection state」節）に依存するため、方式 A はそのままの依存
       関係で動作する
-    - **busy 状態**（NFR 1.2）: click 直後にツールバーに `is-busy` class を付与（CSS task 8 が
-      ボタン disabled + spinner を即時表示）。応答完了で外す
+    - **busy 状態**（NFR 1.2 / round 4 review feedback: pointer-events だけではキーボード
+      起動を止められない）: click 直後に以下の **両方** を実施し、応答完了で両方を解除する:
+      1. ツールバー（`[data-bulk-toolbar]`）に `is-busy` class を付与する（CSS task 8 が
+         spinner / 視覚的 dim を即時表示）
+      2. ツールバー内の **全ての操作ボタン**（`button.bulk-delete` / `button.bulk-tag` /
+         `button.bulk-clear`）および bulk-tag dialog の操作ボタン（`button[data-bulk-tag-cancel]` /
+         `button[data-bulk-tag-confirm]`）に **`disabled` 属性を `setAttribute`** で付与する
+         （`button.disabled = true` でも可）。これにより `pointer-events: none` の CSS では
+         止められないキーボード起動（Tab フォーカス → Enter / Space）まで含めて二重送信を確実に
+         抑止する。応答完了で `removeAttribute('disabled')` する
     - **NFR 1.3 ちらつき防止**: items-list 全体の innerHTML 書き換えはしない、対象 article のみを
       `article.remove()` する
     - CSRF token は既存 `<meta name="csrf-token">` から取得（`items_status_actions.js` と同じ
@@ -734,6 +789,15 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       tag 値が全角混じり等で SSR 側 normalize と一致するか確認するため、URL に `?tag=ＧｏＬａｎｇ`
       （全角）を stub したケースで `data-tag-normalized="golang"` chip が `is-selected` になる
       ことも併せて assert（`window.altpocketNormalizeTagName` または fallback 経路の同期性回帰固定）
+    - `TestTagSuccessRespectsLegacyTagsCsvParam`: `window.location` を **legacy CSV 形式**
+      `?tags=go,rust` で stub し、全成功レスポンスの `succeeded[].tags` に `go` / `rust` /
+      `python` を含むケース → `data-tag-normalized="go"` と `"rust"` の chip が `is-selected` +
+      `aria-pressed="true"`、`"python"` の chip は `is-selected` 無 + `aria-pressed="false"`
+      になることを assert。canonical `?tag=` repetition と legacy `?tags=csv` の **両形式** で
+      active filter chip の状態維持が同等に動作する（既存 server `parseTagFilters` の両形式
+      受理規約と一致する JS 側ミラー / round 4 review feedback）。canonical と legacy の
+      混在ケース（`?tag=go&tags=rust,python`）も併せて 1 ケース追加し、両方の tag が
+      active 集合に合流することを assert
     - `TestTagSuccessClearsSelectionAndClosesDialog`: 全成功 → selection.clear + dialog 閉鎖
       （Req 5.6）
     - `TestTagPartialFailureKeepsFailedSelected`: 部分失敗 → succeeded の chips 反映 + failed の id
@@ -753,35 +817,76 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestToolbarShowsHidesOnSelectionChange`: `bulkselection:changed` event detail.count=0 → hidden、
       count>0 → 表示 + 件数テキスト更新（Req 3.1 / 3.2 / 3.6）
     - `TestClearButtonCallsSelectionClear`: bulk-clear click → selection.clear が呼ばれる（Req 3.4）
-  - **テスト追加（同 task 内）**: 上記 23 件の actions モジュールテストを本タスクで完結させる
-    （Req 3.1 / 3.2 / 3.3 / 3.4 / 3.6 / 4.1〜4.8 / 5.5〜5.9 / 6.5 の同 task 内テスト必須カテゴリに該当、
-    4xx/5xx エラーパス・chip rebuild 契約・confirm シグネチャ規約・failure dialog 全件 populate
-    の回帰固定を含む）
+    - `TestToolbarButtonsDisabledDuringInFlightRequest`: bulk-delete click → fetch が pending な間、
+      ツールバー内の全ボタン（`button.bulk-delete` / `button.bulk-tag` / `button.bulk-clear`）が
+      `disabled` 属性を持つことを assert（pointer-events のみではキーボード起動を止められないため
+      button disabled で二重送信を防ぐ規約の回帰固定 / NFR 1.2 / round 4 review feedback）。
+      fetch resolve 後（成功 / 失敗いずれも）に `disabled` が外れることを併せて assert
+  - **テスト追加（同 task 内）**: 上記 28 件の actions モジュールテストを本タスクで完結させる
+    （Req 3.1 / 3.2 / 3.3 / 3.4 / 3.6 / 4.1〜4.8 / 5.5〜5.9 / 6.5 / NFR 1.2 の同 task 内テスト
+    必須カテゴリに該当、4xx/5xx エラーパス・chip rebuild 契約・confirm シグネチャ規約・failure
+    dialog 全件 populate・legacy `?tags=csv` 形式の active filter chip 連携・busy 状態の
+    button disabled の回帰固定を含む）
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 5.1, 5.2, 5.5, 5.6, 5.7, 5.8, 5.9, 6.5, NFR 1.2, NFR 1.3_
   - _Boundary: Static_
   - _Depends: 5, 6_
 
 - [ ] 8. CSS: チェックボックス + 選択カード視覚区別 + 選択ツールバー + タグ入力 dialog
-  - `static/style.css` に以下を追加:
+  - **既存 token のみを使用する**（round 4 review feedback: `--focus-ring` / `--bg-selected`
+    / `--border-primary` / `--border-default` / `--font-size-base` は **本リポジトリの
+    `static/style.css` に未定義** であるため使用不可）。本リポジトリで実在する token は以下
+    （`grep -oE -- '--[a-zA-Z0-9-]+' static/style.css | sort -u` で随時確認可）:
+    - 余白: `--space-1` / `--space-2` / `--space-3` / `--space-4` / `--space-5` / `--space-6` ほか
+    - 色: `--color-primary` / `--color-primary-hover` / `--color-primary-soft` /
+      `--color-danger` / `--color-success` / `--color-info`
+    - 背景: `--bg-base` / `--bg-surface` / `--bg-elevated` / `--bg-grouped`
+    - テキスト: `--text-primary` / `--text-secondary` / `--text-tertiary` / `--text-quaternary`
+    - 区切り: `--separator` / `--separator-opaque`
+    - radius: `--radius-sm` / `--radius-md` / `--radius-lg` / `--radius-full`
+    - shadow: `--shadow-sm` / `--shadow-md` / `--shadow-lg` / `--shadow-sheet`
+    - typography: `--type-body-size` / `--type-caption-1-size` / `--type-headline-size` ほか
+    - motion: `--motion-fast` / `--motion-moderate` / `--motion-standard` /
+      `--ease-default` / `--ease-spring` / `--ease-accelerate` / `--ease-decelerate`
+  - `static/style.css` に以下を追加（**未定義 token は使わない**。表現が必要な場合は既存 token を
+    組み合わせる、または `outline: 2px solid var(--color-primary); outline-offset: 2px;` のような
+    リテラルで代替する）:
     - `.item-select`: カード左上に位置するチェックボックス（`position: absolute; top: var(--space-2);
-      left: var(--space-2);` 程度、フォーカスリングは既存 `--focus-ring` トークンに揃える）。
+      left: var(--space-2);` 程度）。フォーカスリングは
+      `:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }` の
+      リテラル表現で揃える（既存 `.tag-filter-toggle:focus-visible` 等の outline 表現と一致）。
       `.item-card` 側は `position: relative` を確保
-    - `.item-card.is-selected`: 選択中の視覚区別（背景を `--bg-selected` 相当 + 縁取りを
-      `--border-primary` で強調、ただし既存 `.failed` border-left との衝突を避けるため `outline`
-      で表現するか `box-shadow inset` を使う / Req 1.4 視覚区別を色だけに依存しない）
+    - `.item-card.is-selected`: 選択中の視覚区別。背景は `--color-primary-soft`（既存
+      primary 系の弱色）、強調は `outline: 2px solid var(--color-primary); outline-offset: -2px;`
+      または `box-shadow: inset 0 0 0 2px var(--color-primary);` で表現する（既存 `.failed`
+      border-left との衝突を避ける / Req 1.4 視覚区別を色だけに依存しない – checked 状態の
+      checkbox との併用で十分）
     - `.bulk-toolbar`: `position: sticky; bottom: 0;`（または fixed bottom）でスクロール中も画面下に
-      固定（Req 3.5）。背景 `--bg-elevated` + 上端 `--border-default` で本文と区別、`padding`
-      は `--space-4`、`hidden` 属性が付いている間は `display: none`
-    - `.bulk-toolbar-count`: 件数表示の typography（`--font-size-base` + `--text-secondary`）
+      固定（Req 3.5）。背景 `--bg-elevated` + 上端 `border-top: 1px solid var(--separator-opaque);`
+      で本文と区別、`padding` は `var(--space-3) var(--space-4);`、`hidden` 属性が付いている間は
+      `display: none`
+    - `.bulk-toolbar-count`: 件数表示の typography（`font-size: var(--type-body-size);
+      color: var(--text-secondary);`）
     - `.bulk-toolbar-actions`: ボタン 3 個の横並びレイアウト（`display: flex; gap: var(--space-2);`）
-    - `.bulk-toolbar.is-busy`: busy 状態（ボタン `pointer-events: none; opacity: 0.65;`、
-      アクション群に loading spinner を併置 / NFR 1.2 即時視覚フィードバック）
+    - **busy 状態の表現は CSS 単独で完結させない**（round 4 review feedback: `pointer-events: none`
+      ではキーボード起動を止められない）: actions モジュール（task 7）が click 直後に各
+      `<button>` に `disabled` 属性を `setAttribute` で付与し、応答完了で除去する。CSS 側は
+      `:disabled` 疑似クラスに対する visual style のみを担当し、`cursor` / `opacity` /
+      `aria-disabled` 連動の視覚効果を与える:
+      - `.bulk-toolbar button:disabled, .bulk-tag-dialog button:disabled { opacity: 0.65;
+        cursor: not-allowed; }`（ボタン disabled で `pointer-events: none` も自動的に適用される
+        ブラウザ標準挙動を活用）
+      - `.bulk-toolbar.is-busy` は spinner / overlay 等の **視覚的補助**（disabled 表現を補強
+        する目的）に限定して使う（`is-busy` 単独ではキーボード起動を抑止できないため、必ず
+        button disabled と併用する）
     - `.bulk-tag-dialog`: ネイティブ `<dialog>` の最低限スタイル（既存 `confirm-overlay` の
-      backdrop / shadow / radius トークンに揃える）
-    - `.bulk-tag-dialog::backdrop`: dialog 背景 dim（既存 confirm overlay と同じ rgba）
+      backdrop / shadow / radius トークンに揃える: `background: var(--bg-elevated);
+      border-radius: var(--radius-md); box-shadow: var(--shadow-lg);` 等）
+    - `.bulk-tag-dialog::backdrop`: dialog 背景 dim（既存 confirm overlay と同じ rgba。既存
+      `dialog::backdrop` の rgba 値を流用）
     - `.bulk-failure-dialog`: 失敗一覧 dialog のレイアウト（`max-width: min(560px, 90vw);` 程度
-      + `padding: var(--space-4); border-radius: var(--radius-md);`、`confirm-overlay` と同じ
-      backdrop / shadow / radius トークンに揃える）
+      + `padding: var(--space-4); border-radius: var(--radius-md); background: var(--bg-elevated);
+      box-shadow: var(--shadow-lg);`、`confirm-overlay` と同じ backdrop / shadow / radius
+      トークンに揃える）
     - `.bulk-failure-dialog::backdrop`: dialog 背景 dim（同上 rgba）
     - `.bulk-failure-list`: **`max-height: 60vh; overflow-y: auto;`** + 余白 + 単純な
       list-style（失敗 100 件まで scrollable に全件 reachable / Req 4.7 / 5.7 truncation 廃止
