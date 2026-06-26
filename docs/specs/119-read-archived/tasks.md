@@ -4,7 +4,7 @@
 SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、各タスクが `DEV_MAX_TURNS=60` 以内に
 収まるようにした。
 
-- [ ] 1. マイグレーション 007: items.status カラム追加と backfill
+- [x] 1. マイグレーション 007: items.status カラム追加と backfill
   - `migrations/007_add_item_status.sql` を新規作成
   - `ALTER TABLE items ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'unread'`
   - **CHECK 制約の冪等追加**: PostgreSQL 16 には `ADD CONSTRAINT IF NOT EXISTS` が存在しない
