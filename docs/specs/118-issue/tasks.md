@@ -86,8 +86,15 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - `requireAuth` 通過後、`s.limiter.Allow(user.ID)` 検査
       - JSON `{"item_ids": [...]}` を decode、`len(item_ids) == 0` → 400 invalid_request、
         `len(item_ids) > 100` → 400 payload_too_large
-      - `s.store.BulkDeleteItems(ctx, user.ID, req.ItemIDs)` を呼び、err なら 500 db_error
-      - succeeded set を作り `failed := requestIDs \ succeededSet` を計算
+      - **UUID 形式の per-id 検証**（design.md Components節 / Security Considerations節）:
+        各 `item_ids[i]` を `uuid.Parse(id)` で検証する。invalid な id は store に渡さず、
+        その id を `failed[{item_id: <as-is>, reason: "not_found"}]` に **collapse** する。
+        valid な id だけを `validIDs []string` に集めて store.BulkDeleteItems に渡す
+        （これにより不正文字列を介した DB エラー誘発 / 500 を防ぐ / Req 8.3 二重防御）
+      - `s.store.BulkDeleteItems(ctx, user.ID, validIDs)` を呼び、err なら 500 db_error
+      - succeeded set を作り `failed := (validIDs \ succeededSet) ∪ invalidUUIDs` を計算
+        （invalid UUID 由来の failed と not-found 由来の failed を同じ `reason: "not_found"` で
+        合流させる）
       - failed の各 id について `reason: "not_found"`、title / url は空文字（leak 防止）で
         `BulkFailureDetail` を組み立てる
       - `slog.Info("items.bulk.delete", ...)` を出力（user_id / item_ids / succeeded_count /
@@ -96,10 +103,13 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `handleBulkTagItems(w, r)`:
       - 同じ chain 検査
       - JSON `{"item_ids": [...], "tag": "..."}` を decode、`item_ids` 空 / 超過は上と同じ
+      - **UUID 形式の per-id 検証**: handleBulkDeleteItems と同じ流儀。invalid な id は store に
+        渡さず `failed[{item_id: <as-is>, reason: "not_found"}]` に collapse、`validIDs` だけを
+        store に渡す（Req 8.3 二重防御）
       - `tag.Normalize(req.Tag)` 結果が空文字 → 400 invalid_tag（Req 5.9 二重防御）
       - `normalizeTagInputs([]string{req.Tag})[0]` で `TagInput`（Name + NormalizedName）を作る
-      - `s.store.BulkAddItemTag(ctx, user.ID, req.ItemIDs, tagInput)` を呼ぶ
-      - succeeded set / failed を上と同様に計算
+      - `s.store.BulkAddItemTag(ctx, user.ID, validIDs, tagInput)` を呼ぶ
+      - succeeded set / failed を上と同様に計算（invalid UUID 由来の failed を合流）
       - `slog.Info("items.bulk.tag", ...)` を出力
       - 200 で `BulkTagResponse` を返す
   - `internal/server/server.go` の `/v1/items` route 内（`r.Delete("/{id}", ...)` の隣、または
@@ -125,13 +135,27 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       400 invalid_tag（Req 5.9 server 二重防御）
     - `TestHandleBulkTagItems_NormalizationEmptyTagReturns400InvalidTag`: `{"tag": "　 "}`
       （全角空白等の正規化後空文字パターン） → 400 invalid_tag
+    - `TestHandleBulkDeleteItems_InvalidUUIDsCollapseToFailedNotFound`: `{"item_ids":["not-a-uuid", "<valid-uuid>"]}`
+      で store には valid な id のみが渡され、invalid な id は `failed[{item_id:"not-a-uuid",
+      reason:"not_found"}]` として返ることを fake store を使った handler 層テストで assert
+      （Req 8.3 / Security Considerations 節の不正 id 攻撃面遮断の回帰固定）。store interface は
+      テスト用に minimal fake で差し替える
+    - `TestHandleBulkTagItems_InvalidUUIDsCollapseToFailedNotFound`: 上と同じ流儀で bulk-tag 側も
+      回帰固定
+    - `TestBulkRoutesRegisteredOnRouter`: chi router の routing tree を walk して
+      `POST /v1/items/bulk-delete` / `POST /v1/items/bulk-tag` の 2 route が登録済みであることを
+      assert（design.md「Routing Glue」節、chi v5 の `chi.Walk` でツリーを枚挙し path + method を
+      照合）。`/{id}` ワイルドカード route と前者の静的セグメントが競合しない（404 にならない）
+      ことを併せて確認
   - `extension_contract_test.go` は **変更しない**（既存契約に影響なし / NFR 3.4 / 3.5）
-  - **テスト追加（同 task 内）**: 上記 10 件の handler unit テストを本タスクで完結させる
-    （Req 5.9 / 8.1 / NFR 2.1 / NFR 3.4 の 400 / 401 / payload_too_large 系は通常 `go test ./...`
-    で実行可能 / 同 task 内テスト必須カテゴリに該当）。成功時の per-item 部分失敗レスポンス
-    検証は実 DB が必要なため、次タスク 4 の integration test に deferred する
+  - **テスト追加（同 task 内）**: 上記 13 件の handler unit テスト（基本 10 件 + UUID 検証 2 件 +
+    ルート登録 1 件）を本タスクで完結させる（Req 5.9 / 8.1 / 8.3 / NFR 2.1 / NFR 3.4 の 400 /
+    401 / payload_too_large 系 + UUID 形式不正の collapse + 静的ルートと `/{id}` ワイルドカードの
+    非競合は通常 `go test ./...` で実行可能 / 同 task 内テスト必須カテゴリに該当）。成功時の
+    per-item 部分失敗レスポンス検証は実 DB が必要なため、次タスク 4 の integration test に
+    deferred する
   - _Requirements: 4.1, 4.7, 4.8, 5.7, 5.8, 5.9, 8.1, 8.2, 8.3, NFR 2.1, NFR 3.4, NFR 5.1_
-  - _Requirements_partial: 4.7, 4.8, 5.7, 5.8, 8.2, 8.3, NFR 5.1_
+  - _Requirements_partial: 4.7, 4.8, 5.7, 5.8, 8.2, NFR 5.1_
   - _Boundary: Server_
   - _Depends: 1_
 
@@ -229,8 +253,15 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `click` イベントを delegated 捕捉して `e.shiftKey` を見る:
       - shift+click かつ `lastClickedID !== null` なら、現在の DOM 順（`document.querySelectorAll('.item-card')`
         の順）で `lastClickedID` から currentID までの範囲を `Set` に追加（Req 2.1 / 2.2 / 2.3）
-      - shift+click でも `lastClickedID === null` なら通常の単一 toggle として扱う（Req 2.4）
-      - 通常 click（shift なし）は change ハンドラに委ねる
+      - **shift+click では `e.preventDefault()` を即時に呼び、ブラウザのネイティブ checkbox
+        toggle を抑止する**。これは、既に選択済みの終端を Shift+クリックした場合に、ブラウザの
+        標準挙動が当該 checkbox を unchecked に戻してしまい、本モジュールの範囲算出結果と
+        DOM 状態が乖離するのを防ぐため（Req 2.1「範囲すべてを選択状態」の整合保証）。
+        `preventDefault()` 後はモジュール側で当該範囲の checkbox を programmatic に `checked = true`
+        へ揃え、`.is-selected` class と `bulkselection:changed` event を同期発火する
+      - shift+click でも `lastClickedID === null` なら通常の単一 toggle として扱う（Req 2.4）。
+        この経路では `preventDefault()` は呼ばず、change ハンドラの通常 toggle 経路に委ねる
+      - 通常 click（shift なし）は change ハンドラに委ねる（preventDefault しない）
       - **`lastClickedID` の更新は通常 click / shift+click のいずれの経路でも実行する**
         （currentID で上書き）。Req 2.3 の「直前に起動された選択操作要素」を、次回の範囲選択
         起点として正しく追従させるため。例: id1 → id5 を Shift 選択した後の Shift+id8 は
@@ -326,6 +357,10 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       実装方針: `window.altpocketBulkSelection` を selection 側で公開し、actions 側がそれを
       参照する（または selection 側が `bulkselection:changed` event の detail で `clear` /
       `removeFromSelection` のコールバックを返却する）
+    - **`static/app.js` に `window.altpocketConfirm = confirm` の 1 行を追加**（既存
+      `window.altpocketToast = toast` 行の直後に挿入）。既存 module-local な `confirm` ヘルパーを
+      bulk actions から再利用するための公開（design.md「Templates」節の方式 1 採用）。
+      既存単一アイテム削除動線の挙動には影響しない（`confirm` 関数の参照を 1 つ追加するのみ）
     - `[data-items-region]` の `bulkselection:changed` event を listen し:
       - `count > 0` ならツールバー（`[data-bulk-toolbar]`）の `hidden=false` 化 + `data-bulk-count`
         テキスト更新（Req 3.1 / 3.6）
@@ -335,25 +370,71 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         無ければ既存 `confirm-overlay` を直接操作）で「N 件を削除しますか？」表示（Req 4.1）→
         approve で `POST /v1/items/bulk-delete`、cancel で何もしない（Req 4.2 / 4.3）
       - `button.bulk-tag` → `<dialog data-bulk-tag-dialog>` を `showModal()`、フォーム submit で
-        `<input data-bulk-tag-input>` の値を正規化（`normalizeTagName` を `app.js` と同じ
-        NFKC + lowercase で実装、空なら no-op + input に focus 戻す / Req 5.9） → 非空なら
-        `POST /v1/items/bulk-tag`
+        `<input data-bulk-tag-input>` の値を取得。**空判定のためだけに** `normalizeTagName`
+        （`app.js` と同じ NFKC + lowercase）を実行し、正規化結果が空文字なら no-op + input に
+        focus 戻す（Req 5.9）。**POST 時は正規化前の原文字列をそのまま送る**（NFKC + lowercase
+        を JS 側で強制適用しない / 既存単一アイテム編集では server 側 `normalizeTagInputs` が
+        `Name` に原文字列を保持して chip 表示の casing を維持する仕様 / Req 5.2「既存単一
+        アイテム編集と同じタグ正規化規則を適用する」）。`POST /v1/items/bulk-tag` の body は
+        `{"item_ids": [...], "tag": <原文字列>}`
       - `button.bulk-clear` → `selection.clear()` を呼ぶ（Req 3.4）
     - **一括削除レスポンス処理**:
-      - 200 OK + 全成功: succeeded[].item_id を DOM から fade-out（`items_status_actions.js` の
-        `fadeOutAndRemove` パターンを再利用）で削除、`selection.clear()` 後にツールバー隠す
-        （Req 4.4 / 4.5 / 4.6）、`toast.success('N 件削除しました')`
-      - 200 OK + 部分失敗: succeeded の id を DOM 削除 + `selection.removeFromSelection(succeeded)`、
-        failed[].item_id は selection 残置（Req 4.8）。`toast.error` で failed 一覧（title または
-        URL を含むメッセージ）を表示（Req 4.7）
-      - 400 / 401 / 403 / 429 / 500: `toast.error` で具体的メッセージ表示、selection は触らない
+      - レスポンス型の前提: `BulkDeleteResponse.succeeded` は **`string[]`**（id の配列）、
+        `BulkDeleteResponse.failed` は **`BulkFailureDetail[]`**（`{item_id, reason, title?, url?}`）
+        （design.md「Components and Interfaces」節の型定義を厳守）。実装では succeeded を
+        `string[]` として直接走査し、failed のみ `failed[i].item_id` でアクセスする（succeeded
+        側で `.item_id` を読まない）
+      - 200 OK + 全成功: succeeded（`string[]`）の各 id について
+        `region.querySelector('article[data-item-id="<id>"]')` を fade-out（後述
+        「fadeOutAndRemove と beginActionMutation のブラケット規約」参照）で削除、
+        `selection.clear()` 後にツールバー隠す（Req 4.4 / 4.5 / 4.6）、`toast.success('N 件削除しました')`
+      - 200 OK + 部分失敗: succeeded（`string[]`）の id を DOM 削除 +
+        `selection.removeFromSelection(succeeded)`、failed[].item_id は selection 残置（Req 4.8）。
+        **failed のタイトル / URL は DOM 削除より先に文字列収集する**（`article[data-item-id="<failed.item_id>"]`
+        は actions 側で削除しないため remove 後も DOM 残存だが、収集タイミングが succeeded
+        削除より前なら順序依存もなく安全）。`toast.error` で failed 一覧（title または URL を
+        含むメッセージ）を表示（Req 4.7）
+      - 400 / 401 / 403 / 429 / 500（全件失敗扱い）: **selection 中の各 id について DOM 上の
+        article から title / URL を列挙し、`toast.error('N 件の削除に失敗しました: <title 一覧>')`**
+        で通知する（Req 4.7「失敗の一部または全部」を満たす）。selection は触らない（残置）。
+        ただし toast 文字列は冗長化を避け、選択 5 件以下なら全件列挙、6 件以上なら先頭 3 件 +
+        「ほか N 件」形式で省略する
     - **一括タグ付けレスポンス処理**:
-      - 200 OK + 全成功: succeeded[].tags を当該カードの `.tags` chip 列に反映（既存の Tag chip
-        markup を JS で append、もしくは既存 chip 列の innerHTML 更新）、`selection.clear()` +
-        dialog 閉鎖 + ツールバー隠す（Req 5.5 / 5.6）
-      - 200 OK + 部分失敗: succeeded の tags を反映 + `selection.removeFromSelection(succeeded ids)`、
-        failed は selection 残置（Req 5.8）+ `toast.error` で failed 一覧（Req 5.7）
+      - 200 OK + 全成功: succeeded[].tags を当該カードの `.tags` chip 列に反映する。**反映時は
+        必ず `document.createElement` + `textContent` で chip ノードを組み立てる**（タグ名は
+        ユーザー入力由来のため `innerHTML` 経由の文字列代入 / `insertAdjacentHTML` は **禁止**、
+        保存型 XSS を防ぐ / NFR 5.1 セキュリティ）。既存 chip 列の DOM 子要素は `replaceChildren()`
+        または個別 `appendChild` で更新する。`selection.clear()` + dialog 閉鎖 + ツールバー
+        隠す（Req 5.5 / 5.6）
+      - 200 OK + 部分失敗: succeeded の tags を反映（上と同じ DOM API 経路）+
+        `selection.removeFromSelection(succeeded ids)`、failed は selection 残置（Req 5.8）+
+        `toast.error` で failed 一覧（Req 5.7、failed タイトル / URL は対象 article の DOM から
+        収集 / 一括削除と同じ列挙ルール）
       - 400 invalid_tag: `toast.error('タグ名を入力してください')` + dialog open のまま + 入力欄に focus
+      - 4xx / 5xx（全件失敗扱い）: 一括削除と同じく selection 中の article 群から title / URL を
+        DOM 収集して `toast.error('N 件のタグ付けに失敗しました: <title 一覧>')` を表示（Req 5.7）。
+        selection は触らない
+    - **fadeOutAndRemove と beginActionMutation のブラケット規約**（Req 4.8 / 5.8 と既存
+      `items_status_actions.js` の fade-out 削除パターンの両立）:
+      既存 `items_status_actions.js` の `fadeOutAndRemove` は `setTimeout(remove, 300)` で
+      非同期に `article.remove()` を呼ぶ。これを再利用する場合、**`beginActionMutation()` →
+      `fadeOutAndRemove()` 起動 → 直後に `endActionMutation()`** という単純なラップでは、
+      実 remove() は bracket 閉鎖後に発火し、selection 側 MutationObserver が per-item 削除を
+      fragment 差し替えと誤認して Set を空にしてしまう（failed 選択が失われる）。これを防ぐ
+      ため、本モジュールは以下のいずれかの方式で fade-out を扱う:
+      1. **方式 A（推奨）**: 削除対象 N 件それぞれについて、削除前に
+         `selection.beginActionMutation()` を 1 回呼んで bracket カウンタを +1 し、その後
+         `setTimeout(() => { article.remove(); selection.endActionMutation(); }, 300)` で
+         remove と end を同じ microtask 内で続けて発火させる。reference counted な bracket
+         カウンタにより、N 件分の begin/end ペアが全て閉じるまで MutationObserver の reset は
+         抑止される
+      2. **方式 B**: `fadeOutAndRemove` を再利用せず、synchronous な `article.remove()` を
+         beginActionMutation/endActionMutation ブラケット内で発火する（fade-out 視覚効果を
+         CSS transition 単体で先行発火させ、`transitionend` event で同期 remove する別経路を
+         採る）。本モジュールでは方式 A を採用するため `transitionend` 経路は不要
+      タスク 6 で実装する `selection.beginActionMutation` / `endActionMutation` の reference
+      counting 仕様（design.md「Selection state」節）に依存するため、方式 A はそのままの依存
+      関係で動作する
     - **busy 状態**（NFR 1.2）: click 直後にツールバーに `is-busy` class を付与（CSS task 8 が
       ボタン disabled + spinner を即時表示）。応答完了で外す
     - **NFR 1.3 ちらつき防止**: items-list 全体の innerHTML 書き換えはしない、対象 article のみを

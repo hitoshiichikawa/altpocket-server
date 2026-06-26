@@ -204,7 +204,7 @@ static/
 | 1.4 | 選択中の視覚区別 | style.css / items_bulk_selection.js | `.item-card.is-selected` + checked 状態 | change で `is-selected` class 付与 |
 | 1.5 | 色のみに依存しない | style.css / items_list.html | チェックボックス自体（checked 表示）+ aria-checked | ネイティブ HTML 要素 |
 | 1.6 | 既存タブ・フィルタ・検索・ソート動作を変えない | server.go / items.html | 既存 URL クエリ駆動の経路を一切変更しない | 既存 #114/#115/#117/#119 経路 |
-| 2.1 / 2.2 / 2.3 | Shift+クリック範囲選択 | items_bulk_selection.js | `lastClickedID` を保持し、現在の DOM 順 (`document.querySelectorAll('.item-card')`) で範囲算出 | shift+click event → 範囲算出 → Set 追加 |
+| 2.1 / 2.2 / 2.3 | Shift+クリック範囲選択 | items_bulk_selection.js | `lastClickedID` を保持し、現在の DOM 順 (`document.querySelectorAll('.item-card')`) で範囲算出。`lastClickedID !== null` の shift+click では **`e.preventDefault()` を即時呼出**し、ブラウザのネイティブ checkbox toggle が「既選択端を unchecked に戻す」事故を防ぐ。範囲算出後はモジュール側で当該範囲の checkbox を programmatic に `checked = true` へ揃える | shift+click event → preventDefault → 範囲算出 → checkbox programmatic check + Set 追加 |
 | 2.4 | 履歴空時は単一 toggle | items_bulk_selection.js | `lastClickedID === null` 時の fallback | 単一 toggle 動作 |
 | 3.1 / 3.2 | 件数連動した選択ツールバー表示 | items.html / items_bulk_selection.js / items_bulk_actions.js | `data-bulk-toolbar` の `hidden` 属性切替 + `data-bulk-count` テキスト（`<N> / 100 件選択中` で上限を常時併記 / NFR 2.1 pre-announce） | 選択件数 0 ⇄ 1+ で hidden 切替 |
 | 3.3 | 一括削除 / 一括タグ付け / 選択解除ボタン | items.html | 3 ボタンを SSR | |
@@ -214,7 +214,7 @@ static/
 | 4.1 / 4.2 / 4.3 / 4.4 | 確認ダイアログ → 削除 | items_bulk_actions.js | 既存 confirm overlay 再利用、approve → fetch POST /v1/items/bulk-delete | |
 | 4.5 / 4.6 | 成功時の DOM 退場 + ツールバー非表示 | items_bulk_actions.js | レスポンスの `succeeded[]` を DOM から fade-out 削除 | |
 | 4.7 / 4.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持 | items_bulk_actions.js + server response | レスポンスに `failed: [{item_id, title, url, reason}]` を含める | toast.error + 当該 checkbox を checked のまま |
-| 5.1 / 5.2 | タグ入力 UI + 正規化 | items.html (タグ入力 dialog) + items_bulk_actions.js | 単一タグ文字列入力 → 既存 `normalizeTagInputs` と同じ NFKC + lowercase 正規化を JS 側で再実装（既存 `normalizeTagName` を再利用） | dialog confirm → fetch |
+| 5.1 / 5.2 | タグ入力 UI + 正規化 | items.html (タグ入力 dialog) + items_bulk_actions.js | 単一タグ文字列入力 → JS 側は `normalizeTagName`（NFKC + lowercase）で **空判定のみ** を行い、POST する body の `tag` は **原文字列を保持**（既存単一アイテム編集の `normalizeTagInputs` が `Name` に原文字列を保持して chip 表示の casing を維持する規約と一致 / Req 5.2） | dialog confirm → fetch (body=原文字列) |
 | 5.3 / 5.4 | 全アイテムに付与 + 重複なし | server: handleBulkTagItems → store: BulkAddItemTag | item_tags への `INSERT ... ON CONFLICT DO NOTHING`（一意制約: `(item_id, tag_id)`） | |
 | 5.5 | 一覧の対象カードにタグ反映 | items_bulk_actions.js | レスポンスの `succeeded[].tags` を当該カードのタグ chip 列に append | |
 | 5.6 | 成功時のリセット + ツールバー非表示 | items_bulk_actions.js | Set クリア + tag dialog 閉鎖 | |
@@ -361,7 +361,7 @@ records を捨てる。これにより actions の bulk DOM 操作完了直後�
 - データ所有権: 選択状態は **selection モジュール側に委譲**、actions 側は読み取り + clear / removeFromSelection 経由でのみ更新
 - **失敗 toast の表示文言**: server レスポンスの `failed[].title` / `failed[].url` は leak 防止
   のため空文字（後述「Security Considerations」節）。client は **DOM 上の対象 article**
-  （`[data-item-id="<failed id>"] .item-title` / `.tile-link[href]`）から title / url を取得して
+  （`[data-item-id="<failed id>"] h3[id^="item-title-"]` / `.tile-link[href]`）から title / url を取得して
   toast 本文に組み立てる（Req 4.7 / 5.7。`article.remove()` をブラケット内で済ませているため、
   失敗 id の article は DOM に残存している）
 
@@ -630,9 +630,22 @@ markup を追加する:
 <script src="/static/items_bulk_actions.js?v={{assetVersion}}" defer></script>
 ```
 
-確認ダイアログは既存 `app.js` の `confirm` ヘルパー（`window.altpocketConfirm` として公開済み /
-要確認）を再利用するか、無ければ既存 `confirm-overlay` を直接操作する。**確認ダイアログ新規
-markup の追加は最小限**（`bulk-tag-dialog` のみ）に留め、削除用は既存資産を再利用する。
+確認ダイアログは既存 `static/app.js` の **module-local な `confirm` ヘルパー**を再利用する。
+本 PR 時点で同ヘルパーは `window.altpocketConfirm` として **未公開**（grep 確認済み: `app.js`
+が公開するのは `window.altpocketToast` のみ）であるため、本機能では以下の 2 経路のいずれかを
+採用する:
+
+- **方式 1（推奨）**: `static/app.js` の冒頭で `window.altpocketConfirm = confirm` を追記して
+  公開する（既存 `window.altpocketToast = toast` 行の直後に 1 行追加）。本機能はこの公開を
+  前提として `items_bulk_actions.js` から `window.altpocketConfirm(message)` を呼び出す
+- **方式 2（フォールバック）**: `app.js` を変更したくない場合、`items_bulk_actions.js` 側で
+  既存 `confirm-overlay` の DOM（`templates/items.html` 等で SSR 済みの `<div class="confirm-overlay">`）
+  を直接操作する経路を独自実装する
+
+implementation phase（タスク 7）では **方式 1** を採用する。app.js への追加 1 行は既存
+single-item delete の確認動線（既に同じ `confirm` ヘルパーを使用中）と挙動を完全に揃え、
+重複実装を避ける目的に資する。**確認ダイアログ新規 markup の追加は最小限**（`bulk-tag-dialog`
+のみ）に留め、削除用は既存資産を再利用する。
 
 #### `templates/items_list.html`（変更）
 
@@ -699,7 +712,8 @@ sequenceDiagram
 
 同上に近いが、フェーズが異なる箇所のみ抜粋:
 
-- 入力モーダル → 正規化（JS 側 `normalizeTagName`） → 空なら no-op + 入力欄に focus 戻す（Req 5.9）
+- 入力モーダル → 正規化（JS 側 `normalizeTagName`）は **空判定のためだけに実行** → 空なら no-op +
+  入力欄に focus 戻す（Req 5.9）。POST する body の `tag` は **原文字列**（lowercase 変換しない）
 - `POST /v1/items/bulk-tag` を発射
 - 成功時: succeeded[].tags をカードの `.tags` chip 列に反映（既存 tag 行があれば置換、なければ追加）
 - 部分失敗時: 削除と同じパターン（succeeded は selection から除去、failed は残置）
@@ -781,13 +795,20 @@ sequenceDiagram
 
 ### Client-side error handling
 
-- JS が `fetch.then.catch` / `res.status >= 500` を捕捉した場合は「すべての選択を保持」して
-  `toast.error('ネットワークエラー')` 程度の通知のみ（DOM は触らない）
+- **5xx / ネットワーク失敗（全件失敗扱い）**: 「すべての選択を保持」した上で、selection 中の
+  各 id について DOM 上の article（`[data-item-id="<id>"] h3[id^="item-title-"]` / `.tile-link[href]`）
+  から title / URL を列挙し、`toast.error('N 件の <削除|タグ付け> に失敗しました: <title 一覧>')`
+  を表示する。これにより Req 4.7 / 5.7 の「一部または全部が失敗したとき、失敗したアイテムを
+  ユーザーが特定可能な形（タイトルまたは URL を含むメッセージ）で通知する」を全件失敗経路でも
+  満たす。toast 文字列の冗長化を避けるため、選択 5 件以下なら全件列挙、6 件以上なら **先頭 3 件 +
+  「ほか N 件」** 形式で省略する（人間が誤発火対象を 1 件は識別できる粒度を担保）。DOM は触らない
+  （selection 側の article は全て残存）
 - 200 + 部分失敗の場合は succeeded の DOM 削除 + failed の toast.error 列挙。toast 本文の
   識別文字列（タイトル / URL）は **対象 article の DOM** から取得する（`failed[].title` /
   `failed[].url` は常に空 / 上記 BulkFailureDetail 注記参照）。`article.remove()` は
   `selection.beginActionMutation()` / `selection.endActionMutation()` ブラケットで囲み、
-  失敗 id の article は DOM 残存させた状態で文字列収集を完了させる
+  失敗 id の article は DOM 残存させた状態で文字列収集を完了させる（**収集は succeeded 削除より
+  先に行う**ことで順序依存も回避）。toast 列挙の省略ルールは上記 5xx と同じ
 - 400 invalid_request / payload_too_large / invalid_tag の場合は「クライアント側のバグ or
   上限超過」なので toast.error で具体的メッセージ + 選択を保持
 
@@ -856,7 +877,7 @@ sequenceDiagram
 - **CSRF 保護**: 既存 `s.checkCSRF` middleware が `/v1/*` の非 GET request に強制適用される
 - **ID 列挙対策**: 上限 100 件で 1 リクエストあたりの enumeration speed を制限。rate limiter も適用
 - **PII リーク防止**: failed[].title / url は **常に空文字** で返す。クライアント側は対象 article
-  の DOM 表示要素 (`[data-item-id="<failed id>"] .item-title` / `.tile-link[href]`) から
+  の DOM 表示要素 (`[data-item-id="<failed id>"] h3[id^="item-title-"]` / `.tile-link[href]`) から
   toast 文言を組み立てる。これにより「他ユーザーのタイトル」をサーバから返さない設計を保ちつつ、
   Req 4.7 / 5.7 の「failed をタイトルまたは URL を含むメッセージで通知」を満たす。クライアントは
   そもそも自分が submit した id しか知らないため、DOM 由来の文字列は所有・閲覧権限上問題ない
