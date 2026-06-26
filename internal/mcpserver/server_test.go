@@ -297,21 +297,110 @@ func TestListItemsHandler_MultiValueStatusFallsBackToNil(t *testing.T) {
 	}
 }
 
-// TestListItemsHandler_RejectsNonStringStatusAtSchemaLayer is a placeholder
-// for the error-mode (A) schema-level reject test described in design.md
-// 「複数指定の取扱」. MCP SDK's JSON Schema validation rejects non-string
-// Status input (JSON array, integer, boolean, null) before the handler is
-// invoked, so mcpStatusFilter / listItemsHandler are never called.
+// TestListItemsHandler_RejectsNonStringStatusAtSchemaLayer exercises the
+// error-mode (A) schema-level reject path described in design.md「複数指定の
+// 取扱」. The MCP SDK's JSON Schema validation must reject non-string
+// Status input (JSON array, integer, boolean, null) before listItemsHandler /
+// mcpStatusFilter are invoked, so the DataSource is never called.
 //
-// Directly exercising the mcp.CallToolRequest validation path from a test
-// fixture without spinning up an end-to-end MCP client/server pair is not
-// feasible in this repository (see tasks.md task 5 test plan: "実装上
-// MCP SDK の `mcp.CallToolRequest` 検証経路を test fixture から起動できない
-// 場合は ... `// TODO: covered by SDK e2e if reachable` として明示する
-// fallback 方針"). The handler-level fallback for embedded-multi-value
-// strings is covered separately by TestListItemsHandler_MultiValueStatusFallsBackToNil.
+// The path is exercised end-to-end via NewInMemoryTransports: an in-process
+// server with list_items registered via mcp.AddTool (same path as production
+// New()) is connected to an in-process client that sends raw JSON Arguments
+// with a non-string status. The client either returns an error (transport-level
+// validation failure) or a result whose payload signals validation failure, but
+// in either case the fakeDataSource.ListItems counter must remain zero. This
+// closes the Req 5.3 schema-layer assertion that was previously deferred via
+// t.Skip (#139 round 2 reviewer指摘 #2 反映).
 func TestListItemsHandler_RejectsNonStringStatusAtSchemaLayer(t *testing.T) {
-	t.Skip("MCP SDK schema validation is exercised at the SDK layer; direct hook from test fixture is not reachable. covered by SDK e2e if reachable.")
+	cases := []struct {
+		name string
+		// status holds the raw JSON value for the `status` field in
+		// CallToolParams.Arguments. We assemble Arguments as a map[string]any
+		// where status is whatever the SDK accepts — array / number / bool / nil.
+		status any
+	}{
+		{"json_array", []string{"unread", "read"}},
+		{"integer", 1},
+		{"boolean_true", true},
+		{"boolean_false", false},
+		{"null", nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := &fakeDataSource{}
+
+			// Mirror the production registration in New() so the SDK has the
+			// same input schema (derived from ListItemsInput.Status string field).
+			srv := mcp.NewServer(&mcp.Implementation{Name: "altpocket-test", Version: "0.0.0"}, nil)
+			mcp.AddTool(srv, &mcp.Tool{
+				Name:        "list_items",
+				Description: "test",
+			}, listItemsHandler(ds, "u1"))
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			serverT, clientT := mcp.NewInMemoryTransports()
+
+			// Connect server first (clients initialize the session on connect).
+			serverConn, err := srv.Connect(ctx, serverT, nil)
+			if err != nil {
+				t.Fatalf("server.Connect: %v", err)
+			}
+			defer serverConn.Close()
+
+			client := mcp.NewClient(&mcp.Implementation{Name: "altpocket-test-client", Version: "0.0.0"}, nil)
+			session, err := client.Connect(ctx, clientT, nil)
+			if err != nil {
+				t.Fatalf("client.Connect: %v", err)
+			}
+			defer session.Close()
+
+			// Build raw JSON arguments so the SDK applies schema validation
+			// (typed structs would coerce / fail at marshaling instead).
+			args := map[string]any{"status": tc.status}
+			res, callErr := session.CallTool(ctx, &mcp.CallToolParams{
+				Name:      "list_items",
+				Arguments: args,
+			})
+
+			// Acceptance: the DataSource must not be called regardless of how the
+			// SDK reports the rejection (transport error vs. IsError result).
+			if ds.listItemsCalls != 0 {
+				t.Fatalf("ListItems must not be called for non-string status %v, got %d calls (args=%v)",
+					tc.status, ds.listItemsCalls, ds.listItemsArgs)
+			}
+
+			// At least one of the two rejection signals must be present.
+			//   - callErr != nil: SDK returned a transport / validation error
+			//   - res.IsError: SDK returned a structured error result
+			// "null" is the only edge: the Go SDK currently treats JSON null as
+			// the zero value (empty string) and forwards the call to the handler;
+			// the handler then resolves it as mcpStatusFilter("") -> nil (= all
+			// states). For "null" we accept that path because Req 5.3 mandates
+			// "全状態にフォールバック" and that semantic is preserved either by
+			// schema reject OR by the handler-level "all states" fallback. The
+			// handler-level path is only acceptable when DataSource is called
+			// with Statuses=nil.
+			if callErr == nil && (res == nil || !res.IsError) {
+				if tc.name != "null" {
+					t.Fatalf("expected schema-level reject for %s, but got success result without IsError (res=%+v)", tc.name, res)
+				}
+				// null case: verify the handler-level fallback path actually
+				// produced Statuses=nil (= all states) — semantically equivalent
+				// to schema reject + fallback per Req 5.3.
+				if ds.listItemsCalls == 0 {
+					// Server did not actually invoke handler — schema validated.
+					// This is also acceptable for "null".
+					return
+				}
+				if ds.listItemsArgs.Statuses != nil {
+					t.Fatalf("null status must fall back to Statuses=nil (all states), got %v", ds.listItemsArgs.Statuses)
+				}
+			}
+		})
+	}
 }
 
 // TestListItemsHandler_OutputContainsStatus verifies that the returned JSON

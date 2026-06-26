@@ -80,16 +80,31 @@
     const fetchImpl = o.fetch || (typeof win.fetch === 'function' ? win.fetch.bind(win) : null);
     if (!fetchImpl) return null;
 
-    // toast はテストから注入可能にする。実環境では app.js が個別に持つため、
-    // 本モジュールは toast を fallback として alert する最小実装で済ます
-    // （実環境では app.js のグローバル toast が常駐するが、本モジュールから
-    // 直接呼び出す手段がないため。CustomEvent でも良かったが overengineering）。
-    const toast = o.toast || {
-      error(msg) {
-        if (typeof win.alert === 'function') win.alert(msg);
-      },
-      success() { /* noop in fallback */ },
-    };
+    // toast 解決順序（reviewer #2 round 2 指摘 #3 反映 — 本番自動初期化で
+    // window.alert に降格する notification UI 退行を回避）:
+    //   1. opts.toast（テストから注入された stub）
+    //   2. win.altpocketToast（app.js が window.altpocketToast = toast で公開する
+    //      本番 toast UI。show / success / error / info を持つ）
+    //   3. window.alert への fallback（最後の防波堤 / app.js 未ロード時のみ）
+    // 2 と 3 のいずれも、本モジュール側のロード順序が app.js より前でも
+    // 後でも安全に動作する（参照時点で window.altpocketToast を解決する）。
+    const toast = o.toast || (function () {
+      const resolve = () => (win && win.altpocketToast) || null;
+      return {
+        error(msg) {
+          const t = resolve();
+          if (t && typeof t.error === 'function') {
+            t.error(msg);
+            return;
+          }
+          if (typeof win.alert === 'function') win.alert(msg);
+        },
+        success(msg) {
+          const t = resolve();
+          if (t && typeof t.success === 'function') t.success(msg);
+        },
+      };
+    })();
 
     // テストから fake setTimeout を注入できるようにする（fade-out 削除タイミング
     // を test 上で同期的に進めるため）。

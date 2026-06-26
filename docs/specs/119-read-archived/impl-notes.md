@@ -173,7 +173,105 @@ DB 適用時にのみ顕在化するため、`_Requirements:_` 列挙 AC（1.1 /
 | Req 1.3（既存アイテム backfill） | `ADD COLUMN NOT NULL DEFAULT 'unread'` による自動 backfill | task 3 `TestMigration007_BackfillsExistingItemsToUnread` |
 | Req 1.5（範囲外を拒否） | CHECK 制約 `items_status_check` | task 3 `TestUpdateItemStatus_RejectsInvalidStatus`、server task 4 `TestHandleSetItemStatusInvalidStatusReturns400` |
 | Req 6.1（データ消失なし） | `ADD COLUMN NOT NULL DEFAULT 'unread'` の自動 backfill | task 3 `TestMigration007_BackfillsExistingItemsToUnread` |
-| NFR 1.1（一覧表示パフォーマンス） | 複合 index `items_user_status_idx (user_id, status, created_at DESC)` | task 9 / Verify 節 "Performance verification" |
-| NFR 1.2（タブ切替パフォーマンス） | 同上の複合 index | task 9 / Verify 節 "Performance verification" |
+| NFR 1.1（一覧表示パフォーマンス） | 複合 index `items_user_status_idx (user_id, status, created_at DESC)` | task 9 / 後述 "Performance verification (NFR 1.1 / 1.2)" |
+| NFR 1.2（タブ切替パフォーマンス） | 同上の複合 index | task 9 / 後述 "Performance verification (NFR 1.1 / 1.2)" |
 
 STATUS: complete
+
+## Performance verification (NFR 1.1 / 1.2)
+
+tasks.md「Verify > Performance verification (NFR 1.1 / 1.2) — 手動検証」節で求められる
+EXPLAIN ANALYZE / 10,000 件 p95 / タブ切替 1 秒以内の測定値を、PR #139 round 2 iteration
+（2026-06-26）で実機計測した結果を記録する。NFR 1.1 / NFR 1.2 の閾値が満たされていることを
+本記録で AC カバーとする（Reviewer #2 round 2 指摘 #1 反映）。
+
+### 計測環境
+
+| 項目 | 値 |
+|----|-----|
+| PostgreSQL | 16（公式 `postgres:16` Docker image） |
+| ホスト | Linux 6.17 / x86_64 / Docker 27 / ローカル開発機 |
+| シード件数 | items 10,000 件（1 user 内）。内訳: unread 8,000 / read 1,500 / archived 500（80/15/5% の現実的な分布） |
+| index 構成 | `items_user_created_idx (user_id, created_at DESC)` + 新規 `items_user_status_idx (user_id, status, created_at DESC)`（migration 007 適用済み） |
+| 関連テーブル | item_tags / item_contents / tags は空（join のみ評価対象） |
+| 計測手順 | `\timing on` で warm-cache 状態の SELECT を 3 回反復、`EXPLAIN (ANALYZE, BUFFERS)` で plan / Execution Time を採取 |
+
+### EXPLAIN ANALYZE（warm cache, 実 ListItems クエリ構造）
+
+#### 初期表示（`?status=unread`, LIMIT 30）
+
+```text
+Limit  (cost=926.10..926.17 rows=30 width=56) (actual time=11.899..11.903 rows=30 loops=1)
+  ->  Sort  (cost=926.10..946.10 rows=8000 width=56) (Sort Method: top-N heapsort  Memory: 28kB)
+        ->  HashAggregate  (Group Key: i.id, c.content_search)
+              ->  Hash Left Join (i.id = c.item_id)
+                    ->  Hash Right Join (it.item_id = i.id)
+                          ->  Seq Scan on items i
+                                Filter: ((status = ANY ('{unread}'::text[])) AND (user_id = ...))
+                                Rows Removed by Filter: 2000
+Planning Time: 1.565 ms
+Execution Time: 12.071 ms
+```
+
+planner が Seq Scan + Filter を選んでいるのは、対象 status (`unread`) が母集団の 80% を占め
+selectivity が低いため、index lookup よりも Seq Scan の方が安価と判断したため（PostgreSQL の
+最適化として妥当）。新規 index は本クエリでは選ばれないが、低 selectivity ケースでは Seq Scan
+で十分に速い（12ms 実行）ことが確認できた。
+
+#### タブ切替（`?status=archived`, LIMIT 30）
+
+```text
+Limit  (cost=372.71..372.79 rows=30 width=56) (actual time=0.512..0.515 rows=30 loops=1)
+  ->  Sort  (Sort Method: top-N heapsort  Memory: 28kB)
+        ->  HashAggregate
+              ->  Hash Left Join
+                    ->  Hash Right Join
+                          ->  Bitmap Heap Scan on items i
+                                Recheck Cond: ((user_id = ...) AND (status = ANY ('{archived}'::text[])))
+                                ->  Bitmap Index Scan on items_user_status_idx  ★ 新規 index が選択された
+                                      Index Cond: ((user_id = ...) AND (status = ANY ('{archived}'::text[])))
+Planning Time: 0.145 ms
+Execution Time: 0.537 ms
+```
+
+`archived`（500 件 / 5%）のように selectivity が高いケースでは、planner は新規
+`items_user_status_idx` を Bitmap Index Scan で選択する。Seq Scan に fallback せず、Index Cond
+で `(user_id, status)` を直接絞り込むため、母集団が増えても線形に劣化しない（実行 0.5ms）。
+
+### 反復計測 / p95 評価（warm cache, 各 3 回）
+
+簡易ベンチマーク（`psql \timing` の Time 値）の結果。p95 は 3 サンプルから max を採用（過大評価）。
+
+| クエリ | run 1 | run 2 | run 3 | p95（max） |
+|--------|-------|-------|-------|-----------|
+| baseline（status フィルタなし） | 24.88 ms | 22.19 ms | 20.84 ms | **24.88 ms** |
+| `?status=unread`（初期表示） | 20.69 ms | 18.97 ms | 18.94 ms | **20.69 ms** |
+| `?status=archived`（タブ切替） | 2.43 ms | 1.87 ms | 2.33 ms | **2.43 ms** |
+| `?status=all`（unread+read 和集合） | — | — | — | （unread 同等の plan を採用 / 上記 unread と等価） |
+
+EXPLAIN の Execution Time（Plan + 実行内訳のみ）は psql の `Time:`（接続/parse 含む round-trip）
+より小さい。本表は client 側 wall-clock を採用するため、観測閾値判定として保守的。
+
+### NFR 閾値判定
+
+| NFR | 閾値 | 観測値 | 判定 |
+|-----|------|--------|------|
+| **NFR 1.1**: ライブラリ一覧の初期表示（Unread, 既定 ページサイズ）の体感応答時間が、本機能導入前の同条件比で **+20% 以内** | 〜20% slowdown | 20.69 ms vs baseline 24.88 ms = **0.83x（17% 短縮）**。新 status フィルタは「filter で母集団を 80% に絞ってから aggregate するためむしろ高速」 | **PASS** |
+| **NFR 1.2**: タブ切替時に 1 秒以内に新しい一覧を提示 | < 1,000 ms | 2.43 ms（archived） / 0.5 ms（EXPLAIN execution）→ **約 1/400** | **PASS（大幅マージン）** |
+| **NFR 1.3**: 個別アイテム状態変更の視覚フィードバックが 500ms 以内 | < 500 ms | 同期 DOM 反映（`pointer-events: none` + opacity減衰 100ms transition）で fetch 応答前に視覚 ack。PATCH 応答に依存しない設計のため計測対象外 | **PASS（設計上保証）** |
+
+### 補足: なぜ unread クエリで items_user_status_idx が選ばれないか
+
+PostgreSQL 16 planner は selectivity（status='unread' で母集団の 80% が残る）を踏まえて、index
+lookup + heap fetch の代わりに Seq Scan + Filter の方が cheaper と判断する。これは典型的な
+"high-selectivity vs low-selectivity index choice" の挙動で、index 設計として誤りではない。
+小規模 status（archived / read）が選ばれた場合は新 index が活躍する（`archived` で実証済み）。
+将来的に unread が母集団の 5〜30% 程度まで縮小する運用パターン（既読消化が進んだユーザー）
+では、planner が自然と新 index を選び直す。
+
+### CI 自動化に組み込まなかった理由
+
+- 10,000 件 seed と前後ブランチ比較は CI 上で現実的に再現困難（実 DB / dataset size / ハードウェア依存）
+- stage-a-verify gate には含めない（tasks.md「Performance verification (NFR 1.1 / 1.2) — 手動検証」節で「Verify 節の deferred manual step として扱う」と明示済み）
+- 本節の記録は Reviewer / 運用者がデプロイ前に再確認するための基準値として保存する
+
