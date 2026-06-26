@@ -210,8 +210,8 @@ static/
 | 1.4 | 選択中の視覚区別 | style.css / items_bulk_selection.js | `.item-card.is-selected` + checked 状態 | change で `is-selected` class 付与 |
 | 1.5 | 色のみに依存しない | style.css / items_list.html | チェックボックス自体（checked 表示）+ aria-checked | ネイティブ HTML 要素 |
 | 1.6 | 既存タブ・フィルタ・検索・ソート動作を変えない | server.go / items.html | 既存 URL クエリ駆動の経路を一切変更しない | 既存 #114/#115/#117/#119 経路 |
-| 2.1 / 2.2 / 2.3 | Shift+クリック範囲選択 | items_bulk_selection.js | `lastClickedID` を保持し、現在の DOM 順 (`document.querySelectorAll('.item-card')`) で範囲算出。`lastClickedID !== null` の shift+click では **`e.preventDefault()` を即時呼出**し、ブラウザのネイティブ checkbox toggle が「既選択端を unchecked に戻す」事故を防ぐ。範囲算出後はモジュール側で当該範囲の checkbox を programmatic に `checked = true` へ揃える | shift+click event → preventDefault → 範囲算出 → checkbox programmatic check + Set 追加 |
-| 2.4 | 履歴空時は単一 toggle | items_bulk_selection.js | `lastClickedID === null` 時の fallback | 単一 toggle 動作 |
+| 2.1 / 2.2 / 2.3 | Shift+クリック範囲選択 | items_bulk_selection.js | `lastClickedID` を保持し、現在の DOM 順 (`document.querySelectorAll('.item-card')`) で範囲算出。**範囲選択を発動する条件は (a) `selectionSet.size > 0`（Req 2.1「少なくとも 1 件選択済み」と一致）かつ (b) `lastClickedID !== null` かつ (c) `region.querySelector('article[data-item-id="<lastClickedID>"]')` で anchor 要素が現在の DOM に存在する** の 3 条件すべてを満たすこと。stale anchor（fragment 差替後・選択クリア後・per-item 削除後に古い anchor 値だけ残ってしまうケース）は Req 2.4 の fallback として単一 toggle に降格する。`lastClickedID !== null` の shift+click では **`e.preventDefault()` を即時呼出**し、ブラウザのネイティブ checkbox toggle が「既選択端を unchecked に戻す」事故を防ぐ。範囲算出後はモジュール側で当該範囲の checkbox を programmatic に `checked = true` へ揃える | shift+click event → 3 条件チェック → preventDefault → 範囲算出 → checkbox programmatic check + Set 追加 |
+| 2.4 | 履歴空時は単一 toggle | items_bulk_selection.js | 上記 3 条件のいずれか（`selectionSet.size === 0` / `lastClickedID === null` / anchor 要素が DOM に不在）が満たされない時の fallback として単一 toggle に降格 | 単一 toggle 動作 |
 | 3.1 / 3.2 | 件数連動した選択ツールバー表示 | items.html / items_bulk_selection.js / items_bulk_actions.js | `data-bulk-toolbar` の `hidden` 属性切替 + `data-bulk-count` テキスト（`<N> / 100 件選択中` で上限を常時併記 / NFR 2.1 pre-announce） | 選択件数 0 ⇄ 1+ で hidden 切替 |
 | 3.3 | 一括削除 / 一括タグ付け / 選択解除ボタン | items.html | 3 ボタンを SSR | |
 | 3.4 | 選択解除 | items_bulk_selection.js | Set クリア + DOM 上の checkbox の checked / `.is-selected` 一括解除 | |
@@ -222,7 +222,7 @@ static/
 | 4.7 / 4.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持 | items_bulk_actions.js + server response | レスポンスに `failed: [{item_id, reason}]` のみを含める（**title / url は含めない / leak 防止**）。クライアントは対象 article の DOM (`[data-item-id="<failed id>"]` の `h3#item-title-*` / `.tile-link[href]`) から title / url を取得し、**failed 全件分** を支援技術 reachable な領域（後述「Client-side error handling」節の `<dialog role="alertdialog">` または scrollable な `[aria-live="polite"]`）に列挙する | toast / alert + 当該 checkbox を checked のまま |
 | 5.1 / 5.2 | タグ入力 UI + 正規化 | items.html (タグ入力 dialog) + items_bulk_actions.js | 単一タグ文字列入力 → JS 側は `normalizeTagName`（NFKC + lowercase）で **空判定のみ** を行い、POST する body の `tag` は **原文字列を保持**（既存単一アイテム編集の `normalizeTagInputs` が `Name` に原文字列を保持して chip 表示の casing を維持する規約と一致 / Req 5.2） | dialog confirm → fetch (body=原文字列) |
 | 5.3 / 5.4 | 全アイテムに付与 + 重複なし | server: handleBulkTagItems → store: BulkAddItemTag | item_tags への `INSERT ... ON CONFLICT DO NOTHING`（一意制約: `(item_id, tag_id)`） | |
-| 5.5 | 一覧の対象カードにタグ反映 | items_bulk_actions.js | レスポンスの `succeeded[].tags` を当該カードのタグ chip 列に反映する。chip ノードは既存 SSR と **同じ contract**（`button.tag.tag-filter-toggle` + `data-tag-filter-toggle` + `data-tag-normalized="<normalized>"` + `aria-pressed="false"` + `aria-label="タグで絞り込み: <name>"` + テキストノードに `<name>`）を満たす形で `document.createElement('button')` + `setAttribute` + `textContent` で組み立てる（`innerHTML` / `insertAdjacentHTML` は禁止 / XSS 防御 + #117 chip クリック絞り込み契約維持 / NFR 3.3） | |
+| 5.5 | 一覧の対象カードにタグ反映 | items_bulk_actions.js | レスポンスの `succeeded[].tags` を当該カードのタグ chip 列に反映する。chip ノードは既存 SSR と **同じ contract**（`button.tag.tag-filter-toggle` + `data-tag-filter-toggle` + `data-tag-normalized="<normalized>"` + `aria-label="タグで絞り込み: <name>"` + テキストノードに `<name>`）を満たす形で `document.createElement('button')` + `setAttribute` + `textContent` で組み立てる（`innerHTML` / `insertAdjacentHTML` は禁止 / XSS 防御 + #117 chip クリック絞り込み契約維持 / NFR 3.3）。**現在 active なタグフィルタとの照合**: `new URL(window.location.href).searchParams.getAll('tag')` で得た **active tag name 集合** を比較対象とし、各 chip の `tag.normalized_name` が active 集合の各要素を `tag.Normalize` 同等の正規化（JS 側は `window.altpocketNormalizeTagName` または fallback で NFKC + lowercase + trim）した値と一致する場合は **`is-selected` class 付与 + `aria-pressed="true"`**、一致しない場合は `aria-pressed="false"`（class 無）とする。これにより、タグフィルタ中（例: `?tag=GoLang` でフィルタ中）に bulk-tag 成功で chip が再構築されても、フィルタ中タグの `is-selected` 視覚状態が新規付与タグ列でも維持される（NFR 3.2 active-filters chip 連携 / NFR 3.3 tag chip クリック絞り込み契約 / round 2 review feedback） | |
 | 5.6 | 成功時のリセット + ツールバー非表示 | items_bulk_actions.js | Set クリア + tag dialog 閉鎖 | |
 | 5.7 / 5.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持、成功は選択解除 | items_bulk_actions.js + server response | レスポンス `failed[]`（`{item_id, reason}` のみ） / `succeeded[]` を使い、succeeded の id を Set から除去・failed の id は保持。失敗一覧の title / url は対象 article の DOM から **全件** 取得して支援技術 reachable な領域に列挙（4.7 / 4.8 と同じ規約） | |
 | 5.9 | 空タグでの無動作 | items_bulk_actions.js | dialog confirm 時に正規化結果が空文字なら fetch しない + 入力欄に focus 戻す | |
@@ -236,7 +236,7 @@ static/
 | NFR 1.3 | 結果反映中もちらつかない | items_bulk_actions.js | items_list 全体 innerHTML 置換は行わず、対象 article のみ DOM から removeChild | |
 | NFR 2.1 / 2.2 | 上限 100 件 | items.html / items_bulk_selection.js + server bulk handlers | 選択ツールバー件数表示は **`<N> / 100 件選択中`** 形式で上限を常時併記（NFR 2.1 pre-announce）。**単一 toggle** は 100 件到達済みで 101 件目を試みた場合に追加を抑止 + toast.error。**Shift 範囲選択** は「選択結果が 100 件超になる場合、範囲全体を未選択のまま reject + toast.error('範囲選択により上限を超えるため処理されませんでした')」とする（Req 2.1「範囲のカードすべてを選択状態にする」の "all or nothing" 意味論を尊重し、範囲の一部だけを選択する曖昧な状態を生まない）。Server 側でも `len(itemIDs) > 100` で 400 `payload_too_large` を返す（二重防御） | |
 | NFR 3.1〜3.4 | 後方互換性（既存機能の同等提供） | 全層 | 既存 ハンドラ・テンプレ・JS module を **削除・改名・挙動変更しない** | |
-| NFR 3.5 | JS 無効時の閲覧 / 単一操作動線維持 | items_list.html / items.html / items_bulk_selection.js | SSR は `<input type="checkbox" ... disabled>` で出力するため、JS 無効ブラウザでは checkbox が Tab フォーカスを取らず click も無効化される（ブラウザネイティブの disabled 挙動）。`bulk-toolbar` は SSR `hidden` 属性付き、`<dialog>` 群も非操作のまま。`items_bulk_selection.js` の `init()` が走った時点ではじめて `disabled` を外し操作可能になる Progressive Enhancement 規約 | |
+| NFR 3.5 | JS 無効時の閲覧 / 単一操作動線維持 | items_list.html / items.html / items_bulk_selection.js | SSR は `<input type="checkbox" ... disabled>` で出力するため、JS 無効ブラウザでは checkbox が Tab フォーカスを取らず click も無効化される（ブラウザネイティブの disabled 挙動）。`bulk-toolbar` は SSR `hidden` 属性付き、`<dialog>` 群も非操作のまま。`items_bulk_selection.js` の `init()` が走った時点ではじめて `disabled` を外し操作可能になる Progressive Enhancement 規約。**fragment 差替（タブ切替・タグフィルタ・検索・ソート・ページ送り・popstate）後の新規 checkbox も同じ `disabled` 除去処理を MutationObserver の reset callback 内で再実行**（addedNodes.length > 0 検出時に `region.querySelectorAll('input.item-select[disabled]')` を走査して `removeAttribute('disabled')`） | |
 | NFR 4.1〜4.3 | アクセシビリティ | items.html / style.css / dialog | ネイティブ HTML 要素 + aria-label + テキスト併用 | |
 | NFR 5.1 | 構造化ログ | server bulk handlers | `slog.Info("items.bulk.delete" / "items.bulk.tag", "user_id", "item_ids", "succeeded_ids", "failed_ids", "request_id")`。Cookie / token / 本文の生値は含めない | |
 
@@ -253,11 +253,19 @@ static/
 
 **Responsibilities & Constraints**
 - 主責務:
-  - **Progressive Enhancement enable**（NFR 3.5 維持）: `init()` 起動直後、
-    `region.querySelectorAll('input.item-select[disabled]')` を走査して `removeAttribute('disabled')`
-    し、本モジュールが load された場合のみ checkbox を操作可能にする。SSR は `disabled` 付きで
-    出力されるため、JS 無効ブラウザでは checkbox が Tab フォーカスから自然に除外され（HTML
-    仕様の disabled 挙動）、本機能導入前と同等の閲覧・単一操作動線が維持される
+  - **Progressive Enhancement enable**（NFR 3.5 維持 / fragment 差替も追随）:
+    - `init()` 起動直後、`region.querySelectorAll('input.item-select[disabled]')` を走査して
+      `removeAttribute('disabled')` し、本モジュールが load された場合のみ checkbox を操作可能に
+      する。SSR は `disabled` 付きで出力されるため、JS 無効ブラウザでは checkbox が Tab フォーカス
+      から自然に除外され（HTML 仕様の disabled 挙動）、本機能導入前と同等の閲覧・単一操作動線が
+      維持される
+    - **fragment 差替後（状態タブ切替・タグフィルタチップ・検索クエリ・ソート・ページ送り・
+      popstate）にも同じ `disabled` 除去処理を再実行する**。`[data-items-region]` の
+      MutationObserver が fragment 差替（`addedNodes.length > 0`）を検出した時点で、reset と
+      同じ callback の中で `region.querySelectorAll('input.item-select[disabled]')` を再走査して
+      `removeAttribute('disabled')` する。これを行わないと、SSR が `disabled` 付きで出力した新しい
+      checkbox が JS 有効環境でも操作不能のまま残置され、検索・タグフィルタ・タブ切替・ページ送り
+      後に選択操作ができなくなる（Req 1.1 違反 / round 2 review feedback）
   - `[data-items-region]` 上の `change`（checkbox）・`click`（shift modifier 検出）・
     `keydown`（`x`）を delegated に捕捉する
   - 内部 Set<itemID> を更新し、`<article>` に `.is-selected` を付与・解除する
@@ -276,9 +284,15 @@ static/
   - DOM 上の `.item-select[checked]` と内部 Set は常に同期する（change イベント駆動）
   - fragment 差替後（`addedNodes.length > 0` または `beginActionMutation()` ブラケット外で
     observe された `childList` 変更）に Set は空にリセットされる
+  - **fragment 差替・popstate・`clear()` 呼出時には `lastClickedID` も `null` にリセットする**
+    （Set クリアのみで `lastClickedID` を残すと、stale anchor を起点とした Shift+click 範囲選択が
+    後続操作で発火し、Req 2.1「少なくとも 1 件選択済み」と矛盾する範囲が成立する / round 2
+    review feedback）
   - 部分失敗時の per-item `article.remove()`（actions モジュールが `beginActionMutation()` /
     `endActionMutation()` で囲んで実行）はリセット対象外であり、failed の id が Set に残置される
-    （Req 4.8 / 5.8）
+    （Req 4.8 / 5.8）。**ただし `beginActionMutation()` ブラケット内で削除された article が
+    `lastClickedID` と一致する場合は、`lastClickedID` を `null` にリセットする**（その後の
+    Shift+click で stale anchor を起点に範囲算出することを防ぐ）
 
 **Dependencies**
 - Inbound: `[data-items-region]` 内の `input.item-select` 要素（change source）、ドキュメント全体の `keydown`（`x` capture）
@@ -334,21 +348,33 @@ stateDiagram-v2
 
 ##### Fragment swap vs per-item removal の判定ロジック
 
-MutationObserver は `[data-items-region]` の `childList` 変更だけを観測する。発火時の判定:
+MutationObserver は `[data-items-region]` の `childList` 変更だけを観測する。**per-record で
+record 種別を判定し、`addedNodes.length > 0` の record（fragment 差替）は bracket 状態に関係なく
+常に reset を実行する**（300ms fade-out bracket 中に状態タブ切替・タグフィルタ・検索・ソート・
+ページ送りが入った場合に Req 7.1 / 7.2 / 7.5 のリセットが脱落しないため / round 2 review feedback）:
 
-1. **`beginActionMutation()` ブラケット中**: `_actionMutationDepth > 0` の間に観測した
-   MutationRecord は **無視** する。actions モジュールは succeeded id ごとの `article.remove()`
-   を `begin → remove → end` で囲む（reference counted で nest 安全）
-2. **`addedNodes.length > 0`**: fragment 差し替え（`innerHTML = newHTML` / `replaceChildren(...)`）
-   とみなし、Set を空にリセット + `bulkselection:changed` を `{count: 0, ids: []}` で発火
-3. **`addedNodes.length === 0` かつブラケット外**: 通常運用ではこのパターンは発生しない（per-item
-   削除は必ず actions ブラケット内、空 fragment swap は SSR 側で空セクションが入る）。**保守的に
-   リセット**する（既存挙動と一致 / Req 7.5 を満たす）。これにより SSR 側の挙動変化に対しても
-   選択状態の意図しない持ち越しを防ぐ
+1. **`addedNodes.length > 0` の record（fragment 差替）**: bracket カウンタ
+   (`_actionMutationDepth`) の状態に **関係なく** reset を実行する:
+   - `Set.clear()` + `lastClickedID = null` + `bulkselection:changed` を `{count: 0, ids: []}`
+     で発火（`lastClickedID` も `null` リセット = stale anchor 防止 / round 2 review feedback）
+   - 新しい SSR markup 内の `disabled` 付き `input.item-select` を全件 `enableSelectionCheckboxes(region)`
+     で enable（NFR 3.5 連続性 / Progressive Enhancement 規約と同じ helper）
+2. **`addedNodes.length === 0` の record（per-item 削除）**:
+   - `_actionMutationDepth > 0` の間は **無視** する（actions モジュールは succeeded id ごとの
+     `article.remove()` を `begin → remove → end` で囲む / Req 4.8 / 5.8 failed 選択保持）
+   - `_actionMutationDepth === 0` のとき（bracket 外）は **保守的にリセット**する（既存挙動と
+     一致 / Req 7.5 を満たす）
 
 `MutationObserver.takeRecords()` を `endActionMutation()` の冒頭で呼び出し、ブラケット中に蓄積した
 records を捨てる。これにより actions の bulk DOM 操作完了直後の callback タイミングずれによる
 リセット誤発火を防ぐ。
+
+**Per-record 判定の根拠**: `MutationObserver` の callback は MutationRecord の **配列**を渡す。
+fragment 差替（`innerHTML = newHTML` / `replaceChildren(...)`）と per-item 削除（`article.remove()`）が
+microtask 内で混在するケースでは、`records.forEach(record => ...)` で per-record に判定することで
+fragment 差替を bracket suppression に巻き込まずに reset できる。これにより部分失敗の fade-out
+bracket 中であっても、新規 fragment が `addedNodes` で挿入された瞬間に bracket とは独立に
+リセットを発火できる（Req 4.8 / 5.8 と Req 7.1 / 7.2 / 7.5 の同時両立）。
 
 #### items_bulk_actions.js（新規モジュール）
 
@@ -596,25 +622,35 @@ func (s *Store) BulkDeleteItems(ctx context.Context, userID string, itemIDs []st
 // owner or missing) are simply absent from the returned slice; the caller
 // computes the failed set as `requestIDs \ succeeded.ItemID`.
 //
-// Implementation is one transaction:
-//   1. INSERT INTO tags (id, name, normalized_name) VALUES (gen_random_uuid(),
-//      $tagName, $tagNormalized) ON CONFLICT (normalized_name) DO UPDATE
-//      SET normalized_name = excluded.normalized_name RETURNING id;
-//      (upsert; the DO UPDATE no-op gives us RETURNING id for the existing row.)
-//   2. SELECT id FROM items WHERE id = ANY($itemIDs::uuid[]) AND user_id = $userID;
+// Implementation is one transaction. **Ownership is verified FIRST** so
+// that a request whose ids are all non-owned / deleted does NOT touch the
+// global `tags` table (no tag pollution — Req 8.2 / 8.3 require failed
+// items to remain unmodified, and a global tag created by a 0-owned
+// request would surface in tag autocompletes / chip filters as a
+// side-effect of an authorization-failed request):
+//   1. SELECT id FROM items WHERE id = ANY($itemIDs::uuid[]) AND user_id = $userID;
 //      (ownership filter — caller-supplied ids are partitioned here.
 //      `::uuid[]` cast is required because pgx v5 encodes []string as text[];
 //      same constraint applies throughout this function.)
-//   3. INSERT INTO item_tags (item_id, tag_id, display_name) SELECT id,
+//   2. **EARLY RETURN guard**: if the ownership SELECT returned 0 rows
+//      (ownedItemIDs is empty), return ([], nil) immediately. Do NOT
+//      execute the tag upsert in step 3 — this prevents the global `tags`
+//      side-effect when no item is actually authorized to receive the tag.
+//   3. INSERT INTO tags (id, name, normalized_name) VALUES (gen_random_uuid(),
+//      $tagName, $tagNormalized) ON CONFLICT (normalized_name) DO UPDATE
+//      SET normalized_name = excluded.normalized_name RETURNING id;
+//      (upsert; the DO UPDATE no-op gives us RETURNING id for the existing row.
+//      Only reached when at least 1 item is authorized.)
+//   4. INSERT INTO item_tags (item_id, tag_id, display_name) SELECT id,
 //      $tagID, $displayName FROM unnest($ownedItemIDs::uuid[]) AS id
 //      ON CONFLICT (item_id, tag_id) DO NOTHING;
-//   4. SELECT it.item_id, t.id, it.display_name, t.normalized_name
+//   5. SELECT it.item_id, t.id, it.display_name, t.normalized_name
 //      FROM item_tags it JOIN tags t ON t.id = it.tag_id
 //      WHERE it.item_id = ANY($ownedItemIDs::uuid[])
 //      ORDER BY it.item_id, t.normalized_name;
 //      (return full tag list per item for client display.)
 //
-// The owned-only set returned from (2) becomes the `succeeded` list;
+// The owned-only set returned from (1) becomes the `succeeded` list;
 // callers diff against the request to compute `failed`.
 func (s *Store) BulkAddItemTag(ctx context.Context, userID string, itemIDs []string, tagInput TagInput) (succeeded []BulkTagResult, err error)
 
@@ -735,18 +771,24 @@ single-item delete / tag 編集の動線（既に同じ `confirm` / `normalizeTa
 
 #### `templates/items_list.html`（変更）
 
-各 `<article class="item-card">` の冒頭（`<a class="tile-link">` の直前）に以下を挿入する:
+各 `<article class="item-card">` の冒頭（`<a class="tile-link">` の直前）に以下を挿入する
+（**SSR は必ず `disabled` 属性付きで出力する**。本 design 内の他箇所 / File Structure Plan の
+items_list.html 行 193-195、Progressive Enhancement 規約と一致 / Req NFR 3.5 JS 無効環境の閲覧
+動線維持 / round 2 review feedback）:
 
 ```html
 <input type="checkbox"
        class="item-select"
        data-item-select
        data-item-id="{{.ID}}"
-       aria-label="アイテムを選択: {{.Title}}">
+       aria-label="アイテムを選択: {{.Title}}"
+       disabled>
 ```
 
 `<article>` 自体に `data-item-id="{{.ID}}"` を付与する（既存 `aria-labelledby` は維持）。
-これにより JS は `closest('.item-card')` から id を解決できる。
+これにより JS は `closest('.item-card')` から id を解決できる。`items_bulk_selection.js` の
+`init()` および MutationObserver の fragment 差替 reset callback が `enableSelectionCheckboxes(region)`
+helper を呼び、`disabled` 属性を除去して操作可能にする（Progressive Enhancement 規約）。
 
 ### Diagrams
 
@@ -805,16 +847,26 @@ sequenceDiagram
 - 成功時の chip 反映: succeeded[].tags をカードの `.tags` chip 列に反映する。**chip ノードは
   既存 SSR と同一 contract** で組み立てる（`items_list.html` line 65-70 と一致）:
   - tag 要素: `<button type="button">`
-  - class: `tag tag-filter-toggle`（新規付与は default で `is-selected` なし、`aria-pressed="false"`）
+  - class: `tag tag-filter-toggle`（現在 active なタグフィルタと一致する場合は `is-selected` を
+    付与、それ以外は class 1 個のみ）
   - 属性: `data-tag-filter-toggle`（空属性） / `data-tag-normalized="<normalized_name>"` /
-    `aria-pressed="false"` / `aria-label="タグで絞り込み: <name>"`
+    `aria-pressed`（active 一致時は `"true"`、それ以外は `"false"`） /
+    `aria-label="タグで絞り込み: <name>"`
   - テキストノード: `<name>`（`textContent` で代入、`innerHTML` 禁止 / XSS 防御）
+  - **active タグフィルタとの照合**: `new URL(window.location.href).searchParams.getAll('tag')`
+    で active tag name 集合を取得し、各 active 名を `window.altpocketNormalizeTagName` または
+    fallback（NFKC + lowercase + trim）で正規化した値の Set を作る。chip ごとに
+    `tag.normalized_name` が active set に含まれるかを判定して `is-selected` / `aria-pressed`
+    を分岐する（既存 SSR が `SelectedTags` template field を見て同一判定を行っているのを JS
+    側で再現 / NFR 3.2 active-filters 連携の維持 / round 2 review feedback）
   - 配置: 既存 `<div class="tags">` 直下に `replaceChildren(...newButtons)` で全置換
     （SSR と同じ生成順 = response の `succeeded[].tags` 順 = `normalized_name` 昇順）
   - 既存 chip 列が無い card（タグ 0 件 SSR）の場合は `<div class="tags">` を `createElement` で
     新規挿入してから chip を append
   これにより #117 で導入された **chip クリック絞り込み** および #115 の active-filters chip
-  連携が新規付与タグでも動作する（NFR 3.3 後方互換）
+  連携が新規付与タグでも動作し、かつタグフィルタ中（例: `?tag=GoLang` で絞り込み中）に
+  bulk-tag が成功した際にフィルタ中タグの `is-selected` 視覚状態が新規付与タグ列でも維持される
+  （NFR 3.2 / NFR 3.3 後方互換）
 - 部分失敗時: 削除と同じパターン（succeeded は selection から除去・chip 反映、failed は残置・
   `bulk-failure-dialog` に列挙）
 
