@@ -193,9 +193,15 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestHandleBulkDeleteItems_OverLimitReturns400PayloadTooLarge`: 101 件 → 400
       payload_too_large（NFR 2.1 server enforcement の回帰固定）
     - `TestHandleBulkDeleteItems_RejectsBearerAuthReturns403`: `Authorization: Bearer <jwt>` を
-      付けて POST → 403 `{"error":"forbidden"}`。Server.store / limiter は呼ばれずに即時 reject
-      されることを併せて確認（拡張機能 / MCP の bulk endpoint 到達を server で固定 /
-      requirements.md Out of Scope の goldensource）
+      付けて **handler を直接呼び出し**（middleware バイパスで auth context が user 解決済み相当の
+      状態にした上で）→ 403 `{"error":"forbidden"}`。Server.store / limiter は呼ばれずに即時
+      reject されることを併せて確認（拡張機能 / MCP の bulk endpoint 到達を server で固定 /
+      requirements.md Out of Scope の goldensource）。**本テストの対象は「有効 Bearer JWT が
+      middleware を通過した後に handler 側で 403 forbidden に拒否される」経路**（design.md
+      Architecture Pattern 節「CSRF 保護 / rate limiter / 認証の順序」の 2 段構成）であり、
+      **無効 Bearer JWT は本テストの対象外**（middleware の `authenticate` が 401 unauthorized を
+      返し handler に到達しないため、`TestHandleBulkDeleteItems_UnauthorizedReturnsJSON401` と
+      重複する / round 5 review feedback）
     - `TestHandleBulkDeleteItems_RateLimitedReturns429`: `ratelimit.New(0, 0)` で構成した limiter
       を持つ Server に POST → 429 `{"error":"rate_limited"}`（store は呼ばれない / 既存単一 API
       の rate limit pattern と一致 / 新規 bulk endpoint のレート制御退行の回帰固定）
@@ -464,9 +470,30 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         （currentID で上書き）。Req 2.3 の「直前に起動された選択操作要素」を、次回の範囲選択
         起点として正しく追従させるため。例: id1 → id5 を Shift 選択した後の Shift+id8 は
         `5→8` の範囲を選択する（`1→8` ではない）
-    - `document` 上の `keydown` を捕捉、既存 `app.js` と同じガード（`tag === 'INPUT' / TEXTAREA /
-      SELECT / isContentEditable / modifier present` なら return）後、`e.key === 'x'` なら
-      `document.activeElement?.closest('.item-card')` の id を toggle（Req 6.1〜6.3）
+    - `document` 上の `keydown` を捕捉、以下のガードを適用してから `e.key === 'x'` を判定する
+      （Req 6.1〜6.3）:
+      - **modifier present（`ctrlKey` / `altKey` / `metaKey` のいずれか）なら return**（既存
+        `app.js` keyboard handler と同じ pattern / Req 6.2 衝突回避）
+      - `e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' ||
+        e.target.isContentEditable` なら return（**文字入力フォーカス中の抑止** / Req 6.3）
+      - **`e.target.tagName === 'INPUT'` の場合は input の `type` で分岐**:
+        - `e.target.matches('input.item-select')` または `e.target.type === 'checkbox' ||
+          e.target.type === 'radio' || e.target.type === 'button' || e.target.type === 'submit'`
+          のときは **通過させる**（チェックボックスや radio・button 系 input は文字入力では
+          ないため、Req 6.1 のキーボードトグルが満たせる必要がある）
+        - それ以外（`type === 'text' / 'search' / 'email' / 'url' / 'tel' / 'password' /
+          'number' / 'date' / 'time' / 'datetime-local' / 'month' / 'week' / 'color' /
+          'file'` 等の文字入力 input、bulk-tag dialog の `data-bulk-tag-input` や検索ボックスを
+          含む）は return（Req 6.3 文字入力フォーカス中の抑止）
+      - ガード通過後、`e.key === 'x'` なら `document.activeElement?.closest('.item-card')` の
+        id を toggle する。フォーカスが `input.item-select` 上にあるケース（Tab ナビゲーション
+        などで checkbox にフォーカスがある状態）でも、closest('.item-card') により対応する
+        `<article>` の id が解決される（Req 6.1 / round 5 review feedback）
+      - **既存 `app.js` keyboard handler との関係**: 本モジュールは独立に
+        `document.addEventListener('keydown')` を register する。既存 `app.js` の guard が
+        `tag === 'INPUT'` を一律 return する規約は `j` / `k` / `o` / `n` / `/` / `?` / `e` に
+        対する判定であり、`x` キーの判定は本モジュール側で上記の精緻化されたガードを適用する
+        （既存ハンドラには `x` 分岐が無いため衝突しない / Req 6.2）
     - toggle / 範囲選択 / clear / removeFromSelection の **全パス** で:
       - DOM 上の `.item-select[checked]` 同期
       - `<article>` 上の `.is-selected` class 同期（Req 1.4）
@@ -776,9 +803,15 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         `showBulkFailureDialog({verb: 'タグ付け', items})`（DOM 収集規約は削除と同じ / Req 5.7）
       - 400 invalid_tag: dialog open のまま + 入力欄に focus 戻す + `toast.error('タグ名を入力して
         ください')`
-      - 400 invalid_request / 400 payload_too_large / 4xx 他 / 5xx（全件失敗扱い）: 一括削除と
-        同じく selection 中の article 群から title / URL を DOM 収集して
-        `showBulkFailureDialog({verb: 'タグ付け', items})` を表示（Req 5.7）。selection は触らない
+      - **400 invalid_request / 400 payload_too_large**（systemic エラー扱い / per-item identify
+        が不要 / design.md「Client-side error handling」400 invalid_request / payload_too_large
+        節と整合 / round 5 review feedback）: **`toast.error` のみ**で `bulk-failure-dialog` は
+        出さない。`toast.error('一括タグ付けのリクエストが不正です')` / `toast.error('一括タグ付け
+        の対象が多すぎます（最大 100 件）')` 等の具体的メッセージを 1 行で出す。**selection は
+        触らない**（一括削除側の同経路と挙動を一致させる）
+      - 4xx 他（401 / 403 / 429 等）/ 5xx（全件失敗扱い）: 一括削除と同じく selection 中の
+        article 群から title / URL を DOM 収集して `showBulkFailureDialog({verb: 'タグ付け',
+        items})` を表示（Req 5.7）。selection は触らない
     - **fadeOutAndRemove と beginActionMutation のブラケット規約**（Req 4.8 / 5.8 と既存
       `items_status_actions.js` の fade-out 削除パターンの両立）:
       既存 `items_status_actions.js` の `fadeOutAndRemove` は `setTimeout(remove, 300)` で
@@ -890,6 +923,12 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestTagInvalidTagOpenedDialogStaysAndFocusInput`: 400 invalid_tag → bulk-tag dialog 開いた
       まま + `data-bulk-tag-input` に focus 戻す + `toast.error('タグ名を入力してください')`
       （**`bulk-failure-dialog` は出さない**）
+    - `TestTagInvalidRequestShowsToastNotDialog`: 400 `{"error":"invalid_request"}` →
+      **`toast.error` のみ**で `bulk-failure-dialog` は出さない（systemic エラーで per-item
+      identify が不要 / selection 保持 / 一括削除側の `TestDeleteInvalidRequestShowsToastNotDialog`
+      と挙動一致 / round 5 review feedback）
+    - `TestTagPayloadTooLargeShowsToastNotDialog`: 400 `{"error":"payload_too_large"}` → 同上
+      （一括削除側の `TestDeletePayloadTooLargeShowsToastNotDialog` と挙動一致）
     - `TestFailureDialogPopulatesAllItemsWithoutTruncation`: 失敗 6 件 / 50 件 / 100 件の dialog
       populate で `<li>` 件数がそのまま 6 / 50 / 100 になることを assert（truncation 撤廃の
       回帰固定 / Req 4.7 / 5.7）
@@ -904,11 +943,12 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       `disabled` 属性を持つことを assert（pointer-events のみではキーボード起動を止められないため
       button disabled で二重送信を防ぐ規約の回帰固定 / NFR 1.2 / round 4 review feedback）。
       fetch resolve 後（成功 / 失敗いずれも）に `disabled` が外れることを併せて assert
-  - **テスト追加（同 task 内）**: 上記 28 件の actions モジュールテストを本タスクで完結させる
+  - **テスト追加（同 task 内）**: 上記 30 件の actions モジュールテストを本タスクで完結させる
     （Req 3.1 / 3.2 / 3.3 / 3.4 / 3.6 / 4.1〜4.8 / 5.5〜5.9 / 6.5 / NFR 1.2 の同 task 内テスト
     必須カテゴリに該当、4xx/5xx エラーパス・chip rebuild 契約・confirm シグネチャ規約・failure
     dialog 全件 populate・legacy `?tags=csv` 形式の active filter chip 連携・busy 状態の
-    button disabled の回帰固定を含む）
+    button disabled・**bulk-tag 400 invalid_request / payload_too_large が toast のみで dialog
+    を出さない**（一括削除側と挙動一致）の回帰固定を含む）
   - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.6, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 5.1, 5.2, 5.5, 5.6, 5.7, 5.8, 5.9, 6.5, NFR 1.2, NFR 1.3_
   - _Boundary: Static_
   - _Depends: 5, 6_

@@ -76,9 +76,21 @@ altpocket はレイヤード Go モノレポで、入口 `cmd/api` から `inter
   csrf を返す（`internal/server/server.go:1317-1331 requireAuth` / `:1459-1482 checkCSRF`）。
   **rate limiter（`s.limiter.Allow(user.ID)`）は middleware には含まれず、各 handler 冒頭から
   明示的に呼ぶ既存規約**（既存 `handleCreateItem` / `handleDeleteItem` / `handleSetItemStatus`
-  と同じ pattern）。本機能の bulk handler も「①Bearer JWT 遮断 → ②`requireAuth` 通過後の
-  authenticated session → ③handler 内 `s.limiter.Allow` 検査 → ④`http.MaxBytesReader`
-  → ⑤decode + validation」の順で揃える
+  と同じ pattern）。本機能の bulk handler に到達するまでの実行順序は実装順の通り
+  「①`requireAuth` middleware（`checkCSRF` → `authenticate`）→ ②handler 冒頭の
+  `Authorization` 非空 → 403 forbidden 即時拒否 → ③handler 内 `s.limiter.Allow` 検査 →
+  ④`http.MaxBytesReader` → ⑤decode + validation」となる。**Bearer JWT 経路の API エラー
+  契約は middleware と handler の 2 段で構成される**:
+  - **無効 Bearer JWT**（署名不一致 / 失効 / user 不在等）→ `requireAuth.authenticate` が
+    `false` を返し **middleware が 401 unauthorized で即時拒否**する。handler には到達しない
+  - **有効 Bearer JWT**（拡張機能 / MCP 経由の正規 Bearer）→ middleware の `checkCSRF` は
+    Authorization 非空のため pass し、`authenticate` も成功し handler に到達する。handler 冒頭で
+    `r.Header.Get("Authorization") != ""` を検査し **403 forbidden で即時拒否**する
+    （bulk endpoint を session-only に絞るための明示的拒否）
+
+  つまり「Authorization 非空 = 必ず handler で 403」ではなく、「有効 Bearer のみ handler に
+  到達して 403 forbidden、無効 Bearer は middleware で 401 unauthorized」という 2 経路に分かれる
+  ことを契約として固定する（round 5 review feedback）
 
 解消・回避する technical debt:
 
@@ -135,7 +147,15 @@ flowchart LR
 
 **Architecture Integration**:
 - 採用パターン: 既存 chi route + store I/O 集約 + `static/items_*.js` モジュール群の素直な
-  延長。新規モジュール / interface 化は不要
+  延長。ドメイン分割を新規に立てるような大規模な抽象化（mediator / facade / application
+  service layer 等）は導入しない。**ただし handler 単体テストの test seam として、`items_bulk.go`
+  内に package-private な最小 interface `bulkItemsStore`（`BulkDeleteItems` / `BulkAddItemTag`
+  のみ）を 1 つだけ定義する**（後述「Handler-side store interface」節 / round 4 review
+  feedback）。これは新しいレイヤを増やすためではなく、handler unit test を CI 実行可能な
+  `go test ./...` 経路から認可越境 / 部分失敗 / 構造化ログを観測可能にする目的の最小限の
+  抽象化であり、`*store.Store` が自動的に interface を満たすため adapter コードは不要 /
+  既存呼び出し経路への影響なし（NFR 3.1〜3.4 後方互換）。bulk 以外の handler を interface 化
+  する範囲拡張は本 PR スコープ外（段階的導入）
 - ドメイン／機能境界:
   - **選択状態は完全にクライアント側**（JS module の private state）。サーバーは selection 状態を
     永続化しない（ページをまたぐ選択非保持は Out of Scope 通り）
@@ -237,7 +257,7 @@ static/
 | 5.6 | 成功時のリセット + ツールバー非表示 | items_bulk_actions.js | Set クリア + tag dialog 閉鎖 | |
 | 5.7 / 5.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持、成功は選択解除 | items_bulk_actions.js + server response | レスポンス `failed[]`（`{item_id, reason}` のみ） / `succeeded[]` を使い、succeeded の id を Set から除去・failed の id は保持。失敗一覧の title / url は対象 article の DOM から **全件** 取得して支援技術 reachable な領域に列挙（4.7 / 4.8 と同じ規約） | |
 | 5.9 | 空タグでの無動作 | items_bulk_actions.js | dialog confirm 時に正規化結果が空文字なら fetch しない + 入力欄に focus 戻す | |
-| 6.1 / 6.2 / 6.3 | キーボード `x` トグル + 既存衝突なし + 入力欄フォーカス時抑止 | items_bulk_selection.js | 既存 app.js keyboard handler と同じ pattern (TAG === INPUT / TEXTAREA / SELECT / isContentEditable のときは return) + `x` のみ捕捉 | document.addEventListener('keydown') |
+| 6.1 / 6.2 / 6.3 | キーボード `x` トグル + 既存衝突なし + 入力欄フォーカス時抑止 | items_bulk_selection.js | `document.addEventListener('keydown')` を独立 register。ガード順序: ①modifier present なら return（Req 6.2 衝突回避）、②`tag === 'TEXTAREA' / SELECT / isContentEditable` なら return（Req 6.3 文字入力フォーカス抑止）、③`tag === 'INPUT'` の場合は `e.target.type` で分岐 — `checkbox` / `radio` / `button` / `submit` および `input.item-select` は **通過させる**（Req 6.1 を満たすため、Tab で checkbox にフォーカスがあっても `x` が発火できる必要がある）、`text` / `search` / `email` / `url` / `tel` / `password` / `number` / `date` 等の文字入力 input（bulk-tag dialog の `data-bulk-tag-input` や検索ボックスを含む）は return（Req 6.3）。ガード通過後 `e.key === 'x'` なら `document.activeElement?.closest('.item-card')` の id を toggle | document.addEventListener('keydown') |
 | 6.4 / 6.5 | 選択ツールバーのキーボード到達 + 同等挙動 | items.html | 全ボタンをネイティブ `<button>` で実装、Tab 順序が自然なので追加処理不要 | |
 | 7.1 / 7.2 / 7.5 | タブ・フィルタ・検索・ソート・ページ送り・fragment 差し替え時のリセット | items_bulk_selection.js | `[data-items-region]` 上の `MutationObserver(childList)` で fragment 差し替えを検出して Set クリア + `bulkselection:changed` 発火。**fragment 差し替えと per-item `article.remove()` の区別**は (a) `addedNodes.length > 0` ならフラグメント差し替えとみなす、(b) `beginActionMutation()` ブラケット中の mutation はリセット対象外、の 2 条件で行う（後述「Components / Selection state」節参照）。これにより、部分失敗時の DOM 退場（succeeded のみ remove）で failed 選択が失われないことを保証する（Req 4.8 / 5.8 と両立） | fragment 差替後にチェックボックスは全 unchecked SSR されるので Set とも整合 |
 | 7.3 / 7.4 | リロード・back/forward でリセット | items_bulk_selection.js | ページ init 時に Set が空 + popstate ハンドラで Set クリア（ただし fragment 差替経路も別途 reset するので二重防御） | 自然に初期状態 |
@@ -465,7 +485,12 @@ function init({document, window, selection /* selection.init() の戻り値 */, 
   なら 403 `{"error":"forbidden"}` で即時拒否する。`requireAuth` middleware は session cookie
   と Bearer JWT の両方を受け付けるため、bulk endpoint を **session-only** に絞るには
   ハンドラ側での明示的な Bearer 拒否が必要（requirements.md「Out of Scope: 拡張機能および
-  MCP 経由での一括操作 API 公開」を server 側で goldensource として固定する）
+  MCP 経由での一括操作 API 公開」を server 側で goldensource として固定する）。**ここで
+  handler に到達する Authorization 非空のリクエストは「`requireAuth.authenticate` が成功
+  した有効 Bearer JWT のみ」**（無効 Bearer は middleware で 401 unauthorized 即時拒否され
+  handler には到達しない）。したがって handler 側の Authorization 非空判定は、**正規 Bearer
+  経路を許諾しないことの最終ゲート**として機能する（Architecture Pattern 節「CSRF 保護 /
+  rate limiter / 認証の順序」と同じ 2 段構成）
 - **request body のバイト境界 enforcement**: JSON decode の前に
   `r.Body = http.MaxBytesReader(w, r.Body, maxBulkRequestBodyBytes)`（16 KiB）を適用し、
   decode が境界以上を読まないことを保証する。decode エラーを `errors.As` で
@@ -481,11 +506,13 @@ function init({document, window, selection /* selection.init() の戻り値 */, 
     valid な id だけを `validIDs` として store.BulkDeleteItems に渡す
 - **認証チェック失敗 → 401 / 403 の場合分け**（`internal/server/server.go:1317-1331 requireAuth`
   と `:1459-1482 checkCSRF` の実装に基づく確定挙動）:
-  - **401 `{"error":"unauthorized"}`**: `auth.UserFromContext` で user が取れない経路。
+  - **401 `{"error":"unauthorized"}`**: middleware の `authenticate` で user が取れない経路。
     実際に到達するのは (a) handler unit test で auth context を未設定で直接呼び出す経路、
-    (b) middleware の `checkCSRF` を通過した後の `authenticate` 失敗（session lookup が
-    valid CSRF を持つ session を解決できない race condition）の 2 経路に限定される。
-    本機能のテストは (a) を中心に固定し、既存 `extension_contract_test.go` の
+    (b) middleware の `checkCSRF` を通過した後の `authenticate` 失敗 — 具体的には **(b-1)
+    無効 Bearer JWT**（署名不一致 / 失効 / JWT に含まれる user ID が DB に存在しない 等）、
+    または **(b-2) cookie の session lookup が valid CSRF を持つ session を解決できない race
+    condition** の 2 経路、に限定される。本機能のテストは (a) と (b-1)（fake `auth.ParseJWT`
+    が error を返すケース）を中心に固定し、既存 `extension_contract_test.go` の
     `TestHandleListItemsUnauthorizedReturnsJSONError` と同じ pattern（handler 直接呼出）に揃える
   - **403 `{"error":"csrf"}`**: 実ルート経由で `Authorization` header 無 + `altpocket_session`
     cookie 無、または cookie はあるが `X-CSRF-Token` 不一致の場合に middleware の
@@ -493,9 +520,12 @@ function init({document, window, selection /* selection.init() の戻り値 */, 
     呼び出しは 401 ではなく **403 csrf** が返る点を明示する
   - **403 `{"error":"forbidden"}`**: 上記とは別軸で、本機能専用に handler 冒頭で
     `r.Header.Get("Authorization") != ""` を即時拒否する。`requireAuth` の `checkCSRF` は
-    Authorization header 非空を「Bearer 経由」とみなして CSRF をスキップするため、Bearer JWT を
+    Authorization header 非空を「Bearer 経由」とみなして CSRF をスキップし、`authenticate` も
+    **有効 Bearer JWT であれば user を解決して handler に到達させる**。そのため Bearer JWT を
     本機能の bulk endpoint で拒否するには handler 側での明示的 reject が必要（前述の Bearer 拒否
-    規約と一致）
+    規約と一致 / 該当するのは **有効 Bearer JWT 経路に限る**。無効 Bearer JWT は上記 401
+    unauthorized の (b-1) 経路で middleware が先行拒否するため handler に到達しない /
+    round 5 review feedback）
 - rate limit 越え → 429 `{"error":"rate_limited"}`。ハンドラ内で `s.limiter.Allow(user.ID)`
   を **明示的に呼び**、`false` なら 429 を返す（既存 `handleCreateItem` / `handleDeleteItem` /
   `handleSetItemStatus` と同じ pattern。`requireAuth` middleware には rate limiter は含まれない）
@@ -1285,8 +1315,12 @@ requirements Open Question (d) と Req 6.2 で「既存ショートカット `j`
 
 - `x` は「mark for action」の慣習的な意味（多くのメーラー UI で選択トグル）
 - Issue 本文の仮案にも上がっており、運用上「`x` 推奨」で進めて支障なし
-- 文字列 `x` 単一キーで modifier なし → 入力欄 focus 中は既存 handler のガード（`tag === 'INPUT'` 等）
-  で抑止される
+- 文字列 `x` 単一キーで modifier なし → 文字入力フォーカス中は本モジュールの精緻化ガード
+  （`tag === 'INPUT'` の場合は `e.target.type` で `text` / `search` / `email` 等の文字入力
+  type のみを抑止し、`checkbox` / `radio` および `input.item-select` は通過させる）で抑止
+  される。これにより Req 6.3「文字入力フォーカス中の抑止」と Req 6.1「`x` でのキーボード
+  トグル」を両立できる（既存 `app.js` keyboard handler は `x` 分岐を持たないため衝突しない
+  / round 5 review feedback）
 
 ### 4. 上限件数 — **100 件**
 
