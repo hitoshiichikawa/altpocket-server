@@ -24,11 +24,20 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - 既存 `DeleteItem` と同じ orphan tags 削除を末尾で実行
       - tx 失敗時は全体を rollback し err を返す（succeeded は nil）
     - `BulkAddItemTag(ctx, userID, itemIDs []string, tagInput TagInput) (succeeded []BulkTagResult, err error)` を実装:
-      - 単一トランザクション内で以下を順次実行（**所有確認を先に行い、0 件のときはタグ upsert を
-        実行せず early return することで、認可違反 / 削除済み id のみのリクエストで `tags` 行が
-        副作用として作成されないようにする** / Req 8.2 / 8.3 失敗対象非変更 / round 2 review feedback）:
-        1. **所有確認**: `SELECT id FROM items WHERE id = ANY($1::uuid[]) AND user_id = $2` で
-           ownedItemIDs を取得
+      - 単一トランザクション内で以下を順次実行（**所有確認を `FOR KEY SHARE` で行い**、0 件のときは
+        タグ upsert を実行せず early return することで、認可違反 / 削除済み id のみのリクエストで
+        `tags` 行が副作用として作成されず、かつ所有確認後から item_tags INSERT の間に対象 item が
+        別 tx で削除されて FK 違反で全体 500 に倒れることを防ぐ / Req 8.2 / 8.3 失敗対象非変更 /
+        round 6 review feedback / 元の round 2 review feedback の上位互換）:
+        1. **所有確認 + 行ロック取得**: `SELECT id FROM items WHERE id = ANY($1::uuid[]) AND
+           user_id = $2 FOR KEY SHARE` で ownedItemIDs を取得。**`FOR KEY SHARE`** は一致した
+           `items` 行に対し row-level KEY SHARE ロックを取得し、本 tx commit までの間、当該行への
+           並行 `DELETE FROM items WHERE id = <locked-id>`（FOR KEY UPDATE 相当）を **block** する。
+           KEY SHARE 同士は互換性があるため、別の並行 `BulkAddItemTag` 呼び出しが同じ id 集合を
+           触っても **deadlock せず**、互いに直列化しない。並行 `BulkDeleteItems` のみが本 tx の
+           commit を待つ。これにより「step 1 で所有確認 → 別 tx が DELETE → step 4 で
+           item_tags.item_id の FK 違反で tx rollback → 500 db_error」の race が完全に閉じる
+           （Req 8.3 の「削除済み識別子は変更せず失敗通知」が部分失敗レスポンスとして正しく機能する）
         2. **EARLY RETURN ガード**: `len(ownedItemIDs) == 0` の場合、`return []BulkTagResult{}, tx.Commit(ctx)`
            で即座に return する。**`tags` への INSERT は実行しない**。これにより全 id が
            他ユーザー所有 / 削除済みのリクエストで global `tags` テーブルに新規行が作成され、
@@ -40,7 +49,9 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
            で no-op upsert を使う）
         4. **item_tags 追加**: `INSERT INTO item_tags (item_id, tag_id, display_name) SELECT
            id, $tagID, $displayName FROM unnest($ownedItemIDs::uuid[]) AS id ON CONFLICT
-           (item_id, tag_id) DO NOTHING`（既存のユニーク制約 `(item_id, tag_id)` 前提）
+           (item_id, tag_id) DO NOTHING`（既存のユニーク制約 `(item_id, tag_id)` 前提）。step 1 の
+           FOR KEY SHARE ロックにより、ここで参照する `ownedItemIDs` の全行が `items` に存在することが
+           保証されるため、FK 違反は発生しない
         5. **更新後タグ集合 SELECT**: `SELECT it.item_id, t.id, it.display_name, t.normalized_name
            FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE it.item_id =
            ANY($ownedItemIDs::uuid[]) ORDER BY it.item_id, t.normalized_name`
@@ -90,6 +101,18 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       ある場合はそのまま、無い場合は新規 INSERT もされない）ことを assert。succeeded は空配列
       （Req 8.2 / 8.3 失敗対象非変更 + global `tags` 副作用なし / round 2 review feedback /
       design.md BulkAddItemTag「EARLY RETURN ガード」節と整合）
+    - `TestBulkAddItemTag_ConcurrentDeleteBlocksUntilCommit`: own 2 件 (A, B) を seed → goroutine α
+      で `BulkAddItemTag(ctx, userID, [A, B], tagInput)` を起動し、tx 内で step 1 の
+      `SELECT ... FOR KEY SHARE` 直後を観測できるよう **テスト用 hook（`pgx` 経由で
+      `pg_advisory_lock` を使うか、テスト専用の barrier channel を `Store` に inject）** で
+      pause させる。goroutine β で同 tx 外から `DELETE FROM items WHERE id = $1`（A 対象）を発火 →
+      β が **block している** ことを assert（`pg_locks` を SELECT して `granted=false` の DELETE
+      行ロック待ちが存在することで確認、または β の goroutine 完了を timeout 200ms で待って
+      非完了を assert）。α の barrier を解除 → α が tx commit → β unblock → β の DELETE が
+      完了 → 最終状態は A が削除済み、B はタグ付与済み（item_tags に B のみ存在）。**FOR KEY SHARE を
+      付け忘れた古い実装では β が α と並行進行し、α の step 4 INSERT が FK 違反で
+      `pgx.ErrTxClosed` 相当を返して 500 db_error になる** / round 6 review feedback の race
+      閉鎖の回帰固定 / Req 8.3
   - 既存 `seedItemsActiveFilterUser` 系の helper パターンを参考に、cleanup（テスト DB を汚さない）
     も同規約に揃える
   - **テスト追加（同 task 内）**: タスク 1 から deferred された Req 4.4 / 4.5 / 5.3 / 5.4 / 8.1 /
@@ -246,10 +269,20 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         item_ids / succeeded_count / failed_count / failed_ids / request_id の 6 フィールドが
         含まれ、Cookie / Authorization header / body raw が含まれないことを assert（NFR 5.1）
       - `TestHandleBulkDeleteItems_RequestBodyExceedsByteLimitReturns400PayloadTooLarge`:
-        `bytes.Repeat([]byte("x"), maxBulkRequestBodyBytes+1024)` を body にして POST →
+        **構文上有効な JSON** で `maxBulkRequestBodyBytes` を超える body を構築して POST →
         400 `{"error":"payload_too_large"}`。**store fake は呼ばれない**（decode が
         `*http.MaxBytesError` を返した時点で reject される / design.md「Request Size Cap」節 /
-        DoS 面遮断の回帰固定）
+        DoS 面遮断の回帰固定）。**body 構築規約（round 6 review feedback）**: `bytes.Repeat([]byte("x"), N)`
+        のような **JSON として構文不正な byte 列**（先頭文字 `x` が不正トークン）を渡すと、
+        `MaxBytesReader` が上限まで読み進める前に `json.Decoder` が syntax error を返し
+        `*json.SyntaxError` 経路で `invalid_request` に倒れて本 path の回帰固定にならない。
+        代わりに `{"item_ids":["00000000-0000-0000-0000-000000000001", ... (約 500 件複製) ...]}`
+        のような **valid UUID を多数並べた配列**（1 UUID あたり約 39 byte なので 500 件で
+        ≈ 19.5 KiB が `maxBulkRequestBodyBytes=16 KiB` を確実に超える）を `json.Marshal` で
+        構築する。これにより decoder が array element を読み進める途中で `MaxBytesReader` の
+        上限を超え、`Decode` が `*http.MaxBytesError` を `errors.Is` 経由で識別可能な形で返す
+        （**item_ids 件数 > 100 の検証は decode 完了後**なので、byte 上限到達が先に発火する
+        順序が保証される / design.md「Request Size Cap」検証順序節と整合）
       - `TestHandleBulkTagItems_InvalidUUIDsCollapseToFailedNotFound_FakeStore`: 上記の bulk-tag 版
       - `TestHandleBulkTagItems_PartialFailureResponse_FakeStore`: 上記の bulk-tag 版（fake は
         `[]store.BulkTagResult` を返す）
@@ -257,7 +290,15 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - `TestHandleBulkTagItems_LogsStructuredFields_FakeStore`: 上記の bulk-tag 版（`tag_normalized`
         が含まれることを追加で assert）
       - `TestHandleBulkTagItems_RequestBodyExceedsByteLimitReturns400PayloadTooLarge`: 上記の
-        bulk-tag 版
+        bulk-tag 版。bulk-tag は `tag` field を持つため、body 構築は **valid な item_ids 1 件 +
+        巨大な valid `tag` 文字列**で行う: `{"item_ids":["<valid-uuid>"],"tag":"<約 16.5 KiB の
+        ASCII 文字列>"}` を `json.Marshal` で構築（`strings.Repeat("a", maxBulkRequestBodyBytes)`
+        を `tag` 値に与えて `json.Marshal` させると、JSON 文字列としてエスケープ後の総 body
+        サイズが上限を超える）。decoder が `tag` 文字列を読み進める途中で `MaxBytesReader` の
+        上限を超え、`*http.MaxBytesError` が `errors.Is` 経由で識別可能な形で返る。bulk-delete 版と
+        同じく **store fake は呼ばれない** ことを assert（`bytes.Repeat([]byte("x"), N)` のような
+        構文不正な byte 列を渡すと `*json.SyntaxError` 経路に倒れて本 path の回帰固定にならない /
+        round 6 review feedback）
       - これら fake-store ベースの unit テストは **通常 `go test ./...` で実行可能**であり、
         既存 CI（`.github/workflows/ci.yml`）の verify gate で退行検出される
         （integration tag 経路に閉じていた task 4 の検証範囲のうち、**handler 層の認可境界 /
@@ -683,14 +724,22 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         テキスト更新（Req 3.1 / 3.6）
       - `count === 0` なら `hidden=true` 化（Req 3.2）
     - ツールバーの delegated click を捕捉:
-      - `button.bulk-delete` → `window.altpocketConfirm.show('一括削除', '<件数> 件を削除しますか？',
-        () => { /* approve → POST /v1/items/bulk-delete */ }, 'Delete', 'btn-danger')` を呼ぶ
-        （**object の `.show(...)` メソッド呼び出し、関数呼び出しではない** / Req 4.1）。
-        `window.altpocketConfirm` が undefined ならブラウザ標準 `window.confirm()` に降格。
-        cancel / Escape では approve callback が発火しないため、追加コード無しで「キャンセル時に
-        何もしない」が成立する（既存 `confirm.show` の挙動）（Req 4.2 / 4.3）
-      - `button.bulk-tag` → `<dialog data-bulk-tag-dialog>` を `showModal()`、フォーム submit で
-        `<input data-bulk-tag-input>` の値を取得。
+      - `button.bulk-delete` → **click ハンドラ冒頭で `const requestIds = selection.getSelectedIDs();`
+        を snapshot**（`Array.from(selection.getSelectedIDs())` で defensive copy；後述「リクエスト ID
+        スナップショット規約」全項目の前提）。続けて
+        `window.altpocketConfirm.show('一括削除', `${requestIds.length} 件を削除しますか？`,
+        () => { /* approve → POST /v1/items/bulk-delete with requestIds */ }, 'Delete',
+        'btn-danger')` を呼ぶ（**object の `.show(...)` メソッド呼び出し、関数呼び出しではない** /
+        Req 4.1）。`window.altpocketConfirm` が undefined ならブラウザ標準 `window.confirm()` に
+        降格。cancel / Escape では approve callback が発火しないため、追加コード無しで「キャンセル
+        時に何もしない」が成立する（既存 `confirm.show` の挙動）（Req 4.2 / 4.3）。**approve
+        callback / fetch / レスポンス処理は closure 内 `requestIds` を参照**し live `selection` を
+        使わない
+      - `button.bulk-tag` → **click ハンドラ冒頭で `const requestIds = selection.getSelectedIDs();`
+        を snapshot**（`Array.from(...)` で defensive copy）。続けて `<dialog data-bulk-tag-dialog>`
+        を `showModal()`、フォーム submit で `<input data-bulk-tag-input>` の値を取得。
+        submit ハンドラ / fetch / レスポンス処理は closure 内 `requestIds` を参照し live
+        `selection` を使わない。dialog title 内の選択件数表記も `requestIds.length` から組み立てる。
         **bulk-tag dialog submit 規約**（round 4 review feedback / `method="dialog"` 自動 close
         対策）: form の `submit` ハンドラ冒頭で **必ず `event.preventDefault()` を呼び**、
         ブラウザのネイティブ dialog close を抑止する。これにより、空判定で no-op となるケース
@@ -729,6 +778,38 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         を発火し、件数だけは toast 経由で持続表示（dialog 閉鎖後の reminder）
       - **truncation は行わない**（過去レビューで指摘済み「先頭 3 件 + ほか N 件」は Req 4.7 /
         5.7 違反のため撤廃。100 件分の `<li>` を scrollable 領域で全件提示）
+    - **リクエスト ID スナップショット規約**（round 6 review feedback / live selection
+      依存の事故防止）: bulk-delete / bulk-tag いずれの click ハンドラも、**fetch 起動の直前** に
+      `const requestIds = selection.getSelectedIDs();`（または `Array.from(...)`）で
+      **その時点の選択 id を snapshot し、ローカル const に保持**する。以降の **すべての**
+      レスポンス処理（成功 / 部分失敗 / 4xx / 5xx / network 失敗）は、live `selection` ではなく
+      この `requestIds` snapshot を入力として動作させる。具体的な不変条件:
+      1. **dialog 表示の件数表記**: confirm dialog（一括削除）/ bulk-tag dialog の「N 件を…」表記は
+         `requestIds.length` から組み立てる（live `selection` の `getSelectedCount()` は使わない）
+      2. **selection 解除は snapshot ベース**: 全成功時の解除は **`selection.removeFromSelection(requestIds)`**
+         で行い、`selection.clear()` は **使用しない**。これにより、fetch 中にユーザーが別カード
+         B を新規選択していても B の選択が誤って消えない（Req 4.8 / 5.8 の「失敗対象の選択保持」
+         を fetch 中の新規選択にまで拡張して保証する）。部分失敗時の解除は
+         `selection.removeFromSelection(succeeded)`（succeeded はレスポンス由来）で同様
+      3. **失敗 dialog の DOM 収集も snapshot ベース**: 4xx / 5xx 全件失敗扱い時の title / URL
+         収集は、**`requestIds` の各 id について** `region.querySelector('article[data-item-id="<id>"]')`
+         を回す。fetch 中に削除済み state タブ切替で article が DOM から消えていた場合は、
+         `li.textContent = item.id` の id-only fallback（後述「失敗一覧の提示」節と同じ）で扱う
+      4. **succeeded の id-only fallback**: 200 OK 全成功時の DOM 削除も、`succeeded`（レスポンス
+         由来 / `string[]`）の各 id について `region.querySelector('article[data-item-id="<id>"]')`
+         が **null** を返した場合（fetch 中の状態タブ切替等で当該 article が現在 view 外）は、
+         fade-out を no-op として skip し、`selection.removeFromSelection([<id>])` のみ実施する
+      5. **失敗 id-only fallback**: 部分失敗時の `failed[].item_id` または 4xx/5xx 全件失敗時の
+         `requestIds` から DOM 収集する経路で、`region.querySelector` が null を返した場合は、
+         `collectedFailures` に `{id: <item_id>, title: null, url: null}` を push し、
+         `showBulkFailureDialog` 内の既存 fallback（`li.textContent = item.id`）で id だけを
+         提示する。`region.querySelector` が null 戻り時に collection を skip すると Req 4.7 /
+         5.7「失敗対象を特定可能な形」の通知が脱落するため、id-only でも必ず 1 行は提示する
+      6. **fetch 中 selection 操作は凍結しない**: per-card checkbox / Shift+クリック範囲選択 /
+         `x` ショートカット / 状態タブ切替 / 検索クエリ / タグフィルタ / ソート / ページ送りは
+         fetch 中も従来どおり許可する（既存 busy 状態の対象はツールバー / dialog 操作ボタンのみ /
+         後述「busy 状態」節と整合）。snapshot 規約により live selection 変動はレスポンス処理に
+         **影響しない** ため、UX を不必要に縛らず棚卸し作業中の操作性を維持する
     - **一括削除レスポンス処理**:
       - レスポンス型の前提: `BulkDeleteResponse.succeeded` は **`string[]`**（id の配列）、
         `BulkDeleteResponse.failed` は **`BulkFailureDetail[]`**（`{item_id, reason}` のみ /
@@ -737,24 +818,31 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         `failed[i].item_id` でアクセスする
       - 200 OK + 全成功: succeeded（`string[]`）の各 id について
         `region.querySelector('article[data-item-id="<id>"]')` を fade-out（後述
-        「fadeOutAndRemove と beginActionMutation のブラケット規約」参照）で削除、
-        `selection.clear()` 後にツールバー隠す（Req 4.4 / 4.5 / 4.6）、`toast.success('N 件削除しました')`
+        「fadeOutAndRemove と beginActionMutation のブラケット規約」参照）で削除（querySelector
+        null 時は id-only fallback / snapshot 規約 4）、`selection.removeFromSelection(requestIds)`
+        後にツールバー隠す（Req 4.4 / 4.5 / 4.6 / 4.8 fetch 中新規選択保持）、
+        `toast.success('N 件削除しました')`
       - 200 OK + 部分失敗:
         1. **DOM 削除前に failed 詳細を収集**: `failed[].item_id` ごとに対応する article
            （`region.querySelector('article[data-item-id="<failed.item_id>"]')`）から
            `h3[id^="item-title-"]` の textContent を `title`、**`article.dataset.originalUrl`**
            （task 5 で SSR された `<article data-original-url="{{.URL}}">` の値）を `url` として
-           抽出する。**`.tile-link[href]` は使わない**: 既存テンプレ `templates/items_list.html`
-           の `<a class="tile-link" href="/ui/items/<id>">` は内部詳細ページ URL であり元記事
-           URL ではないため、タイトル空 item で `url` fallback として提示すると元記事を特定
-           できなくなり Req 4.7 / 5.7 違反となる。actions 側で failed item は remove しないが、
-           収集順を **succeeded 削除より前** に揃えて順序依存を回避
-        2. succeeded を beginActionMutation/endActionMutation ブラケット内で DOM 削除
+           抽出する。querySelector が null（fetch 中の状態タブ切替等で article が現在 view 外）
+           なら `{id: failed.item_id, title: null, url: null}` を collectedFailures に push
+           （snapshot 規約 5 / id-only fallback で 1 行は提示）。**`.tile-link[href]` は使わない**:
+           既存テンプレ `templates/items_list.html` の `<a class="tile-link" href="/ui/items/<id>">`
+           は内部詳細ページ URL であり元記事 URL ではないため、タイトル空 item で `url` fallback
+           として提示すると元記事を特定できなくなり Req 4.7 / 5.7 違反となる。actions 側で
+           failed item は remove しないが、収集順を **succeeded 削除より前** に揃えて順序依存を
+           回避
+        2. succeeded を beginActionMutation/endActionMutation ブラケット内で DOM 削除（null 時は
+           snapshot 規約 4 の id-only fallback）
         3. `selection.removeFromSelection(succeeded)`、failed[].item_id は selection 残置（Req 4.8）
         4. `showBulkFailureDialog({verb: '削除', items: collectedFailures})` を呼ぶ（Req 4.7）
-      - 4xx / 5xx（全件失敗扱い、ネットワーク失敗を含む）: selection 中の各 id について同様に
-        DOM から title / URL を **全件** 収集 → `showBulkFailureDialog({verb: '削除', items})`
-        を呼ぶ（Req 4.7「失敗の一部または全部」を満たす）。selection は触らない（残置）
+      - 4xx / 5xx（全件失敗扱い、ネットワーク失敗を含む）: **`requestIds` snapshot の各 id** に
+        ついて DOM から title / URL を収集（snapshot 規約 3 / null 時は id-only fallback で 1 行
+        必ず提示）→ `showBulkFailureDialog({verb: '削除', items})` を呼ぶ（Req 4.7「失敗の一部
+        または全部」を fetch 中新規選択 B の混入なしで満たす）。selection は触らない（残置）
       - 400 invalid_request / 400 payload_too_large: `toast.error` で「リクエストが不正です」/
         「100 件を超える選択はできません」を表示。selection は保持（人間 identify が不要な
         systemic エラーのため failure dialog は出さない）
@@ -797,10 +885,12 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         動作する（NFR 3.3 後方互換）。タグフィルタ中（例: `?tag=GoLang` で絞り込み中）に
         bulk-tag 成功で chip が再構築されても、フィルタ中タグの `is-selected` / `aria-pressed=true`
         状態が新規付与タグ列でも保持される（round 2 review feedback）
-      - `selection.clear()` + dialog 閉鎖 + ツールバー隠す（Req 5.5 / 5.6）
-      - 200 OK + 部分失敗: succeeded の tags を反映（上と同じ DOM API 経路）+
-        `selection.removeFromSelection(succeeded ids)`、failed は selection 残置（Req 5.8）+
-        `showBulkFailureDialog({verb: 'タグ付け', items})`（DOM 収集規約は削除と同じ / Req 5.7）
+      - `selection.removeFromSelection(requestIds)` + dialog 閉鎖 + ツールバー隠す（Req 5.5 /
+        5.6 / 5.8 fetch 中新規選択保持 / snapshot 規約 2）
+      - 200 OK + 部分失敗: succeeded の tags を反映（上と同じ DOM API 経路 / querySelector
+        null 時は chip 反映を skip）+ `selection.removeFromSelection(succeeded.map(s => s.item_id))`、
+        failed は selection 残置（Req 5.8）+ `showBulkFailureDialog({verb: 'タグ付け', items})`
+        （DOM 収集規約は削除と同じ snapshot 規約 5 適用 / Req 5.7）
       - 400 invalid_tag: dialog open のまま + 入力欄に focus 戻す + `toast.error('タグ名を入力して
         ください')`
       - **400 invalid_request / 400 payload_too_large**（systemic エラー扱い / per-item identify
@@ -809,9 +899,9 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         出さない。`toast.error('一括タグ付けのリクエストが不正です')` / `toast.error('一括タグ付け
         の対象が多すぎます（最大 100 件）')` 等の具体的メッセージを 1 行で出す。**selection は
         触らない**（一括削除側の同経路と挙動を一致させる）
-      - 4xx 他（401 / 403 / 429 等）/ 5xx（全件失敗扱い）: 一括削除と同じく selection 中の
-        article 群から title / URL を DOM 収集して `showBulkFailureDialog({verb: 'タグ付け',
-        items})` を表示（Req 5.7）。selection は触らない
+      - 4xx 他（401 / 403 / 429 等）/ 5xx（全件失敗扱い）: 一括削除と同じく **`requestIds`
+        snapshot の各 id** から DOM 収集して `showBulkFailureDialog({verb: 'タグ付け', items})`
+        を表示（Req 5.7 / snapshot 規約 3 / null 時 id-only fallback）。selection は触らない
     - **fadeOutAndRemove と beginActionMutation のブラケット規約**（Req 4.8 / 5.8 と既存
       `items_status_actions.js` の fade-out 削除パターンの両立）:
       既存 `items_status_actions.js` の `fadeOutAndRemove` は `setTimeout(remove, 300)` で
@@ -857,8 +947,14 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       件数含まれる（Req 4.1）
     - `TestDeleteConfirmCallsAPI`: 承認で fetch が `/v1/items/bulk-delete` を method POST で呼ぶ、
       body に `item_ids` JSON 配列を含む
-    - `TestDeleteAllSuccessRemovesCardsAndClearsSelection`: 全成功レスポンス → 該当 article が
-      DOM から削除 + selection.clear が呼ばれる（Req 4.5 / 4.6）
+    - `TestDeleteAllSuccessRemovesCardsAndDeselectsSnapshot`: 全成功レスポンス → 該当 article が
+      DOM から削除 + `selection.removeFromSelection(requestIds)` が呼ばれる（**`selection.clear()`
+      は呼ばれない** / snapshot 規約 2 / Req 4.5 / 4.6）
+    - `TestDeleteAllSuccessPreservesInFlightNewSelection`: bulk-delete click 時 selection が
+      [A, B] → confirm 承認後 fetch pending 中にユーザーが card C を新規選択し selection が
+      [A, B, C] になる → 200 OK 全成功（succeeded=[A, B]）レスポンス処理後、selection に C が
+      残置されている（A / B のみ解除）。**`selection.clear()` を呼ぶ古い実装では C も消える** /
+      Req 4.8 を fetch 中新規選択にまで拡張 / round 6 review feedback の回帰固定
     - `TestDeletePartialFailureKeepsFailedSelected`: 部分失敗レスポンス → succeeded の card は
       DOM 削除、failed の id は selection に残置 + `bulk-failure-dialog` が `showModal` で開き
       `<li>` に失敗 item の title (or url) が **全件** 含まれる（truncation 無し / Req 4.7 / 4.8）
@@ -870,8 +966,15 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       の関数呼び出しは行わない**）。`description` 引数に件数が含まれることも assert
       （Req 4.1 / シグネチャ規約の回帰固定）
     - `TestDeleteRateLimitedShowsFailureDialog`: 429 `{"error":"rate_limited"}` レスポンス →
-      `bulk-failure-dialog` が selection 全件分の title/url を `<li>` で列挙して open + selection
-      は残置（Req 4.7「失敗の全部」の 4xx 経路 / 過去レビュー: actions test 4xx/5xx 未カバーの是正）
+      `bulk-failure-dialog` が **`requestIds` snapshot 全件分**の title/url を `<li>` で列挙して
+      open + selection は残置（Req 4.7「失敗の全部」の 4xx 経路 / snapshot 規約 3）
+    - `TestDeleteServerErrorUsesRequestIdsNotLiveSelection`: bulk-delete click 時 selection が
+      [A, B] → fetch pending 中にユーザーが card C を新規選択 / card A を解除し selection が
+      [B, C] になる → 500 db_error レスポンス → `bulk-failure-dialog` の `<li>` 列挙が
+      [A, B]（**snapshot 由来**）であり、C は含まれず、解除済み A は含まれる。selection は
+      触らない（[B, C] のまま）。**live `selection` を見る古い実装では [B, C] が列挙されて
+      C の title/url が誤って通知され A は脱落する** / Req 4.7 を snapshot ベースで厳密化 /
+      round 6 review feedback の回帰固定
     - `TestDeleteServerErrorShowsFailureDialog`: 500 `{"error":"db_error"}` または fetch reject
       （network 失敗）→ 同上の全件失敗ダイアログ + selection 残置（Req 4.7 5xx 経路）
     - `TestDeleteForbiddenBearerRejectShowsFailureDialog`: 403 `{"error":"forbidden"}` → 同上
@@ -913,8 +1016,11 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       受理規約と一致する JS 側ミラー / round 4 review feedback）。canonical と legacy の
       混在ケース（`?tag=go&tags=rust,python`）も併せて 1 ケース追加し、両方の tag が
       active 集合に合流することを assert
-    - `TestTagSuccessClearsSelectionAndClosesDialog`: 全成功 → selection.clear + dialog 閉鎖
-      （Req 5.6）
+    - `TestTagSuccessDeselectsSnapshotAndClosesDialog`: 全成功 →
+      `selection.removeFromSelection(requestIds)` + dialog 閉鎖（**`selection.clear()` は呼ばれない** /
+      snapshot 規約 2 / Req 5.6）。bulk-tag click 時 [A] → dialog open → tag 入力 → fetch
+      pending 中にユーザーが card B を新規選択 → 200 OK → selection に B が残置されている
+      （fetch 中新規選択保持 / Req 5.8 拡張 / round 6 review feedback の回帰固定）
     - `TestTagPartialFailureKeepsFailedSelected`: 部分失敗 → succeeded の chips 反映 + failed の id
       は selection 残置 + `bulk-failure-dialog` で failed 全件列挙（Req 5.7 / 5.8）
     - `TestTagRateLimitedShowsFailureDialog`: 429 → `bulk-failure-dialog` + selection 残置

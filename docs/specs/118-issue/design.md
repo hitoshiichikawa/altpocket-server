@@ -785,16 +785,30 @@ func (s *Store) BulkDeleteItems(ctx context.Context, userID string, itemIDs []st
 // owner or missing) are simply absent from the returned slice; the caller
 // computes the failed set as `requestIDs \ succeeded.ItemID`.
 //
-// Implementation is one transaction. **Ownership is verified FIRST** so
-// that a request whose ids are all non-owned / deleted does NOT touch the
-// global `tags` table (no tag pollution — Req 8.2 / 8.3 require failed
-// items to remain unmodified, and a global tag created by a 0-owned
-// request would surface in tag autocompletes / chip filters as a
-// side-effect of an authorization-failed request):
-//   1. SELECT id FROM items WHERE id = ANY($itemIDs::uuid[]) AND user_id = $userID;
+// Implementation is one transaction. **Ownership is verified FIRST with
+// FOR KEY SHARE** so that a request whose ids are all non-owned / deleted
+// does NOT touch the global `tags` table (no tag pollution — Req 8.2 / 8.3
+// require failed items to remain unmodified, and a global tag created by a
+// 0-owned request would surface in tag autocompletes / chip filters as a
+// side-effect of an authorization-failed request), AND so that an item
+// confirmed-owned in step 1 cannot be concurrently DELETE-d before step 4
+// raises an `item_tags.item_id` FK violation (which would roll back the
+// whole tx as 500 db_error instead of correctly surfacing the deleted id as
+// `failed` per Req 8.3):
+//   1. SELECT id FROM items WHERE id = ANY($itemIDs::uuid[]) AND user_id = $userID FOR KEY SHARE;
 //      (ownership filter — caller-supplied ids are partitioned here.
 //      `::uuid[]` cast is required because pgx v5 encodes []string as text[];
-//      same constraint applies throughout this function.)
+//      same constraint applies throughout this function. **FOR KEY SHARE**
+//      acquires a row-level KEY SHARE lock on each matched `items` row,
+//      which blocks any concurrent `DELETE FROM items WHERE id = <locked-id>`
+//      (which needs FOR KEY UPDATE) for the duration of this tx but is
+//      compatible with other FOR KEY SHARE locks — so two concurrent
+//      BulkAddItemTag calls on overlapping ids do NOT serialize on each
+//      other, and a concurrent BulkDeleteItems on overlapping ids waits
+//      for this tx to commit before deleting. This prevents the
+//      "ownership-checked → deleted by concurrent tx → FK violation on
+//      step 4 INSERT" race that would otherwise turn a partial-success
+//      response into 500 db_error.)
 //   2. **EARLY RETURN guard**: if the ownership SELECT returned 0 rows
 //      (ownedItemIDs is empty), return ([], nil) immediately. Do NOT
 //      execute the tag upsert in step 3 — this prevents the global `tags`
@@ -807,6 +821,9 @@ func (s *Store) BulkDeleteItems(ctx context.Context, userID string, itemIDs []st
 //   4. INSERT INTO item_tags (item_id, tag_id, display_name) SELECT id,
 //      $tagID, $displayName FROM unnest($ownedItemIDs::uuid[]) AS id
 //      ON CONFLICT (item_id, tag_id) DO NOTHING;
+//      (The FOR KEY SHARE lock from step 1 guarantees every ownedItemIDs
+//      row still exists at this point — so the item_tags.item_id FK to
+//      items.id is satisfied for every inserted row.)
 //   5. SELECT it.item_id, t.id, it.display_name, t.normalized_name
 //      FROM item_tags it JOIN tags t ON t.id = it.tag_id
 //      WHERE it.item_id = ANY($ownedItemIDs::uuid[])
