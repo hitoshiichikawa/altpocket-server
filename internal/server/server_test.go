@@ -738,6 +738,34 @@ func TestCORSAllowsConfiguredOriginPreflight(t *testing.T) {
 	}
 }
 
+// CORS の Access-Control-Allow-Methods に PATCH が含まれることを検証する。
+// PATCH /v1/items/{id}/status (Issue #119) を Chrome 拡張等のクロスオリジン
+// クライアントから呼び出す際の preflight が成功する前提を守るための回帰テスト。
+func TestCORSPreflightAllowsPATCHForStatusEndpoint(t *testing.T) {
+	s := newAuthTestServer()
+	allowed := "chrome-extension://allowed-extension-id"
+	s.cfg.CORSAllowOrigins = []string{allowed}
+
+	handler := s.cors(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+
+	req := httptest.NewRequest(http.MethodOptions, "https://api.example.test/v1/items/abc/status", nil)
+	req.Header.Set("Origin", allowed)
+	req.Header.Set("Access-Control-Request-Method", "PATCH")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rr.Code)
+	}
+	methods := rr.Header().Get("Access-Control-Allow-Methods")
+	if !strings.Contains(methods, "PATCH") {
+		t.Fatalf("expected Access-Control-Allow-Methods to include PATCH, got %q", methods)
+	}
+}
+
 func TestCORSAllowsSameHostOrigin(t *testing.T) {
 	s := newAuthTestServer()
 	s.cfg.CORSAllowOrigins = nil

@@ -3,9 +3,14 @@
 // /ui/items および /ui/items/<id> の状態切替ボタン (Issue #119 task 8) を司る
 // 小さなモジュール。
 //
-// SSR で各 item-card に追加された以下の 2 ボタンの delegated click を扱う:
+// SSR で各 item-card / detail-card に追加された以下の 2 ボタンの delegated
+// click を扱う:
 //   - <button class="mark-read-toggle" data-item-id data-current-status>
 //   - <button class="archive-toggle"   data-item-id data-current-status>
+//
+// カードコンテナのセレクタは一覧画面 (`.item-card`) と詳細画面 (`.detail-card`)
+// の両方を対象にする（item_detail.html の状態操作ボタンも同じ遷移ロジックを
+// 共有するため）。
 //
 // 対応 AC:
 //   - Req 2.3 / 2.4 / 2.6: mark-read-toggle で unread ⇄ read / archived → unread
@@ -240,7 +245,13 @@
 
       // 同期 visual ack（NFR 1.3）— PATCH 応答前に DOM を更新する
       btn.disabled = true;
-      const card = typeof btn.closest === 'function' ? btn.closest('.item-card') : null;
+      // 一覧画面は `.item-card`、詳細画面は `.detail-card` をカードコンテナとして扱う。
+      // 詳細画面ボタン (templates/item_detail.html) で `.item-card` のみを見ると
+      // card が null になり、成功後に data-current-status / label / aria-label /
+      // badge が更新されず同じ遷移を再送できてしまうため、両方をマッチさせる。
+      const card = typeof btn.closest === 'function'
+        ? btn.closest('.item-card, .detail-card')
+        : null;
       if (card && card.classList && typeof card.classList.add === 'function') {
         card.classList.add('is-status-updating');
       }

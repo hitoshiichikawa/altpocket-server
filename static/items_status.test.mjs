@@ -126,6 +126,16 @@ class FakeElement {
 
 function matchesSelector(node, selector) {
   if (!node || !node.attrs) return false;
+  // カンマ区切り (例: '.item-card, .detail-card') は or 結合として解釈する。
+  // closest() は 'A, B' を「A または B のいずれかに最初にマッチした祖先」として
+  // 扱うため、各サブセレクタを順に試して 1 つでもマッチすれば true を返す。
+  if (selector.indexOf(',') !== -1) {
+    const parts = selector.split(',').map((s) => s.trim()).filter(Boolean);
+    for (const p of parts) {
+      if (matchesSelector(node, p)) return true;
+    }
+    return false;
+  }
   // class セレクタ: '.foo' / 'button.foo' / 'article.bar'
   const classMatch = /^([a-z]*)\.([\w-]+)$/i.exec(selector);
   if (classMatch) {
@@ -190,6 +200,24 @@ class FakeCard extends FakeElement {
     this.markReadBtn = markRead;
     this.archiveBtn = archive;
     this.badge = badge;
+  }
+}
+
+// 詳細画面 (templates/item_detail.html) のカードコンテナ。
+// 一覧画面と異なり `article.card.detail-card` で、`data-status` 初期値も
+// `.item-status-badge` も持たない（detail page には status pill しかない）。
+// Reviewer 指摘 #1 (medium, items_status_actions.js:243) の回帰確認用に使う。
+class FakeDetailCard extends FakeElement {
+  constructor({ itemId, status }) {
+    super('article', {
+      class: 'card detail-card',
+    });
+    const markRead = new FakeButton('mark-read', { itemId, currentStatus: status });
+    const archive = new FakeButton('archive', { itemId, currentStatus: status });
+    this.appendChild(markRead);
+    this.appendChild(archive);
+    this.markReadBtn = markRead;
+    this.archiveBtn = archive;
   }
 }
 
@@ -678,6 +706,104 @@ test('btn.disabled が true のときは click を二重発火させない', asy
 
   // fetch は 1 回だけ
   assert.equal(env.fetchCalls.length, 1, 'disabled 状態の 2 回目 click では fetch されない');
+});
+
+// --- 詳細画面 (.detail-card) 回帰テスト (Reviewer 指摘 #1, items_status_actions.js:243) ----
+
+test('Reviewer 指摘 #1 (detail-card / mark-read 成功): 詳細画面の mark-read-toggle 成功で同カード内 2 ボタンの data-current-status / label / aria-label が更新される', async () => {
+  // templates/item_detail.html の `article.card.detail-card` 配下に置かれたボタン。
+  // 修正前は btn.closest('.item-card') が null になるため、PATCH 自体は成功しても
+  // data-current-status / label / aria-label / disabled が再リロードまで反映されず、
+  // 同じ操作を再送可能なまま残っていた。修正後はカード内ボタンが新 status に追随する。
+  const card = new FakeDetailCard({ itemId: 'detail-1', status: 'unread' });
+  const env = loadModule({
+    cards: [card],
+    fetchHandlers: [jsonOkResponse()],
+  });
+
+  await env.clickButton(card, 'mark-read');
+  await flushMicrotasks();
+
+  // PATCH 自体は従来も飛んでいたが、回帰のため確認
+  assert.equal(env.fetchCalls.length, 1);
+  assert.equal(env.fetchCalls[0].url, '/v1/items/detail-1/status');
+  assert.equal(env.fetchCalls[0].options.method, 'PATCH');
+  // 修正後: 同一カード内 2 ボタンの data-current-status が更新される
+  assert.equal(card.markReadBtn.getAttribute('data-current-status'), 'read');
+  assert.equal(card.archiveBtn.getAttribute('data-current-status'), 'read');
+  // label / aria-label も更新される
+  assert.equal(card.markReadBtn.textContent, 'Mark unread');
+  assert.equal(card.markReadBtn.getAttribute('aria-label'), '未読に戻す');
+  assert.equal(card.archiveBtn.textContent, 'Archive');
+  assert.equal(card.archiveBtn.getAttribute('aria-label'), 'アーカイブする');
+  // disabled は応答後に解除される
+  assert.equal(card.markReadBtn.disabled, false);
+  assert.ok(!card.classList.contains('is-status-updating'));
+});
+
+test('Reviewer 指摘 #1 (detail-card / archive 連続): 詳細画面で archive-toggle 成功 → 再 click → 2 回目 body は {"status":"unread"}', async () => {
+  // 詳細画面で archive を 2 回連続で押す回帰確認。
+  // closest('.item-card') が null だと 1 回目成功後も data-current-status='unread' が
+  // 残るため、2 回目 click も {"status":"archived"} を再送してしまう。
+  // 修正後は 1 回目で data-current-status='archived' に更新され、2 回目は
+  // archived → unread (Req 2.6) で {"status":"unread"} を送るのが正しい挙動。
+  const card = new FakeDetailCard({ itemId: 'detail-2', status: 'unread' });
+  const env = loadModule({
+    cards: [card],
+    fetchHandlers: [jsonOkResponse(), jsonOkResponse()],
+  });
+
+  await env.clickButton(card, 'archive');
+  await flushMicrotasks();
+  const body1 = JSON.parse(env.fetchCalls[0].options.body);
+  assert.deepEqual(body1, { status: 'archived' });
+  // data-current-status が archived に更新されている
+  assert.equal(card.archiveBtn.getAttribute('data-current-status'), 'archived');
+
+  await env.clickButton(card, 'archive');
+  await flushMicrotasks();
+  const body2 = JSON.parse(env.fetchCalls[1].options.body);
+  assert.deepEqual(body2, { status: 'unread' }, 'archived から再 archive-toggle で unread に戻る');
+});
+
+test('Reviewer 指摘 #1 (detail-card / PATCH 失敗): 詳細画面で失敗時は元状態維持 + toast.error', async () => {
+  // 詳細画面でも失敗時の DOM 維持 + toast.error が同じ規約で動作することを確認
+  const card = new FakeDetailCard({ itemId: 'detail-3', status: 'read' });
+  const env = loadModule({
+    cards: [card],
+    fetchHandlers: [jsonFailResponse(500)],
+  });
+
+  await env.clickButton(card, 'mark-read');
+  await flushMicrotasks();
+
+  // 元状態維持
+  assert.equal(card.markReadBtn.getAttribute('data-current-status'), 'read');
+  assert.equal(card.archiveBtn.getAttribute('data-current-status'), 'read');
+  assert.equal(card.markReadBtn.textContent, 'Mark unread', 'label は変わらない');
+  // toast.error
+  assert.equal(env.getAlertCount(), 1);
+  // 視覚 ack の解除
+  assert.equal(card.markReadBtn.disabled, false);
+  assert.ok(!card.classList.contains('is-status-updating'));
+});
+
+test('Reviewer 指摘 #1 (detail-card / 削除されない): 詳細画面には [data-items-region] が無いため fade-out 削除は発生しない', async () => {
+  // detail page には status タブが存在しないため、いかなる状態遷移でも DOM 削除しない
+  const card = new FakeDetailCard({ itemId: 'detail-4', status: 'unread' });
+  const env = loadModule({
+    cards: [card],
+    // tab を null にして [data-items-region] を残しつつ data-current-status 未設定にする
+    tab: null,
+    fetchHandlers: [jsonOkResponse()],
+  });
+
+  await env.clickButton(card, 'archive');
+  await flushMicrotasks();
+
+  assert.ok(!card.classList.contains('fade-out'), 'detail-card は fade-out しない');
+  assert.equal(env.timers.pending(), 0);
+  assert.equal(card.removed, false);
 });
 
 test('button 以外の要素 click は no-op', async () => {
