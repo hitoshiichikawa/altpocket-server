@@ -398,7 +398,7 @@ SSR」「JS 状態切替」「JS タブ切替」を別タスクに分割し、�
   - _Boundary: Templates_
   - _Depends: 6_
 
-- [ ] 8. static JS: 状態切替ボタンの delegated click + 失敗時巻き戻し
+- [x] 8. static JS: 状態切替ボタンの delegated click + 失敗時巻き戻し
   - `static/app.js` の既存 delegated click handler（refetch / delete の隣）に追加:
     - `button.mark-read-toggle`: `currentStatus` を **`btn.dataset.currentStatus`** から読み、
       **`next = currentStatus === 'unread' ? 'read' : 'unread'`** を算出する（`unread` → `read` /
