@@ -164,10 +164,10 @@ internal/
 │   ├── items_bulk.go                          # 新規: BulkDeleteItems / BulkAddItemTag（per-user 一括 DML）
 │   └── items_bulk_test.go                     # 新規（//go:build integration）: 部分失敗 / 認可リーク無し / atomicity の実 DB 検証
 ├── server/
-│   ├── items_bulk.go                          # 新規: handleBulkDeleteItems / handleBulkTagItems / 共通 request parser / 上限定数 / レスポンス型
-│   ├── items_bulk_test.go                     # 新規: handler 単体（401 / 400 / 413 相当 / 上限超過 / 認可拒否のシミュレーション）
-│   └── items_bulk_integration_test.go         # 新規（//go:build integration）: 認可越境 / 存在しない id / 部分成功時のレスポンス確認
-└── server/server.go                           # 変更: chi route に POST /bulk-delete / POST /bulk-tag を追加
+│   ├── items_bulk.go                          # 新規: handleBulkDeleteItems / handleBulkTagItems / 共通 request parser / 上限定数 (maxBulkItemsPerRequest / maxBulkRequestBodyBytes) / レスポンス型 / bulkItemsStore interface（test seam）
+│   ├── items_bulk_test.go                     # 新規: handler 単体（401 / 400 / 413 相当 / 上限超過 / 認可拒否 / fake bulkItemsStore で UUID collapse / 部分失敗レスポンス / 構造化ログ / DB エラー 500 / request body バイト境界）
+│   └── items_bulk_integration_test.go         # 新規（//go:build integration）: 認可越境 / 存在しない id / 部分成功時のレスポンス確認（実 SQL 経路）
+└── server/server.go                           # 変更: chi route に POST /bulk-delete / POST /bulk-tag を追加 + Server struct に bulkStore bulkItemsStore field を追加（New() で s.bulkStore = st を 1 行代入）
 
 templates/
 ├── items.html                                 # 変更: 選択ツールバー SSR、選択モード不要 (常時 checkbox)、bulk スクリプト読み込み
@@ -187,6 +187,10 @@ static/
   - `r.Post("/bulk-delete", s.requireAuth(s.handleBulkDeleteItems))`
   - `r.Post("/bulk-tag", s.requireAuth(s.handleBulkTagItems))`
   （`/v1/items` 配下に追加。`PATCH /{id}/status` の隣に並べる）
+  さらに `Server` struct に `bulkStore bulkItemsStore` フィールドを 1 つ追加し、`New()` 関数で
+  `s.bulkStore = st` を 1 行代入する（test seam / round 4 review feedback）。`*store.Store` が
+  `bulkItemsStore` interface を自動的に満たすため adapter 不要、既存 `store` フィールドは
+  温存（NFR 3.1〜3.4 後方互換）
 - `templates/items.html` — 選択ツールバーの SSR markup（`<div class="bulk-toolbar" data-bulk-toolbar hidden>`、内部に件数表示 + 一括削除 + 一括タグ付け + 選択解除ボタン）と、bulk JS の `<script defer>` 読み込み 2 行を追加。タグ入力モーダル `<dialog data-bulk-tag-dialog>` および **失敗一覧ダイアログ** `<dialog data-bulk-failure-dialog role="alertdialog">` の markup を追加（後者は Req 4.7 / 5.7 の全件 identify を満たすため）。削除確認ダイアログは既存 `#confirm-overlay` を再利用（新規 markup 追加なし）。**選択モード切替トグルは設置しない**（設計判断 2: 常時表示のチェックボックス採用）
 - `static/app.js` — `window.altpocketConfirm = confirm;` と `window.altpocketNormalizeTagName = normalizeTagName;` の 2 行を**それぞれの const 定義の直後**に追記する（前者は `confirm` IIFE の `})();` 直後、後者は `normalizeTagName` arrow function 定義の直後）。`window.altpocketToast = toast` の直後にまとめて追記してはならない（`const` 宣言前で TDZ になる）
 - `templates/items_list.html` — 各 `<article class="item-card">` 内の冒頭に
@@ -219,7 +223,7 @@ static/
 | 3.6 | 件数の追随 | items_bulk_selection.js | `bulkselection:changed` custom event を発火、ツールバーが listen | |
 | 4.1 / 4.2 / 4.3 / 4.4 | 確認ダイアログ → 削除 | items_bulk_actions.js | 既存 confirm overlay 再利用、approve → fetch POST /v1/items/bulk-delete | |
 | 4.5 / 4.6 | 成功時の DOM 退場 + ツールバー非表示 | items_bulk_actions.js | レスポンスの `succeeded[]` を DOM から fade-out 削除 | |
-| 4.7 / 4.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持 | items_bulk_actions.js + server response | レスポンスに `failed: [{item_id, reason}]` のみを含める（**title / url は含めない / leak 防止**）。クライアントは対象 article の DOM (`[data-item-id="<failed id>"]` の `h3#item-title-*` / `.tile-link[href]`) から title / url を取得し、**failed 全件分** を支援技術 reachable な領域（後述「Client-side error handling」節の `<dialog role="alertdialog">` または scrollable な `[aria-live="polite"]`）に列挙する | toast / alert + 当該 checkbox を checked のまま |
+| 4.7 / 4.8 | 部分失敗の特定可能通知 + 失敗 id 選択保持 | items_bulk_actions.js + server response | レスポンスに `failed: [{item_id, reason}]` のみを含める（**title / url は含めない / leak 防止**）。クライアントは対象 article の DOM (`[data-item-id="<failed id>"]` の `h3#item-title-*` / **`[data-original-url]`**) から title / url を取得し、**failed 全件分** を支援技術 reachable な領域（後述「Client-side error handling」節の `<dialog role="alertdialog">` または scrollable な `[aria-live="polite"]`）に列挙する。**`.tile-link[href]` は内部詳細ページ URL（`/ui/items/<id>`）であり元記事 URL ではないため、URL fallback には使わない**（タイトル空かつ URL fallback が必要な item で Req 4.7 / 5.7 を満たすには元記事 URL が必要）。SSR で `<article>` 要素自身に `data-original-url="{{.URL}}"` を付与し、client は `article[data-item-id="..."].dataset.originalUrl` で取得する | toast / alert + 当該 checkbox を checked のまま |
 | 5.1 / 5.2 | タグ入力 UI + 正規化 | items.html (タグ入力 dialog) + items_bulk_actions.js | 単一タグ文字列入力 → JS 側は `normalizeTagName`（NFKC + lowercase）で **空判定のみ** を行い、POST する body の `tag` は **原文字列を保持**（既存単一アイテム編集の `normalizeTagInputs` が `Name` に原文字列を保持して chip 表示の casing を維持する規約と一致 / Req 5.2） | dialog confirm → fetch (body=原文字列) |
 | 5.3 / 5.4 | 全アイテムに付与 + 重複なし | server: handleBulkTagItems → store: BulkAddItemTag | item_tags への `INSERT ... ON CONFLICT DO NOTHING`（一意制約: `(item_id, tag_id)`） | |
 | 5.5 | 一覧の対象カードにタグ反映 | items_bulk_actions.js | レスポンスの `succeeded[].tags` を当該カードのタグ chip 列に反映する。chip ノードは既存 SSR と **同じ contract**（`button.tag.tag-filter-toggle` + `data-tag-filter-toggle` + `data-tag-normalized="<normalized>"` + `aria-label="タグで絞り込み: <name>"` + テキストノードに `<name>`）を満たす形で `document.createElement('button')` + `setAttribute` + `textContent` で組み立てる（`innerHTML` / `insertAdjacentHTML` は禁止 / XSS 防御 + #117 chip クリック絞り込み契約維持 / NFR 3.3）。**現在 active なタグフィルタとの照合**: `new URL(window.location.href).searchParams` から **canonical 形式 `tag=` の repetition と legacy 形式 `tags=csv` の両方** を読み取り、active tag name 集合を合成する。具体的には `searchParams.getAll('tag')` の配列に加え、`searchParams.get('tags')` が非 null なら `String(value).split(',')` で展開した配列を concat（既存 server `parseTagFilters`（`internal/server/server.go:1557`）が両形式を受理する規約の JS 側ミラー / round 4 review feedback。SSR の `buildTagRemovedURL` は canonical `?tag=` repetition への migration を行うが、初回 page load 直後の URL や bookmark / 手動 URL 入力経路で `?tags=go,rust` が残ることがあるため、JS 側も両形式を見る）。合成後の各要素を `tag.Normalize` 同等の正規化（JS 側は `window.altpocketNormalizeTagName` または fallback で NFKC + lowercase + trim）した `Set<string>`（`activeNormalizedNames`）と各 chip の `tag.normalized_name` を比較し、含まれる場合は **`is-selected` class 付与 + `aria-pressed="true"`**、含まれない場合は `aria-pressed="false"`（class 無）とする。これにより、タグフィルタ中（例: `?tag=GoLang` / `?tags=go,rust` でフィルタ中）に bulk-tag 成功で chip が再構築されても、フィルタ中タグの `is-selected` 視覚状態が新規付与タグ列でも維持される（NFR 3.2 active-filters chip 連携 / NFR 3.3 tag chip クリック絞り込み契約 / round 2 review feedback） | |
@@ -412,9 +416,14 @@ bracket 中であっても、新規 fragment が `addedNodes` で挿入された
 - **失敗 toast の表示文言**: server レスポンスの `BulkFailureDetail` には **`title` / `url`
   フィールドが struct 定義として存在しない**（前述「Service Interface」節の `BulkFailureDetail`
   を参照。空文字で返すのではなく、フィールド自体を omit する）。client は **DOM 上の対象 article**
-  （`[data-item-id="<failed id>"] h3[id^="item-title-"]` / `.tile-link[href]`）から title / url を取得して
+  （`[data-item-id="<failed id>"] h3[id^="item-title-"]` / **`[data-original-url]`**）から title / url を取得して
   toast 本文に組み立てる（Req 4.7 / 5.7。`article.remove()` をブラケット内で済ませているため、
-  失敗 id の article は DOM に残存している）
+  失敗 id の article は DOM に残存している）。**`.tile-link[href]` は使わない**: 既存 SSR
+  （`templates/items_list.html:50`）の `<a class="tile-link">` は内部詳細ページ URL
+  （`/ui/items/<id>`）であり元記事 URL ではない。タイトル空の item に対する URL fallback
+  （Req 4.7 / 5.7 の「タイトルまたは URL を含むメッセージ」）として詳細ページ URL を提示
+  しても元記事を特定できないため、`<article>` 要素自身に SSR で付与した
+  `data-original-url="{{.URL}}"`（templates/items_list.html / task 5）を読み取る
 
 **Dependencies**
 - Inbound: `[data-bulk-toolbar]` 内の `button.bulk-delete` / `button.bulk-tag` / `button.bulk-clear` の click、`bulkselection:changed` event
@@ -450,9 +459,15 @@ function init({document, window, selection /* selection.init() の戻り値 */, 
   と Bearer JWT の両方を受け付けるため、bulk endpoint を **session-only** に絞るには
   ハンドラ側での明示的な Bearer 拒否が必要（requirements.md「Out of Scope: 拡張機能および
   MCP 経由での一括操作 API 公開」を server 側で goldensource として固定する）
+- **request body のバイト境界 enforcement**: JSON decode の前に
+  `r.Body = http.MaxBytesReader(w, r.Body, maxBulkRequestBodyBytes)`（16 KiB）を適用し、
+  decode が境界以上を読まないことを保証する。decode エラーを `errors.As` で
+  `*http.MaxBytesError` に分類し、該当時は 400 `{"error":"payload_too_large"}` を返す
+  （後述「Request Size Cap」節 / round 4 review feedback / DoS 面遮断）
 - バリデーション:
   - `len(item_ids) == 0` → 400 `{"error":"invalid_request"}`
-  - `len(item_ids) > 100` → 400 `{"error":"payload_too_large"}`（NFR 2.1 server 側防御）
+  - `len(item_ids) > 100` → 400 `{"error":"payload_too_large"}`（NFR 2.1 server 側 二重防御 /
+    バイト境界を通過した小規模 payload に対する要素数境界）
   - **各 id の UUID 形式検証**: `uuid.Parse(id)` で per-id 検証する。**不正な文字列は store
     レイヤに渡さず**、handler 側で `failed[{item_id: <as-is>, reason: "not_found"}]` に
     collapse する（Req 8.3 / Security Considerations の「不正 id による DB エラー誘発」遮断）。
@@ -504,10 +519,12 @@ type BulkFailureDetail struct {
     // NOTE: Title / URL は **レスポンスに含めない**（leak 防止 / Security Considerations 節）。
     // サーバは他ユーザー所有 id を `not_found` に collapse するため、表示可能な title を
     // 保持していないケースが恒常的に存在する。クライアント側は対象 article の DOM 表示要素
-    // (`[data-item-id="<id>"] h3[id^="item-title-"]` / `.tile-link[href]`) から識別文字列を
-    // 組み立てて Req 4.7 / 5.7 を満たす。Requirements Traceability の 4.7 / 4.8 / 5.7 / 5.8
-    // 行と本構造体は同一の方針に揃えており、過去ドラフト（`Title` / `URL` omitempty フィールド）
-    // からはフィールド自体を撤去した。
+    // (`[data-item-id="<id>"] h3[id^="item-title-"]` / **`[data-original-url]`**) から識別文字列を
+    // 組み立てて Req 4.7 / 5.7 を満たす（`<article>` 要素自身に `data-original-url="{{.URL}}"` を
+    // SSR で付与する / templates/items_list.html / task 5）。**`.tile-link[href]` は内部詳細
+    // ページ URL（`/ui/items/<id>`）であり元記事 URL ではないため使わない**。Requirements
+    // Traceability の 4.7 / 4.8 / 5.7 / 5.8 行と本構造体は同一の方針に揃えており、過去ドラフト
+    // （`Title` / `URL` omitempty フィールド）からはフィールド自体を撤去した。
 }
 ```
 
@@ -522,9 +539,12 @@ type BulkFailureDetail struct {
 - リクエスト JSON: `{"item_ids": ["uuid", ...], "tag": "GoLang"}`
 - **拡張機能 / MCP Bearer JWT の遮断**: handleBulkDeleteItems と同じ規約。`Authorization`
   header が non-empty なら 403 `{"error":"forbidden"}`
+- **request body のバイト境界 enforcement**: handleBulkDeleteItems と同じく
+  `http.MaxBytesReader(w, r.Body, maxBulkRequestBodyBytes)` を JSON decode 前に適用し、
+  超過時は 400 payload_too_large（後述「Request Size Cap」節）
 - バリデーション:
   - `len(item_ids) == 0` → 400 `{"error":"invalid_request"}`
-  - `len(item_ids) > 100` → 400 `{"error":"payload_too_large"}`
+  - `len(item_ids) > 100` → 400 `{"error":"payload_too_large"}`（要素数 二重防御）
   - **各 id の UUID 形式検証**: handleBulkDeleteItems と同じ流儀。不正 id は store に渡さず
     `failed[{item_id: <as-is>, reason: "not_found"}]` に collapse する
   - サーバ側で `tag.Normalize` した結果が空文字 → 400 `{"error":"invalid_tag"}`（Req 5.9 二重防御）
@@ -565,8 +585,102 @@ type BulkTagSuccessDetail struct {
 
 ```go
 // items_bulk.go
-const maxBulkItemsPerRequest = 100 // NFR 2.1 server 側 enforcement boundary
+const (
+    maxBulkItemsPerRequest    = 100        // NFR 2.1 server 側 enforcement boundary
+    maxBulkRequestBodyBytes   = 16 * 1024  // 16 KiB — JSON decode 前のサイズ境界（DoS 面遮断 / 後述「Request Size Cap」節）
+)
 ```
+
+#### Handler-side store interface（CI 実行 unit test の seam）
+
+`Server.store` は `*store.Store` の **concrete 型**のため、handler 単体テストで「store の
+呼び出し結果」を fake で差し替えることが従来できず、認可越境 collapse / 部分失敗
+レスポンス / 構造化ログの per-item 観測は **integration tag テスト（`-tags=integration`）**
+に閉じていた。同 tag テストは既存 CI（`.github/workflows/ci.yml`）の `go test ./...` 経路で
+**実行されない**ため、Req 8.1〜8.3 と Req 4.7 / 4.8 / 5.7 / 5.8 の認可境界・部分失敗
+振る舞いの **CI 上の退行検出が欠落** していた（round 4 review feedback）。
+
+これを解消するため、本機能では `internal/server/items_bulk.go` に **handler 側の最小
+interface** を定義し、Server から interface 経由で dispatch する `bulkStore` フィールドを
+追加する。テストでは `bulkStore` を fake に差し替えることで、handler unit test
+（`go test ./...` で実行 / CI で実行）から認可越境 collapse・部分失敗・構造化ログを
+観測可能にする:
+
+```go
+// items_bulk.go
+//
+// bulkItemsStore は handleBulkDeleteItems / handleBulkTagItems が必要とする
+// store 操作の最小サブセット。Server.bulkStore がこの interface を満たし、
+// 通常運用では *store.Store がそのまま注入される（既存メソッドシグネチャと
+// 一致するため adapter 不要）。テストでは fake 実装を差し替えて、認可越境 /
+// 部分失敗 / DB エラーの per-item 結果を CI 実行可能な unit test で観測する。
+type bulkItemsStore interface {
+    BulkDeleteItems(ctx context.Context, userID string, itemIDs []string) (succeeded []string, err error)
+    BulkAddItemTag(ctx context.Context, userID string, itemIDs []string, tagInput store.TagInput) (succeeded []store.BulkTagResult, err error)
+}
+
+// server.go: type Server struct { ... bulkStore bulkItemsStore ... }
+// New() 内で `s.bulkStore = st` を 1 行追加（`*store.Store` が interface を
+// 満たすため type assertion 不要）。
+// handler は `s.bulkStore.BulkDeleteItems(...)` / `s.bulkStore.BulkAddItemTag(...)` を
+// 呼ぶ（`s.store.BulkDeleteItems(...)` の直接呼出を回避）
+```
+
+- 本 interface は **後方互換**: 既存 handler の呼び出し経路は変えず、`Server` に
+  field を 1 つ追加し、`New()` で `s.bulkStore = st` を代入する 1 行追加のみ。
+  `*store.Store` のメソッドシグネチャと一致するため `*store.Store` が自動的に
+  interface を満たし、adapter コードは不要
+- **interface のスコープ最小化**: 本 interface は items_bulk.go ファイル内に private
+  （小文字始まり）で配置し、bulk 以外の handler から使い回さない（既存 handler を
+  interface 化する範囲拡張は本 PR スコープを超える / 段階的導入）
+- handler unit test では `Server` を直接組み立て、`bulkStore` フィールドに fake を
+  注入する（`server.New()` を経由せず `&Server{store: ..., bulkStore: fake, limiter: ...}` で
+  test fixture を build）。既存 `extension_contract_test.go` の Server 組み立てパターンに
+  揃え、Server zero-value からの構築を最小コストで行う
+
+#### Request Size Cap（JSON decode 前のバイト境界）
+
+handler が `json.NewDecoder(r.Body).Decode(&req)` を呼ぶ前に、`http.MaxBytesReader` で
+**request body のバイト境界**を強制する（round 4 review feedback / DoS 面遮断）。
+従来設計（`len(item_ids) > 100` を decode 後にチェック）では、悪意ある client が
+巨大な JSON 配列（例: `item_ids: ["...100MB worth..."]`）を送ると `json.Decoder` が
+**decode 前にメモリを確保**してしまい、要素数 / バイト数の境界判定が走らずに OOM
+誘発の DoS 面が残っていた:
+
+```go
+// items_bulk.go handler 冒頭（Bearer reject の直後、auth context 取得の前後問わず、
+// JSON decode の前であればよい）:
+r.Body = http.MaxBytesReader(w, r.Body, maxBulkRequestBodyBytes)
+
+// その後 json.NewDecoder(r.Body).Decode(&req) を呼ぶ。body が境界を超えた場合、
+// decode は *http.MaxBytesError 系のエラーを返すので、errors.As でハンドリングし
+// 400 payload_too_large を返す:
+if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+    var maxBytesErr *http.MaxBytesError
+    if errors.As(err, &maxBytesErr) {
+        writeJSON(w, http.StatusBadRequest, map[string]string{"error": "payload_too_large"})
+        return
+    }
+    writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+    return
+}
+
+// 続けて len(req.ItemIDs) == 0 / len(req.ItemIDs) > 100 の判定（既存の要素数境界）
+// を行う。バイト境界と要素数境界の 2 段で防御し、いずれを越えても 400
+// payload_too_large に統一して返す
+```
+
+- **境界値の根拠**: 100 件 × 36 文字（UUID v4 文字列長）+ JSON 配列カンマ / 引用符 /
+  field 名 + bulk-tag の `tag` field（NFKC 正規化前で最大 256 文字を想定）+ 余裕
+  ≒ 約 5 KiB の理論上限。**16 KiB** はその約 3 倍の余裕（HTTP/2 frame 境界・gzip 解凍
+  ジッタの吸収）を含み、かつ OOM 誘発を防ぐサイズ。**この境界は client 側 NFR 2 の
+  100 件上限と独立に server 側で enforce する**（二重防御）
+- **JSON decode の DoS 面遮断**: `MaxBytesReader` は io.Reader レイヤでバイト境界を
+  enforce するため、`json.Decoder` が境界以上を読まないことが保証される。streaming
+  decode（token-by-token）に切り替えるよりシンプルで、`Decode` の標準挙動と一致
+- **422 / 413 ではなく 400 を返す統一方針**: 既存単一 API（`handleCreateItem` 等）の
+  `payload_too_large` 返しと一致させる（既存契約準拠 / `extension_contract_test.go`
+  パターン）
 
 ### Store Layer
 
@@ -997,9 +1111,10 @@ sequenceDiagram
 具体的な経路ごとの動作:
 
 - **5xx / ネットワーク失敗（全件失敗扱い）**: 「すべての選択を保持」した上で、selection 中の
-  各 id について DOM 上の article（`[data-item-id="<id>"] h3[id^="item-title-"]` / `.tile-link[href]`）
-  から title / URL を列挙し、上記 `bulk-failure-dialog` に **全件分** の `<li>` を投入して
-  `showModal()`。DOM は触らない（selection 側の article は全て残存）
+  各 id について DOM 上の article（`[data-item-id="<id>"] h3[id^="item-title-"]` の textContent と
+  **`article[data-item-id="<id>"].dataset.originalUrl`**）から title / URL を列挙し、上記
+  `bulk-failure-dialog` に **全件分** の `<li>` を投入して `showModal()`。DOM は触らない
+  （selection 側の article は全て残存）
 - **200 + 部分失敗**: succeeded の article を fade-out 削除（後述 `beginActionMutation()` ブラケット
   経由）し、`selection.removeFromSelection(succeeded)`。failed item は selection 残置 + DOM 残存
   （`failed[].item_id` の article は actions モジュールが remove しない）。`failed` の各 id に
@@ -1092,9 +1207,12 @@ sequenceDiagram
 - **PII リーク防止**: failed[].title / url は **struct 定義に存在せず、レスポンス JSON にも
   フィールドが現れない**（空文字で返すのではなく、`BulkFailureDetail` 自体から omit する）。
   クライアント側は対象 article の DOM 表示要素 (`[data-item-id="<failed id>"] h3[id^="item-title-"]`
-  / `.tile-link[href]`) から toast 文言を組み立てる。これにより「他ユーザーのタイトル」をサーバから
-  返さない設計を保ちつつ、Req 4.7 / 5.7 の「failed をタイトルまたは URL を含むメッセージで通知」
-  を満たす。クライアントはそもそも自分が submit した id しか知らないため、DOM 由来の文字列は
+  の textContent と **`article[data-item-id="<failed id>"].dataset.originalUrl`**) から toast 文言を
+  組み立てる（**`.tile-link[href]` は内部詳細ページ URL であり元記事 URL ではないため使わない**。
+  SSR で `<article>` 要素自身に `data-original-url="{{.URL}}"` を付与する / templates/items_list.html /
+  task 5）。これにより「他ユーザーのタイトル」をサーバから返さない設計を保ちつつ、Req 4.7 / 5.7 の
+  「failed をタイトルまたは URL を含むメッセージで通知」を、タイトル空の item に対しても元記事 URL で
+  満たす。クライアントはそもそも自分が submit した id しか知らないため、DOM 由来の文字列は
   所有・閲覧権限上問題ない
 - **UUID 形式の事前検証**: クライアントが送信する `item_ids` の各文字列を `uuid.Parse` で検証し、
   不正な文字列は store 層に渡さず `failed[{reason: "not_found"}]` に collapse する。これにより

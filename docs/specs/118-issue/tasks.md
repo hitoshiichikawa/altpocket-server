@@ -100,10 +100,27 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
 
 - [ ] 3. server 層: ハンドラ + ルート + ユニットテスト
   - `internal/server/items_bulk.go` を新規作成:
-    - 定数 `maxBulkItemsPerRequest = 100`（NFR 2.1 server enforcement boundary）
+    - 定数: `maxBulkItemsPerRequest = 100`（NFR 2.1 server enforcement boundary）+
+      `maxBulkRequestBodyBytes = 16 * 1024`（JSON decode 前のバイト境界 / DoS 面遮断 /
+      design.md「Request Size Cap」節）
     - リクエスト / レスポンス型: `BulkDeleteRequest` / `BulkDeleteResponse` /
       `BulkTagRequest` / `BulkTagResponse` / `BulkTagSuccessDetail` / `BulkFailureDetail`
       （design.md「Components and Interfaces」節の型定義に従う）
+    - **`bulkItemsStore` interface（test seam / CI 実行 unit test の seam）**: design.md
+      「Handler-side store interface」節に従い、`internal/server/items_bulk.go` の冒頭付近に
+      package-private な interface を定義する:
+      ```go
+      type bulkItemsStore interface {
+          BulkDeleteItems(ctx context.Context, userID string, itemIDs []string) (succeeded []string, err error)
+          BulkAddItemTag(ctx context.Context, userID string, itemIDs []string, tagInput store.TagInput) (succeeded []store.BulkTagResult, err error)
+      }
+      ```
+      `*store.Store` がメソッドシグネチャ一致で自動的に interface を満たすため adapter
+      コードは不要
+  - `internal/server/server.go` の `Server` struct に `bulkStore bulkItemsStore` フィールドを
+    1 つ追加し、`New()` 関数末尾付近で `s.bulkStore = st` を 1 行代入する（既存 `store`
+    フィールドは変更せず温存。本 PR の interface 化は **bulk handler 専用**のスコープ最小化 /
+    NFR 3.1〜3.4 後方互換）
     - `handleBulkDeleteItems(w, r)`:
       - **拡張機能 / MCP Bearer JWT 遮断**: ハンドラ冒頭（auth context 取り出しの前後問わず、ただし
         return path が共通になる位置で）`if r.Header.Get("Authorization") != "" { writeJSON(403,
@@ -112,14 +129,22 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         （requirements.md「Out of Scope: 拡張機能および MCP 経由での一括操作 API 公開」を server で
         固定 / Req 8.1 / 8.2 / 8.3 の goldensource）
       - `requireAuth` 通過後、`s.limiter.Allow(user.ID)` 検査 → false なら 429 rate_limited
-      - JSON `{"item_ids": [...]}` を decode、`len(item_ids) == 0` → 400 invalid_request、
-        `len(item_ids) > 100` → 400 payload_too_large
+      - **request body のバイト境界 enforcement**: JSON decode の前に
+        `r.Body = http.MaxBytesReader(w, r.Body, maxBulkRequestBodyBytes)` を 1 行で
+        適用する（design.md「Request Size Cap」節 / DoS 面遮断）
+      - JSON `{"item_ids": [...]}` を decode。decode エラー時は `errors.As(err, &maxBytesErr)`
+        で `*http.MaxBytesError` を判定し、該当なら 400 `{"error":"payload_too_large"}`、
+        それ以外（parse 不能 JSON 等）は 400 `{"error":"invalid_request"}`。decode 成功後に
+        `len(item_ids) == 0` → 400 invalid_request、`len(item_ids) > 100` → 400 payload_too_large
+        （バイト境界を通過した小規模 payload に対する要素数境界 / 二重防御）
       - **UUID 形式の per-id 検証**（design.md Components節 / Security Considerations節）:
         各 `item_ids[i]` を `uuid.Parse(id)` で検証する。invalid な id は store に渡さず、
         その id を `failed[{item_id: <as-is>, reason: "not_found"}]` に **collapse** する。
         valid な id だけを `validIDs []string` に集めて store.BulkDeleteItems に渡す
         （これにより不正文字列を介した DB エラー誘発 / 500 を防ぐ / Req 8.3 二重防御）
-      - `s.store.BulkDeleteItems(ctx, user.ID, validIDs)` を呼び、err なら 500 db_error
+      - `s.bulkStore.BulkDeleteItems(ctx, user.ID, validIDs)` を呼び、err なら 500 db_error
+        （`s.bulkStore` は `*store.Store` を満たす interface フィールド / design.md
+        「Handler-side store interface」節 / test seam）
       - succeeded set を作り `failed := (validIDs \ succeededSet) ∪ invalidUUIDs` を計算
         （invalid UUID 由来の failed と not-found 由来の failed を同じ `reason: "not_found"` で
         合流させる）
@@ -130,8 +155,9 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         failed_count / failed_ids / request_id）
       - 200 で `BulkDeleteResponse` を返す
     - `handleBulkTagItems(w, r)`:
-      - 同じ chain 検査（Bearer 遮断 + rate limiter）
-      - JSON `{"item_ids": [...], "tag": "..."}` を decode、`item_ids` 空 / 超過は上と同じ
+      - 同じ chain 検査（Bearer 遮断 + rate limiter + `http.MaxBytesReader` によるバイト境界）
+      - JSON `{"item_ids": [...], "tag": "..."}` を decode、decode エラーの
+        `*http.MaxBytesError` 判定および `item_ids` 空 / 超過は上と同じ
       - **UUID 形式の per-id 検証**: handleBulkDeleteItems と同じ流儀。invalid な id は store に
         渡さず `failed[{item_id: <as-is>, reason: "not_found"}]` に collapse、`validIDs` だけを
         store に渡す（Req 8.3 二重防御）
@@ -141,7 +167,9 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
         `invalid_request` には混ぜない（クライアント側の invalid_tag 専用処理 / 入力欄 focus 戻しの
         ため categorization を分離する必要がある / design.md Error Categories 節と整合）
       - `normalizeTagInputs([]string{req.Tag})[0]` で `TagInput`（Name + NormalizedName）を作る
-      - `s.store.BulkAddItemTag(ctx, user.ID, validIDs, tagInput)` を呼ぶ
+      - `s.bulkStore.BulkAddItemTag(ctx, user.ID, validIDs, tagInput)` を呼ぶ
+        （`s.bulkStore` は `*store.Store` を満たす interface フィールド / design.md
+        「Handler-side store interface」節 / test seam）
       - succeeded set / failed を上と同様に計算（invalid UUID 由来の failed を合流）
       - `slog.Info("items.bulk.tag", ...)` を出力
       - 200 で `BulkTagResponse` を返す
@@ -184,29 +212,62 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       処理の dispatch 契約を固定）
     - `TestHandleBulkTagItems_NormalizationEmptyTagReturns400InvalidTag`: `{"tag": "　 "}`
       （全角空白等の正規化後空文字パターン） → 400 invalid_tag
-    - **UUID 形式 collapse テスト（`TestHandleBulk*Items_InvalidUUIDs*`）は本 task では追加しない**:
-      `Server.store` は `*store.Store` の concrete 型のため、handler 単体で「store には valid id
-      のみが渡されたこと」を fake で観測するのが現実的に困難（既存 server 構造に minimal interface
-      を後付けする変更は本 PR スコープを超える）。当該テストは task 4 の integration test で
-      実 DB を seed して `200 + failed[reason:"not_found"] に invalid uuid が collapse される`
-      ことを観察する形に移管する（design.md Integration Tests 節と整合）
+    - **UUID 形式 collapse / 部分失敗 / 構造化ログを fake store で固定**（round 4 review feedback /
+      CI 実行 unit test 経路で認可境界・部分失敗 振る舞いを退行検出する）:
+      - `TestHandleBulkDeleteItems_InvalidUUIDsCollapseToFailedNotFound_FakeStore`: handler に
+        `bulkStore = &fakeBulkStore{deleteFn: func(ctx, uid, ids) ([]string, error) { return ids, nil }}`
+        を注入 → POST `{"item_ids":["not-a-uuid", "<valid-uuid>"]}` → 200 + succeeded に
+        valid-uuid のみ含まれ、failed=[{item_id:"not-a-uuid", reason:"not_found"}]。fake の
+        deleteFn が呼ばれた際に **invalid uuid が引数に含まれていない** ことを assert（store 層に
+        渡らずに handler で collapse される / Req 8.3 / design.md Security Considerations 節）
+      - `TestHandleBulkDeleteItems_PartialFailureResponse_FakeStore`: fake の deleteFn が
+        `(ids[:2], nil)` を返す（要求 3 件のうち 2 件のみ削除成功）→ 200 + succeeded=2 件、
+        failed=1 件（reason: "not_found"）。**レスポンス JSON に `title` / `url` フィールド自体が
+        含まれない** ことを assert（`BulkFailureDetail` 構造体から該当フィールドを撤去済み /
+        leak 防止 / Req 4.7 / 4.8 / 8.2 / 8.3）
+      - `TestHandleBulkDeleteItems_StoreErrorReturns500DBError_FakeStore`: fake の deleteFn が
+        `(nil, errors.New("connection lost"))` を返す → 500 `{"error":"db_error"}`（per-item 報告
+        なし / 全件選択保持の振る舞いは client 側で確認 / design.md「部分失敗時の atomicity 方針」
+        節の DB エラー → 500 db_error 経路）
+      - `TestHandleBulkDeleteItems_LogsStructuredFields_FakeStore`: fake で succeeded を返した上で、
+        slog handler を test 用 buffer に差し替え、`items.bulk.delete` log line に user_id /
+        item_ids / succeeded_count / failed_count / failed_ids / request_id の 6 フィールドが
+        含まれ、Cookie / Authorization header / body raw が含まれないことを assert（NFR 5.1）
+      - `TestHandleBulkDeleteItems_RequestBodyExceedsByteLimitReturns400PayloadTooLarge`:
+        `bytes.Repeat([]byte("x"), maxBulkRequestBodyBytes+1024)` を body にして POST →
+        400 `{"error":"payload_too_large"}`。**store fake は呼ばれない**（decode が
+        `*http.MaxBytesError` を返した時点で reject される / design.md「Request Size Cap」節 /
+        DoS 面遮断の回帰固定）
+      - `TestHandleBulkTagItems_InvalidUUIDsCollapseToFailedNotFound_FakeStore`: 上記の bulk-tag 版
+      - `TestHandleBulkTagItems_PartialFailureResponse_FakeStore`: 上記の bulk-tag 版（fake は
+        `[]store.BulkTagResult` を返す）
+      - `TestHandleBulkTagItems_StoreErrorReturns500DBError_FakeStore`: 上記の bulk-tag 版
+      - `TestHandleBulkTagItems_LogsStructuredFields_FakeStore`: 上記の bulk-tag 版（`tag_normalized`
+        が含まれることを追加で assert）
+      - `TestHandleBulkTagItems_RequestBodyExceedsByteLimitReturns400PayloadTooLarge`: 上記の
+        bulk-tag 版
+      - これら fake-store ベースの unit テストは **通常 `go test ./...` で実行可能**であり、
+        既存 CI（`.github/workflows/ci.yml`）の verify gate で退行検出される
+        （integration tag 経路に閉じていた task 4 の検証範囲のうち、**handler 層の認可境界 /
+        部分失敗 / 構造化ログ振る舞い** を本 task で CI 実行可能な経路に引き上げる）
     - `TestBulkRoutesRegisteredOnRouter`: chi router の routing tree を walk して
       `POST /v1/items/bulk-delete` / `POST /v1/items/bulk-tag` の 2 route が登録済みであることを
       assert（design.md「Routing Glue」節、chi v5 の `chi.Walk` でツリーを枚挙し path + method を
       照合）。`/{id}` ワイルドカード route と前者の静的セグメントが競合しない（404 にならない）
       ことを併せて確認
   - `extension_contract_test.go` は **変更しない**（既存契約に影響なし / NFR 3.4 / 3.5）
-  - **テスト追加（同 task 内）**: 上記 15 件の handler unit テスト（Delete 系 6 件
-    [unauth / invalid JSON / empty ids / over-limit / bearer reject / rate limit] + Tag 系 8 件
-    [unauth / invalid JSON / empty ids / over-limit / bearer reject / rate limit / empty tag
-    invalid_tag / normalize empty invalid_tag] + ルート登録 1 件）を本タスクで完結させる
-    （Req 5.9 / 8.1 / NFR 2.1 / NFR 3.4 / NFR 5.1 のうち、handler 単体で観測可能な 400 / 401 /
-    403 / 429 / payload_too_large 系 + 静的ルートと `/{id}` ワイルドカードの非競合 + Bearer 拒否は
-    通常 `go test ./...` で実行可能 / 同 task 内テスト必須カテゴリに該当）。UUID 形式不正の
-    collapse 検証および成功時の per-item 部分失敗レスポンス検証は実 DB が必要なため、次タスク 4 の
-    integration test に deferred する
+  - **テスト追加（同 task 内）**: 上記 25 件の handler unit テスト（Delete 系 11 件
+    [unauth / invalid JSON / empty ids / over-limit / bearer reject / rate limit / UUID collapse /
+    部分失敗 / store error 500 / 構造化ログ / body bytes 超過] + Tag 系 13 件 [unauth / invalid JSON /
+    empty ids / over-limit / bearer reject / rate limit / empty tag invalid_tag / normalize empty
+    invalid_tag / UUID collapse / 部分失敗 / store error 500 / 構造化ログ / body bytes 超過] +
+    ルート登録 1 件）を本タスクで完結させる。Req 4.7 / 4.8 / 5.7 / 5.8 / 5.9 / 8.1 / 8.2 / 8.3 /
+    NFR 2.1 / NFR 3.4 / NFR 5.1 のうち、handler 単体で fake store 経由で観測可能な認可境界 /
+    部分失敗 / 構造化ログ振る舞いは本 task で完結し、CI 実行可能な `go test ./...` 経路に乗る。
+    実 SQL 経路（store 層の UPDATE/DELETE/INSERT が WHERE user_id を正しく適用するか）の検証は
+    task 2（store integration test）と task 4（server integration test）で実 DB を介して別途
+    固定する（store 実装の SQL 退行検出は integration が必須のため）
   - _Requirements: 4.1, 4.7, 4.8, 5.7, 5.8, 5.9, 8.1, 8.2, 8.3, NFR 2.1, NFR 3.4, NFR 5.1_
-  - _Requirements_partial: 4.7, 4.8, 5.7, 5.8, 8.2, 8.3, NFR 5.1_
   - _Boundary: Server_
   - _Depends: 1_
 
@@ -252,16 +313,27 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - 既存 CI（`.github/workflows/ci.yml`）には integration tag 対応が無いため、本タスクの
     テスト群は **stage-a-verify の `go test ./...` には含まれない**（task 2 と同じ運用、verify
     block 末尾の「Integration test の取扱」節を参照）
-  - **テスト追加（同 task 内）**: タスク 3 から deferred された Req 4.7 / 4.8 / 5.7 / 5.8 / 8.2 /
-    8.3 / NFR 5.1 の API 層成功 / 部分失敗振る舞いを本タスクで完結させる
+  - **テスト追加（同 task 内）**: task 3 で fake-store 経由の handler 振る舞い
+    （UUID collapse / 部分失敗レスポンス / 構造化ログ / DB エラー 500）は CI 実行可能な
+    unit test 経路に乗ったが、**本 task では実 DB を介した SQL 経路の検証**（store の
+    `BulkDeleteItems` / `BulkAddItemTag` が WHERE user_id 条件を正しく適用するか、
+    UPDATE/DELETE/INSERT の RETURNING が認可境界を leak しないか）を完結させる。
+    task 3 の fake store では「store が succeeded を正しく返す」前提を仮定しており、
+    その前提の SQL 退行検出は integration が必須
   - _Requirements: 4.5, 4.7, 4.8, 5.3, 5.4, 5.5, 5.7, 5.8, 8.1, 8.2, 8.3, NFR 5.1_
   - _Boundary: Server_
   - _Depends: 1, 3_
 
 - [ ] 5. SSR テンプレート: items_list のチェックボックス + items.html の選択ツールバー + タグ入力 dialog
   - `templates/items_list.html`:
-    - 各 `<article class="tile item-card ...">` に `data-item-id="{{.ID}}"` を追加（既存
-      `aria-labelledby` は維持。chi の closest('.item-card') で id を解決する用）
+    - 各 `<article class="tile item-card ...">` に **`data-item-id="{{.ID}}"` と
+      `data-original-url="{{.URL}}"` の 2 属性** を追加（既存 `aria-labelledby` は維持）。
+      `data-item-id` は selection / actions モジュールから `closest('.item-card')` で id を
+      解決する用、`data-original-url` は **失敗通知時のタイトル空 fallback URL** として
+      `article.dataset.originalUrl` で参照する用（既存の `<a class="tile-link" href="/ui/items/<id>">`
+      は内部詳細ページ URL であり元記事 URL ではないため URL fallback には使えない /
+      Req 4.7 / 5.7 をタイトル空 item でも満たす / design.md Components 節「失敗 toast の表示文言」
+      および Security Considerations「PII リーク防止」と整合）
     - `<a class="tile-link" href="...">` の **直前** に以下を挿入（**`disabled` 属性付きで SSR
       する点に注意** / NFR 3.5 / design.md Progressive Enhancement 規約）:
       ```html
@@ -637,9 +709,13 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - 200 OK + 部分失敗:
         1. **DOM 削除前に failed 詳細を収集**: `failed[].item_id` ごとに対応する article
            （`region.querySelector('article[data-item-id="<failed.item_id>"]')`）から
-           `h3[id^="item-title-"]` の textContent を `title`、`.tile-link[href]` を `url`
-           として抽出（actions 側で failed item は remove しないが、収集順を **succeeded
-           削除より前** に揃えて順序依存を回避）
+           `h3[id^="item-title-"]` の textContent を `title`、**`article.dataset.originalUrl`**
+           （task 5 で SSR された `<article data-original-url="{{.URL}}">` の値）を `url` として
+           抽出する。**`.tile-link[href]` は使わない**: 既存テンプレ `templates/items_list.html`
+           の `<a class="tile-link" href="/ui/items/<id>">` は内部詳細ページ URL であり元記事
+           URL ではないため、タイトル空 item で `url` fallback として提示すると元記事を特定
+           できなくなり Req 4.7 / 5.7 違反となる。actions 側で failed item は remove しないが、
+           収集順を **succeeded 削除より前** に揃えて順序依存を回避
         2. succeeded を beginActionMutation/endActionMutation ブラケット内で DOM 削除
         3. `selection.removeFromSelection(succeeded)`、failed[].item_id は selection 残置（Req 4.8）
         4. `showBulkFailureDialog({verb: '削除', items: collectedFailures})` を呼ぶ（Req 4.7）
@@ -937,9 +1013,12 @@ go test ./... && golangci-lint run && node --test extension/sidepanel.test.mjs s
 ### per-task Reviewer ループ運用時の deferred test の解消
 
 タスク 1 が `_Requirements_partial:_` で deferred している Req 4.4 / 4.5 / 5.3 / 5.4 / 8.1 / 8.2 /
-8.3 の store 層検証は、タスク 2（store integration test）で **解消** する。タスク 3 が
-`_Requirements_partial:_` で deferred している Req 4.7 / 4.8 / 5.7 / 5.8 / 8.2 / 8.3 / NFR 5.1
-の handler 成功 / 部分失敗 / 構造化ログ検証は、タスク 4（server integration test）で **解消** する。
-per-task Reviewer 運用時は、タスク 2 / 4 を「先行 task の deferred test を解消する dedicated
-regression test task」として扱う（`.claude/rules/tasks-generation.md` 「task-test 境界整合の規約」
-参照）。
+8.3 の store 層検証は、タスク 2（store integration test）で **解消** する。タスク 3 は
+`_Requirements_partial:_` を持たず、handler 層の認可境界・部分失敗・構造化ログ・DB エラー 500・
+UUID collapse・request body のバイト境界を **fake `bulkItemsStore` interface 経由の unit テスト**
+で同 task 内に閉じる（round 4 review feedback / CI 実行可能な `go test ./...` 経路で退行検出）。
+タスク 4（server integration test）は task 3 の deferred test 解消ではなく、**実 DB を介した SQL
+経路の退行検出**（store の WHERE user_id 条件 / RETURNING の認可境界）を担当する。per-task Reviewer
+運用時は、タスク 2 を「タスク 1 の deferred test を解消する dedicated regression test task」と
+して扱う（`.claude/rules/tasks-generation.md` 「task-test 境界整合の規約」参照）。タスク 4 は
+タスク 3 と並行で integration を補完する独立 task として位置付ける。
