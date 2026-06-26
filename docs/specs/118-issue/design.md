@@ -189,7 +189,11 @@ static/
   （`/v1/items` 配下に追加。`PATCH /{id}/status` の隣に並べる）
 - `templates/items.html` — 選択ツールバーの SSR markup（`<div class="bulk-toolbar" data-bulk-toolbar hidden>`、内部に件数表示 + 一括削除 + 一括タグ付け + 選択解除ボタン）と、bulk JS の `<script defer>` 読み込み 2 行を追加。タグ入力モーダル `<dialog data-bulk-tag-dialog>` および **失敗一覧ダイアログ** `<dialog data-bulk-failure-dialog role="alertdialog">` の markup を追加（後者は Req 4.7 / 5.7 の全件 identify を満たすため）。削除確認ダイアログは既存 `#confirm-overlay` を再利用（新規 markup 追加なし）。**選択モード切替トグルは設置しない**（設計判断 2: 常時表示のチェックボックス採用）
 - `static/app.js` — `window.altpocketConfirm = confirm;` と `window.altpocketNormalizeTagName = normalizeTagName;` の 2 行を**それぞれの const 定義の直後**に追記する（前者は `confirm` IIFE の `})();` 直後、後者は `normalizeTagName` arrow function 定義の直後）。`window.altpocketToast = toast` の直後にまとめて追記してはならない（`const` 宣言前で TDZ になる）
-- `templates/items_list.html` — 各 `<article class="item-card">` 内の冒頭に `<input type="checkbox" class="item-select" data-item-id="{{.ID}}" aria-label="アイテムを選択">` を追加。`<article>` 自体に `data-item-id="{{.ID}}"` を付与（既存の `aria-labelledby` は維持）
+- `templates/items_list.html` — 各 `<article class="item-card">` 内の冒頭に
+  `<input type="checkbox" class="item-select" data-item-select data-item-id="{{.ID}}"
+  aria-label="アイテムを選択: {{.Title}}" disabled>` を追加（**SSR は `disabled` 属性付きで出力**
+  / 後述の Progressive Enhancement 規約参照）。`<article>` 自体に `data-item-id="{{.ID}}"` を付与
+  （既存の `aria-labelledby` は維持）
 - `static/style.css` — 以下を追加:
   - `.item-select` のレイアウト（カード左上 / カード密度を圧迫しない absolute 配置 + フォーカスリング）
   - `.item-card.is-selected` の視覚区別（背景・縁取り。**色だけに依存せず**チェックボックスの checked 状態と併用 / Req 1.4 / 1.5 / NFR 4.3）
@@ -202,7 +206,7 @@ static/
 
 | Requirement | Summary | Components | Interfaces | Flows |
 |-------------|---------|------------|------------|-------|
-| 1.1 / 1.2 / 1.3 | チェックボックスで選択トグル | items_list.html / items_bulk_selection.js | `<input type="checkbox" class="item-select">` change イベント | change → Set<itemID> 反映 |
+| 1.1 / 1.2 / 1.3 | チェックボックスで選択トグル | items_list.html / items_bulk_selection.js | SSR は `<input type="checkbox" class="item-select" disabled>` で出力（NFR 3.5 の Progressive Enhancement / JS 無効時は Tab 到達も操作可能性も無くす）。`items_bulk_selection.js` の `init()` が起動した瞬間、`region.querySelectorAll('input.item-select[disabled]')` を全件 enabled 化し、以降は通常の `change` イベントを delegated 捕捉 | init → enable → change → Set<itemID> 反映 |
 | 1.4 | 選択中の視覚区別 | style.css / items_bulk_selection.js | `.item-card.is-selected` + checked 状態 | change で `is-selected` class 付与 |
 | 1.5 | 色のみに依存しない | style.css / items_list.html | チェックボックス自体（checked 表示）+ aria-checked | ネイティブ HTML 要素 |
 | 1.6 | 既存タブ・フィルタ・検索・ソート動作を変えない | server.go / items.html | 既存 URL クエリ駆動の経路を一切変更しない | 既存 #114/#115/#117/#119 経路 |
@@ -230,8 +234,9 @@ static/
 | NFR 1.1 | 選択操作 200ms 以内の視覚反映 | items_bulk_selection.js | change イベント → 同期 DOM クラス + 件数同期更新 | 全て同期 DOM 操作のため明示計測不要 |
 | NFR 1.2 | 100 件以下で 1 秒以内の操作完了視覚 | items_bulk_actions.js | click 直後にツールバーを `is-busy` 化（ボタン disabled + spinner） | |
 | NFR 1.3 | 結果反映中もちらつかない | items_bulk_actions.js | items_list 全体 innerHTML 置換は行わず、対象 article のみ DOM から removeChild | |
-| NFR 2.1 / 2.2 | 上限 100 件 | items.html / items_bulk_selection.js + server bulk handlers | 選択ツールバー件数表示は **`<N> / 100 件選択中`** 形式で上限を常時併記（NFR 2.1 pre-announce）。JS 側で 100 件超選択を抑止し toast.error。Server 側でも `len(itemIDs) > 100` で 400 `payload_too_large` を返す（二重防御） | |
-| NFR 3.1〜3.5 | 後方互換性 | 全層 | 既存 ハンドラ・テンプレ・JS module を **削除・改名・挙動変更しない** | |
+| NFR 2.1 / 2.2 | 上限 100 件 | items.html / items_bulk_selection.js + server bulk handlers | 選択ツールバー件数表示は **`<N> / 100 件選択中`** 形式で上限を常時併記（NFR 2.1 pre-announce）。**単一 toggle** は 100 件到達済みで 101 件目を試みた場合に追加を抑止 + toast.error。**Shift 範囲選択** は「選択結果が 100 件超になる場合、範囲全体を未選択のまま reject + toast.error('範囲選択により上限を超えるため処理されませんでした')」とする（Req 2.1「範囲のカードすべてを選択状態にする」の "all or nothing" 意味論を尊重し、範囲の一部だけを選択する曖昧な状態を生まない）。Server 側でも `len(itemIDs) > 100` で 400 `payload_too_large` を返す（二重防御） | |
+| NFR 3.1〜3.4 | 後方互換性（既存機能の同等提供） | 全層 | 既存 ハンドラ・テンプレ・JS module を **削除・改名・挙動変更しない** | |
+| NFR 3.5 | JS 無効時の閲覧 / 単一操作動線維持 | items_list.html / items.html / items_bulk_selection.js | SSR は `<input type="checkbox" ... disabled>` で出力するため、JS 無効ブラウザでは checkbox が Tab フォーカスを取らず click も無効化される（ブラウザネイティブの disabled 挙動）。`bulk-toolbar` は SSR `hidden` 属性付き、`<dialog>` 群も非操作のまま。`items_bulk_selection.js` の `init()` が走った時点ではじめて `disabled` を外し操作可能になる Progressive Enhancement 規約 | |
 | NFR 4.1〜4.3 | アクセシビリティ | items.html / style.css / dialog | ネイティブ HTML 要素 + aria-label + テキスト併用 | |
 | NFR 5.1 | 構造化ログ | server bulk handlers | `slog.Info("items.bulk.delete" / "items.bulk.tag", "user_id", "item_ids", "succeeded_ids", "failed_ids", "request_id")`。Cookie / token / 本文の生値は含めない | |
 
@@ -248,6 +253,11 @@ static/
 
 **Responsibilities & Constraints**
 - 主責務:
+  - **Progressive Enhancement enable**（NFR 3.5 維持）: `init()` 起動直後、
+    `region.querySelectorAll('input.item-select[disabled]')` を走査して `removeAttribute('disabled')`
+    し、本モジュールが load された場合のみ checkbox を操作可能にする。SSR は `disabled` 付きで
+    出力されるため、JS 無効ブラウザでは checkbox が Tab フォーカスから自然に除外され（HTML
+    仕様の disabled 挙動）、本機能導入前と同等の閲覧・単一操作動線が維持される
   - `[data-items-region]` 上の `change`（checkbox）・`click`（shift modifier 検出）・
     `keydown`（`x`）を delegated に捕捉する
   - 内部 Set<itemID> を更新し、`<article>` に `.is-selected` を付与・解除する
@@ -361,8 +371,9 @@ records を捨てる。これにより actions の bulk DOM 操作完了直後�
     誤認して Set を空にすることを防ぐ（failed 選択保持 / Req 4.8 / 5.8）
 - ドメイン境界: モジュール内で fetch 失敗時の retry は **しない**（明示的にユーザーへ通知し、選択は残す）
 - データ所有権: 選択状態は **selection モジュール側に委譲**、actions 側は読み取り + clear / removeFromSelection 経由でのみ更新
-- **失敗 toast の表示文言**: server レスポンスの `failed[].title` / `failed[].url` は leak 防止
-  のため空文字（後述「Security Considerations」節）。client は **DOM 上の対象 article**
+- **失敗 toast の表示文言**: server レスポンスの `BulkFailureDetail` には **`title` / `url`
+  フィールドが struct 定義として存在しない**（前述「Service Interface」節の `BulkFailureDetail`
+  を参照。空文字で返すのではなく、フィールド自体を omit する）。client は **DOM 上の対象 article**
   （`[data-item-id="<failed id>"] h3[id^="item-title-"]` / `.tile-link[href]`）から title / url を取得して
   toast 本文に組み立てる（Req 4.7 / 5.7。`article.remove()` をブラケット内で済ませているため、
   失敗 id の article は DOM に残存している）
@@ -408,7 +419,23 @@ function init({document, window, selection /* selection.init() の戻り値 */, 
     レイヤに渡さず**、handler 側で `failed[{item_id: <as-is>, reason: "not_found"}]` に
     collapse する（Req 8.3 / Security Considerations の「不正 id による DB エラー誘発」遮断）。
     valid な id だけを `validIDs` として store.BulkDeleteItems に渡す
-- 認証なし → 401 `{"error":"unauthorized"}`（既存 requireAuth 経由）
+- **認証チェック失敗 → 401 / 403 の場合分け**（`internal/server/server.go:1317-1331 requireAuth`
+  と `:1459-1482 checkCSRF` の実装に基づく確定挙動）:
+  - **401 `{"error":"unauthorized"}`**: `auth.UserFromContext` で user が取れない経路。
+    実際に到達するのは (a) handler unit test で auth context を未設定で直接呼び出す経路、
+    (b) middleware の `checkCSRF` を通過した後の `authenticate` 失敗（session lookup が
+    valid CSRF を持つ session を解決できない race condition）の 2 経路に限定される。
+    本機能のテストは (a) を中心に固定し、既存 `extension_contract_test.go` の
+    `TestHandleListItemsUnauthorizedReturnsJSONError` と同じ pattern（handler 直接呼出）に揃える
+  - **403 `{"error":"csrf"}`**: 実ルート経由で `Authorization` header 無 + `altpocket_session`
+    cookie 無、または cookie はあるが `X-CSRF-Token` 不一致の場合に middleware の
+    `checkCSRF` が先行して 403 を返す。"認証完全に無し"（headerless + cookieless）な実ルート
+    呼び出しは 401 ではなく **403 csrf** が返る点を明示する
+  - **403 `{"error":"forbidden"}`**: 上記とは別軸で、本機能専用に handler 冒頭で
+    `r.Header.Get("Authorization") != ""` を即時拒否する。`requireAuth` の `checkCSRF` は
+    Authorization header 非空を「Bearer 経由」とみなして CSRF をスキップするため、Bearer JWT を
+    本機能の bulk endpoint で拒否するには handler 側での明示的 reject が必要（前述の Bearer 拒否
+    規約と一致）
 - rate limit 越え → 429 `{"error":"rate_limited"}`。ハンドラ内で `s.limiter.Allow(user.ID)`
   を **明示的に呼び**、`false` なら 429 を返す（既存 `handleCreateItem` / `handleDeleteItem` /
   `handleSetItemStatus` と同じ pattern。`requireAuth` middleware には rate limiter は含まれない）
@@ -463,7 +490,10 @@ type BulkFailureDetail struct {
   - **各 id の UUID 形式検証**: handleBulkDeleteItems と同じ流儀。不正 id は store に渡さず
     `failed[{item_id: <as-is>, reason: "not_found"}]` に collapse する
   - サーバ側で `tag.Normalize` した結果が空文字 → 400 `{"error":"invalid_tag"}`（Req 5.9 二重防御）
-- 認証なし → 401 / rate limit → 429 / 403 csrf は handleBulkDeleteItems と同じ規約
+- **認証チェック失敗の 401 / 403 場合分け**は handleBulkDeleteItems と同じ規約（前述
+  「認証チェック失敗 → 401 / 403 の場合分け」を参照。"認証完全に無し" の実ルート呼び出しは
+  middleware の `checkCSRF` が先行するため **403 csrf**、handler 直接呼出時のみ 401 unauthorized）
+- rate limit → 429 / 403 forbidden（Bearer 拒否）は handleBulkDeleteItems と同じ規約
   （`s.limiter.Allow(user.ID)` を明示的に呼ぶ）
 - 成功時 → 200 `BulkTagResponse`
 - 成功時の構造化ログ: `slog.Info("items.bulk.tag", "user_id", uid, "item_ids", req.ItemIDs,
@@ -865,7 +895,9 @@ sequenceDiagram
 - **System Errors (5xx)**:
   - `500 db_error`: PostgreSQL 接続失敗 / トランザクション失敗 等（全件失敗扱い）
 - **Business Logic Errors (200 with failed[])**:
-  - 認可違反（他ユーザー所有）・存在しない id → `failed[{reason: "not_found", item_id, title?, url?}]`
+  - 認可違反（他ユーザー所有）・存在しない id → `failed[{item_id, reason: "not_found"}]`
+    （**`title` / `url` フィールドは struct に含めない / leak 防止**。Components 節の
+    `BulkFailureDetail` 定義および本節下部「Client-side error handling」と一致）
   - これは HTTP エラーではなく **200 OK のレスポンスボディに含まれる per-item failure**
 
 ### Client-side error handling
@@ -981,11 +1013,13 @@ sequenceDiagram
   `item_ids` / `tag_normalized` / `succeeded_count` / `failed_count` のみ
 - **CSRF 保護**: 既存 `s.checkCSRF` middleware が `/v1/*` の非 GET request に強制適用される
 - **ID 列挙対策**: 上限 100 件で 1 リクエストあたりの enumeration speed を制限。rate limiter も適用
-- **PII リーク防止**: failed[].title / url は **常に空文字** で返す。クライアント側は対象 article
-  の DOM 表示要素 (`[data-item-id="<failed id>"] h3[id^="item-title-"]` / `.tile-link[href]`) から
-  toast 文言を組み立てる。これにより「他ユーザーのタイトル」をサーバから返さない設計を保ちつつ、
-  Req 4.7 / 5.7 の「failed をタイトルまたは URL を含むメッセージで通知」を満たす。クライアントは
-  そもそも自分が submit した id しか知らないため、DOM 由来の文字列は所有・閲覧権限上問題ない
+- **PII リーク防止**: failed[].title / url は **struct 定義に存在せず、レスポンス JSON にも
+  フィールドが現れない**（空文字で返すのではなく、`BulkFailureDetail` 自体から omit する）。
+  クライアント側は対象 article の DOM 表示要素 (`[data-item-id="<failed id>"] h3[id^="item-title-"]`
+  / `.tile-link[href]`) から toast 文言を組み立てる。これにより「他ユーザーのタイトル」をサーバから
+  返さない設計を保ちつつ、Req 4.7 / 5.7 の「failed をタイトルまたは URL を含むメッセージで通知」
+  を満たす。クライアントはそもそも自分が submit した id しか知らないため、DOM 由来の文字列は
+  所有・閲覧権限上問題ない
 - **UUID 形式の事前検証**: クライアントが送信する `item_ids` の各文字列を `uuid.Parse` で検証し、
   不正な文字列は store 層に渡さず `failed[{reason: "not_found"}]` に collapse する。これにより
   不正 id を送り付けて DB エラー（500）を誘発する攻撃面を閉じる
@@ -1006,7 +1040,7 @@ sequenceDiagram
 |---|---|---|
 | atomicity | ◎ 1 リクエスト 1 トランザクション、部分失敗時にもサーバが per-item 結果を返す | △ N 回独立した単一 tx、ネットワーク途中断で「半分削除済み」状態になりやすい |
 | 通信回数 | ◎ 1 リクエスト | ✗ N 回（100 件で 100 回）。CSRF 検証・rate limiter にも 100 回当たる |
-| 部分失敗の対象特定 | ◎ サーバから `succeeded` / `failed[{item_id, title?, url?, reason}]` を返せる | △ クライアント側で個別レスポンスを収集する必要があり、UI 実装が複雑化 |
+| 部分失敗の対象特定 | ◎ サーバから `succeeded` / `failed[{item_id, reason}]` を返せる（title / url は PII leak 防止のためレスポンスに含めず、クライアントは DOM から組み立てる。Components 節 `BulkFailureDetail` 参照） | △ クライアント側で個別レスポンスを収集する必要があり、UI 実装が複雑化 |
 | レート制限への当たり | ◎ 1 回 | ✗ 100 件選択で `limiter.Allow(user.ID)` が 100 回呼ばれ rate limited のリスク |
 | 拡張機能契約 | ◎ 新規 endpoint のみ追加（既存変更ゼロ） | ◎ 同様 |
 | 実装コスト（バックエンド） | △ store 2 メソッド + handler 2 個 + テスト | ○ ゼロ |
@@ -1098,7 +1132,8 @@ requirements Open Question (b) で提示されていた選択肢:
    検討する
 
 設計成果物への波及: `BulkTagRequest` は `Tag string`（単一）固定。サジェスト UI / 複数同時付与は
-**Out of Scope** として requirements に明示し、本 Issue では追加しない。
+**Out of Scope** として requirements に明示し、本 Issue では追加しない（round 2 で
+`requirements.md` Out of Scope セクションへ反映済み・旧 Open Question (b) は確定として削除）。
 
 ### 8. read / archived 状態カードへの一括操作 — **完全に対称**
 

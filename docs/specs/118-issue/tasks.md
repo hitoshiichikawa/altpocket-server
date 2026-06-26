@@ -142,8 +142,12 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     `handleListItems` / `handleUIItems` および `extension_contract_test.go` には一切手を入れない
   - `internal/server/items_bulk_test.go` を新規作成（通常 `go test ./...` 経路で実行可能な
     unit test）:
-    - `TestHandleBulkDeleteItems_UnauthorizedReturnsJSON401`: requireAuth 未通過 → 401
-      `{"error":"unauthorized"}`
+    - `TestHandleBulkDeleteItems_UnauthorizedReturnsJSON401`: **handler 直接呼び出し（middleware
+      バイパス）で auth context 未設定** → 401 `{"error":"unauthorized"}`。既存
+      `extension_contract_test.go` の `TestHandleListItemsUnauthorizedReturnsJSONError` と同じ
+      pattern（`s.handleBulkDeleteItems(rr, req)` を直接呼ぶ）。実ルート経由では middleware の
+      `checkCSRF` が先行するため Authorization 無 + cookie 無の "認証完全に無し" は 403 csrf に
+      collapse される（後述 task 4 の integration test で別途検証）
     - `TestHandleBulkDeleteItems_InvalidJSONReturns400`: parse 不能 → 400 invalid_request
     - `TestHandleBulkDeleteItems_EmptyIDsReturns400`: `{"item_ids": []}` → 400 invalid_request
     - `TestHandleBulkDeleteItems_OverLimitReturns400PayloadTooLarge`: 101 件 → 400
@@ -155,7 +159,8 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestHandleBulkDeleteItems_RateLimitedReturns429`: `ratelimit.New(0, 0)` で構成した limiter
       を持つ Server に POST → 429 `{"error":"rate_limited"}`（store は呼ばれない / 既存単一 API
       の rate limit pattern と一致 / 新規 bulk endpoint のレート制御退行の回帰固定）
-    - `TestHandleBulkTagItems_UnauthorizedReturnsJSON401`: 同上
+    - `TestHandleBulkTagItems_UnauthorizedReturnsJSON401`: 同上（handler 直接呼出での auth
+      context 未設定 → 401）
     - `TestHandleBulkTagItems_InvalidJSONReturns400`: 同上
     - `TestHandleBulkTagItems_EmptyIDsReturns400`: 同上
     - `TestHandleBulkTagItems_OverLimitReturns400PayloadTooLarge`: 同上
@@ -223,6 +228,13 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestHandleBulkTagItems_LogsStructuredFields`: NFR 5.1 同様、slog line の field 検査
     - `TestHandleBulkTagItems_DedupesExistingTagInRequest`: 既に当該タグを保持する item を
       含めて呼び出し → 重複なく succeeded に含まれ、レスポンスの tags も重複なし（Req 5.4）
+    - `TestBulkRoutesOnRealRouterReturnCSRFForbiddenWithoutAuth`: chi router 経由で
+      `POST /v1/items/bulk-delete` / `POST /v1/items/bulk-tag` を **Authorization header 無 +
+      `altpocket_session` cookie 無 + `X-CSRF-Token` 無** の状態で呼び出し → 両 endpoint とも
+      **403 `{"error":"csrf"}`** を返すことを assert（`requireAuth` の `checkCSRF` が `authenticate`
+      より先に走り、Authorization 無の場合に session cookie 不在を csrf エラーで弾く既存挙動の
+      回帰固定 / round 2 review feedback）。401 unauthorized は本経路では到達しないため
+      assert しない（401 は handler 単体 / task 3 でカバー済み）
   - 既存 CI（`.github/workflows/ci.yml`）には integration tag 対応が無いため、本タスクの
     テスト群は **stage-a-verify の `go test ./...` には含まれない**（task 2 と同じ運用、verify
     block 末尾の「Integration test の取扱」節を参照）
@@ -236,14 +248,21 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - `templates/items_list.html`:
     - 各 `<article class="tile item-card ...">` に `data-item-id="{{.ID}}"` を追加（既存
       `aria-labelledby` は維持。chi の closest('.item-card') で id を解決する用）
-    - `<a class="tile-link" href="...">` の **直前** に以下を挿入:
+    - `<a class="tile-link" href="...">` の **直前** に以下を挿入（**`disabled` 属性付きで SSR
+      する点に注意** / NFR 3.5 / design.md Progressive Enhancement 規約）:
       ```html
       <input type="checkbox"
              class="item-select"
              data-item-select
              data-item-id="{{.ID}}"
-             aria-label="アイテムを選択: {{.Title}}">
+             aria-label="アイテムを選択: {{.Title}}"
+             disabled>
       ```
+      `disabled` で SSR することにより、JS 無効ブラウザでは checkbox が Tab フォーカスを取らず
+      クリックも無効化される（ブラウザネイティブ disabled 挙動）。これにより本機能導入前と
+      同等の閲覧 / 単一アイテム操作動線が JS 無効環境で維持される（Req NFR 3.5）。
+      `items_bulk_selection.js`（task 6）の `init()` が走った時点で `removeAttribute('disabled')`
+      され、操作可能になる Progressive Enhancement 規約
   - `templates/items.html`:
     - `<section class="split">` の終了 (`</section>`) と既存 script 群の間に以下を追加:
       ```html
@@ -304,6 +323,11 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
 - [ ] 6. static JS: items_bulk_selection.js（選択状態 + Shift範囲 + キーボード + リセット契機）
   - `static/items_bulk_selection.js` を新規作成（既存 `items_active_filters.js` / `items_status.js`
     の IIFE + `init({document, window})` パターン、`vm.createContext` でテスト可能な構造を踏襲）:
+    - **Progressive Enhancement enable**（NFR 3.5 / design.md 「Responsibilities & Constraints」
+      節と整合）: `init()` 起動直後、`region.querySelectorAll('input.item-select[disabled]')` を
+      全件走査し `removeAttribute('disabled')` する。これにより SSR で `disabled` 付き出力された
+      checkbox は本モジュールが load された場合のみ操作可能になる。本処理は change / click /
+      keydown ハンドラを register する **前**に実行する
     - 内部 `Set<itemID>` で選択状態を保持
     - `[data-items-region]` 上の `change` イベントを delegated 捕捉 → `target.matches('input.item-select')`
       なら toggle 処理（Req 1.1〜1.3）
@@ -331,10 +355,17 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
       - `<article>` 上の `.is-selected` class 同期（Req 1.4）
       - `data-items-region` に `dispatchEvent(new CustomEvent('bulkselection:changed', {detail: {count, ids}}))`
         を発火（Req 3.6）
-    - **上限 100 件 enforcement**（NFR 2.1 / 2.2）:
-      - 単一 toggle / shift 範囲の結果として `Set.size > 100` になる場合、超過分は追加せず
-        `win.altpocketToast.error('一括操作は最大 100 件までです')` を呼ぶ
-      - 既に 100 件選択済みで新規 toggle を試みた場合も同様
+    - **上限 100 件 enforcement**（NFR 2.1 / 2.2 / Req 2.1 の "範囲のカードすべてを選択状態" の
+      整合保証）:
+      - **単一 toggle**: 既に 100 件選択済みで 101 件目を click / `x` toggle で追加しようとした
+        場合、追加せず `win.altpocketToast.error('一括操作は最大 100 件までです')` を呼ぶ
+        （101 件目だけが弾かれる）
+      - **Shift 範囲選択**: 範囲算出結果と現在の Set の合算が `> 100` になる場合、**範囲全体を
+        未選択のまま reject** し（部分追加は行わない）、`win.altpocketToast.error('範囲選択により
+        上限を超えるため処理されませんでした')` を呼ぶ。Req 2.1 が「範囲のカードすべてを選択
+        状態にする」と "all or nothing" を要求しているため、上限超過時に範囲の一部だけを
+        選択する曖昧な状態を生まない（design.md NFR 2.1 / 2.2 Requirements Traceability 行と
+        整合）
     - **fragment 差替リセットと部分失敗時の選択保持の両立**（Req 4.8 / 5.8 / 7.1 / 7.2 / 7.5）:
       `[data-items-region]` 上で `MutationObserver(childList)` を起動し、MutationRecord 受信時に
       以下の **二段階判定** を行ってリセット可否を決める:
@@ -389,8 +420,16 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
     - `TestKeyboardXTogglesFocusedCard`: フォーカス中カードで `keydown` `x` → toggle（Req 6.1）
     - `TestKeyboardXIgnoresInputFocus`: `<input>` フォーカス中の `keydown` `x` は no-op（Req 6.3）
     - `TestKeyboardXIgnoresModifierCombo`: `Ctrl+x` / `Meta+x` 等は no-op（既存 app.js 規約 / Req 6.2）
-    - `TestUpperLimitRejectsBeyond100`: 100 件選択済み → 101 件目を click で抑止 +
-      `toast.error` 呼出 + Set.size は 100 のまま（NFR 2.2）
+    - `TestUpperLimitRejectsBeyond100`: 100 件選択済み → 101 件目を **単一 click** で抑止 +
+      `toast.error('一括操作は最大 100 件までです')` 呼出 + Set.size は 100 のまま（NFR 2.2 単一 toggle 経路）
+    - `TestShiftRangeAcrossUpperLimitRejectsEntireRange`: 既に 80 件選択済み → 残り未選択
+      カードのうち、Shift+click で結果として 100 件超 (例: 21 件分の範囲) が選択される操作 →
+      **範囲全体を未選択のまま reject** + `toast.error('範囲選択により上限を超えるため処理
+      されませんでした')` + Set.size は 80 のまま（NFR 2.2 Shift 範囲経路 / Req 2.1 "all or
+      nothing" / round 2 review feedback）
+    - `TestProgressiveEnhancementRemovesDisabled`: init() 実行直後、SSR で `disabled` 属性付き
+      の `input.item-select` が **すべて enabled** になることを assert（NFR 3.5 Progressive
+      Enhancement 規約 / round 2 review feedback）
     - `TestFragmentSwapResetsSelection`: `[data-items-region].innerHTML = ''`（MutationObserver
       を発火させる擬似的差替）→ Set.clear() + event detail.count=0（Req 7.1 / 7.2 / 7.5 を
       同一経路で回帰固定）
