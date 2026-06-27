@@ -174,4 +174,36 @@
   留まり Req 1.5 の対象外ドロップ no-op を実質破らない。drag 起点追跡用の module state を増やす
   costに見合わないと判断し、現行ガードを維持（low / round 2 で既に対応済みの範囲）。
 
+## PR #143 iteration round 5 で対応したレビュー指摘
+
+1. **[high] ボトムシート背景 tap（dismiss）で tagging モードが残り誤付与**（`items_drag_tag.js`
+   の `shouldPreserveTaggingMode`）: round 2 で維持対象に含めた `.sheet-overlay` は、dimmed 背景
+   （`.bottom-sheet` 外）も包含する。app.js は `e.target === sheetOverlay` のときシートを閉じる
+   dismiss ジェスチャを持つため、tagging モード中に背景を tap してシートを閉じても
+   `shouldPreserveTaggingMode()` が true を返し `pendingTouchItemId` が残存。その後に通常の
+   フィルタ目的で tap したタグが前回カードへ誤付与され得た。維持対象を `.sheet-overlay` から
+   シート本体 `.bottom-sheet` に絞り込み、背景 dismiss では確実にモードを解除するよう変更
+   （Req 4.3 / 誤付与防止）。`[data-sheet-toggle]` / `.sidebar` / `.tag-list` の維持は不変。
+   回帰防止に「背景 dismiss でモード解除＋後続タグ tap で非付与」「シート本体内の中間 tap では
+   モード維持＋タグ tap で付与」の 2 テストを追加（前者は修正前 fail を確認）。
+2. **[medium] DnD in-flight 中に一括タグ付けが追加した chip を後着レスポンスで落とす競合**
+   （`assignTag` / 新規 `readCardTags` + `mergeConfirmedTags`）: round 3 の union 方式は本
+   モジュールの成功レスポンスのみを集約していたため、DnD リクエスト in-flight 中に
+   `items_bulk_actions.js` が同じカードへタグを追加して chip を再描画すると、その tag を含まない
+   過去スナップショットで後着した DnD レスポンスが `rebuildChipsForCard` の全置換で一括付与済み
+   tag を UI から落としていた。確定集合 merge の前にカード DOM の現状 chip
+   （`.tags` 直下の `[data-tag-normalized]`、SSR/両モジュール共通契約）を union へ畳み込む
+   `readCardTags` を追加。本 UI は付与のみで chip を削除しないため DOM union は「可視タグを
+   取りこぼさない」方向にのみ働き安全（永続化の真値はリロードで server に従う / Req 1.4 /
+   NFR 3.2）。回帰防止テストを追加（修正前 fail を確認）。
+
+### 取り込まなかったレビュー指摘（返信で理由を明示）
+
+- **[medium] design.md / tasks.md 不在による追跡不能**（round 2・3 から方針不変）: 本 Issue は
+  needs_architect:false で triage され design.md/tasks.md は未生成（単一実装パス）。本 PR は実装
+  PR のため、workflow 規約（CLAUDE.md「1 PR = design or impl」「Developer は実装 PR で
+  requirements/design/tasks を書き換えない」）により spec の追加・書き換えは行わない。
+  requirements⇄実装の追跡は本 impl-notes の「AC ↔ テスト対応表」が担う。design/tasks の追跡が
+  必要なら needs_architect:true での設計 PR ゲートを別途推奨（返信で再提起）。
+
 STATUS: complete

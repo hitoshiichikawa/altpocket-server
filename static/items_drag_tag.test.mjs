@@ -679,6 +679,58 @@ test('Req 4.3: tagging モード中に無関係な要素を tap するとモー�
   assert.equal(env.fetchCalls.length, 0, '無関係 tap でモード解除後はタグ tap で付与しない');
 });
 
+test('Req 4.3 (高リスク #143): tagging モード中にボトムシート背景 (.sheet-overlay) を tap すると dismiss としてモードを解除する', async () => {
+  // ボトムシートの dimmed 背景 tap は app.js の dismiss ジェスチャ（シートを閉じる）。
+  // これでモードが残ると、その後に通常のフィルタ目的で tap したタグが前回カードへ
+  // 誤付与される。背景 tap ではモードを確実に解除し、続くタグ tap で付与しないこと。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    pointerCoarse: true,
+    fetchHandlers: [],
+  });
+  // .bottom-sheet を持たない dimmed 背景（実 UI の `.sheet-overlay` 直下の余白に相当）。
+  const overlayBg = new FakeElement('div', { class: 'sheet-overlay' });
+
+  await env.click(env.tagAddEl(0)); // tagging モードへ
+  assert.equal(env.api._debug.getPendingTouchItemId(), 'id-1', '背景 tap 前はモード中');
+  await env.click(overlayBg);       // 背景 (dismiss) tap → モード解除
+  assert.equal(env.api._debug.getPendingTouchItemId(), null, '背景 dismiss でモードが解除される');
+  await env.click(env.dropEl(0));   // モード外のタグ tap → 付与しない
+  await flushMicrotasks();
+
+  assert.equal(env.fetchCalls.length, 0, '背景 dismiss 後はタグ tap で誤付与しない');
+});
+
+test('Req 4.1 / 4.2: tagging モード中にボトムシート本体 (.bottom-sheet) 内の非タグ要素を tap してもモードを維持する', async () => {
+  // 背景 dismiss と区別し、シート本体内の中間 tap（フィルタ入力欄等）ではモードを維持して
+  // 続くタグ tap で付与できること（finding #143 の修正で .sheet-overlay→.bottom-sheet に
+  // 絞り込んだ結果の正の確認）。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    pointerCoarse: true,
+    fetchHandlers: [jsonResponse(200, {
+      succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+      failed: [],
+    })],
+  });
+  // シート本体 `.bottom-sheet` 内の非タグ要素（実 UI の検索入力 label 等）。
+  const bottomSheet = new FakeElement('div', { class: 'sheet-overlay' });
+  const panel = new FakeElement('div', { class: 'bottom-sheet' });
+  bottomSheet.appendChild(panel);
+  const innerField = new FakeElement('label', { class: 'field' });
+  panel.appendChild(innerField);
+
+  await env.click(env.tagAddEl(0)); // tagging モードへ
+  await env.click(innerField);      // シート本体内の中間 tap → モード維持
+  assert.equal(env.api._debug.getPendingTouchItemId(), 'id-1', 'シート本体内 tap ではモード維持');
+  await env.click(env.dropEl(0));   // タグ tap → 付与される
+  await flushMicrotasks();
+
+  assert.equal(env.fetchCalls.length, 1, 'シート本体内の中間 tap を経てもタグ付与が実行される');
+});
+
 test('Req 1.4 / NFR 3.2: 同一カードへ連続付与時、古いレスポンスが後着しても新しい付与の chip を上書きしない', async () => {
   // go をドロップ（レスポンス保留）→ 続けて rust をドロップ（即時に {go, rust}）。
   // その後 go の古いレスポンス（{go} のみ）が後着しても、chip 列を {go} に巻き戻さず
@@ -813,6 +865,52 @@ test('Req 1.4 / NFR 3.2: 後発の付与が失敗し先発が成功した場合�
   assert.ok(tagsDiv.querySelector('[data-tag-normalized="go"]'), '後発失敗でも先発 go の成功を反映する');
   assert.equal(env.toastCalls.error.length, 1, '失敗した後発について 1 件の失敗通知が出る');
   assert.equal(env.cardEl(0).classList.contains('is-tagging'), false, '全 in-flight 決着で busy が解除される');
+});
+
+test('NFR 3.2 (medium #143): DnD in-flight 中に一括タグ付けが追加した chip を、後着 DnD レスポンスの全置換で落とさない', async () => {
+  // go を DnD ドロップ（レスポンス保留）。その間に一括タグ付け (items_bulk_actions.js) が
+  // 同じカードへ rust chip を追加し DOM を再描画したと仮定する。go の DnD レスポンスは
+  // rust を含まない過去スナップショット {go} で後着するが、chip 全置換が DOM 現状を union
+  // するため、一括付与済みの rust を UI から落とさない。
+  let resolveDrop;
+  const pendingDrop = new Promise((r) => { resolveDrop = r; });
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    fetchHandlers: [() => pendingDrop],
+  });
+  const dt = makeDataTransfer();
+
+  // 1) go をドロップ（レスポンス保留 = DnD リクエスト in-flight）
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+
+  // 2) in-flight 中に一括タグ付けが rust chip を DOM へ追加（別モジュールの全置換描画を模す）。
+  //    buildCard は tags 空だと .tags を作らないため、ここで `.tags` を新設する。
+  const bulkTags = new FakeElement('div', { class: 'tags' });
+  const rustChip = new FakeElement('button', {
+    type: 'button',
+    class: 'tag tag-filter-toggle',
+    'data-tag-filter-toggle': '',
+    'data-tag-normalized': 'rust',
+    'aria-pressed': 'false',
+    'aria-label': 'タグで絞り込み: Rust',
+  });
+  rustChip.textContent = 'Rust';
+  bulkTags.appendChild(rustChip);
+  env.cardEl(0).appendChild(bulkTags);
+
+  // 3) go の DnD レスポンスが {go} のみ（rust 追加前のスナップショット）で後着
+  resolveDrop(jsonResponse(200, {
+    succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+    failed: [],
+  }));
+  await flushMicrotasks();
+
+  const finalTags = env.cardEl(0).querySelector('.tags');
+  assert.ok(finalTags.querySelector('[data-tag-normalized="go"]'), 'DnD で付与した go chip がある');
+  assert.ok(finalTags.querySelector('[data-tag-normalized="rust"]'),
+    '一括タグ付けが in-flight 中に追加した rust chip を後着 DnD レスポンスで落とさない');
 });
 
 test('外部テキストをタグ要素にドロップしても付与しない（不明 item id を弾く）', async () => {

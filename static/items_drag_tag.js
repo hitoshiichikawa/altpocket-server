@@ -225,11 +225,45 @@
     // レスポンスが送信順と異なる順で返っても busy を取りこぼさない (NFR 3.1)。
     const inFlightByItem = new Map();
 
+    // カード DOM に現在描画されている chip 列から tag 配列 ({normalized_name, name}) を
+    // 復元する。chip は SSR / 本モジュール / items_bulk_actions.js 共通契約で
+    // `.tags` 直下の `[data-tag-normalized]`（display 名は textContent）として描画される。
+    // 一覧上部のアクティブフィルタ chip も data-tag-normalized を持つが、それらは
+    // カード外（`.active-filters`）なので card スコープの `.tags` には含まれず混入しない。
+    function readCardTags(card) {
+      const out = [];
+      if (!card || typeof card.querySelector !== 'function') return out;
+      const container = card.querySelector('.tags');
+      if (!container || typeof container.querySelectorAll !== 'function') return out;
+      const chips = container.querySelectorAll('[data-tag-normalized]');
+      for (let i = 0; i < chips.length; i += 1) {
+        const chip = chips[i];
+        const normalized = chip.dataset ? chip.dataset.tagNormalized
+          : (chip.getAttribute ? chip.getAttribute('data-tag-normalized') : '');
+        const name = ('textContent' in chip) ? (chip.textContent || '') : '';
+        if (normalized) out.push({ normalized_name: normalized, name: name });
+      }
+      return out;
+    }
+
     // 当該アイテムの確定タグ集合へ付与後タグ集合を merge し、union 配列を返す。
     // normalized_name を key に重複排除し、挿入順（＝確定順）を保つ。
-    function mergeConfirmedTags(itemId, tags) {
+    //
+    // merge 前にカード DOM の現状 chip も確定集合へ畳み込む。これは一括タグ付け
+    // (items_bulk_actions.js) が DnD リクエスト in-flight 中に同じカードへタグを追加した
+    // 場合に、遅れて返った DnD レスポンス（その tag を含まない過去スナップショット）で
+    // rebuildChipsForCard が全置換し、一括付与済みの tag を UI から落とすのを防ぐため
+    // （medium 指摘 #143）。本 UI は付与のみで chip を削除しないため、DOM の現状 union は
+    // 「可視タグを取りこぼさない」方向にのみ働き安全（永続化の真値はリロードで server に従う）。
+    function mergeConfirmedTags(itemId, card, tags) {
       let set = confirmedTagsByItem.get(itemId);
       if (!set) { set = new Map(); confirmedTagsByItem.set(itemId, set); }
+      const domTags = readCardTags(card);
+      for (let i = 0; i < domTags.length; i += 1) {
+        const t = domTags[i];
+        const key = String(t.normalized_name || '');
+        if (key && !set.has(key)) set.set(key, t);
+      }
       for (let i = 0; i < tags.length; i += 1) {
         const t = tags[i] || {};
         const key = String(t.normalized_name || '');
@@ -302,7 +336,7 @@
         const detail = succeeded[0] || {};
         const card = findCardByID(detail.item_id || itemId);
         const tags = Array.isArray(detail.tags) ? detail.tags : [];
-        const merged = mergeConfirmedTags(itemId, tags);
+        const merged = mergeConfirmedTags(itemId, card, tags);
         rebuildChipsForCard(card, merged, computeActiveNormalizedNames());
         settle();
         toast.success('タグを付与しました');
@@ -477,13 +511,21 @@
     // モバイルではタグ一覧がボトムシート内にあり、ユーザーは trigger tap のあと
     // Filters ボタン (`[data-sheet-toggle]`) を tap してシートを開いてからタグを tap
     // する。この中間 tap でモードが解除されると、続くタグ tap が付与に至らず
-    // Req 4.1 / 4.2 を満たせない。シート開閉トグル・シート/サイドバーのフィルタ UI
-    // 内の tap ではモードを維持し、それ以外の無関係 tap でのみ解除する（誤付与防止）。
+    // Req 4.1 / 4.2 を満たせない。シート開閉トグル・シート本体 (`.bottom-sheet`)・
+    // サイドバーのフィルタ UI 内の tap ではモードを維持し、それ以外の無関係 tap でのみ
+    // 解除する（誤付与防止）。
+    //
+    // ボトムシートの dimmed 背景 (`.sheet-overlay` のうち `.bottom-sheet` 外) を tap すると
+    // app.js がシートを閉じる（`e.target === sheetOverlay` のときだけ close する dismiss
+    // ジェスチャ）。背景 tap はキャンセル操作なので、ここで `.sheet-overlay` 全体を維持
+    // 対象にすると pendingTouchItemId が残り、その後に通常のフィルタ目的で tap したタグが
+    // 前回カードへ誤付与され得る（高リスク指摘 #143）。維持対象はシート本体
+    // (`.bottom-sheet`) に限定し、背景 dismiss では確実にモードを解除する。
     function shouldPreserveTaggingMode(el) {
       if (!el || typeof el.closest !== 'function') return false;
       return !!(
         el.closest('[data-sheet-toggle]') ||
-        el.closest('.sheet-overlay') ||
+        el.closest('.bottom-sheet') ||
         el.closest('.sidebar') ||
         el.closest('.tag-list')
       );
