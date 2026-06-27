@@ -694,7 +694,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Static_
   - _Depends: 5_
 
-- [ ] 7. static JS: items_bulk_actions.js（ツールバー → 一括削除 / 一括タグ付け → 部分失敗処理）
+- [x] 7. static JS: items_bulk_actions.js（ツールバー → 一括削除 / 一括タグ付け → 部分失敗処理）
   - `static/items_bulk_actions.js` を新規作成（既存 `items_status_actions.js` の `init({document,
     window, fetch, toast})` パターン、vm.createContext テスト可能な構造を踏襲）:
     - 起動時に `items_bulk_selection.js` の `init()` が公開する API を取得する経路を確保する。
