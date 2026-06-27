@@ -335,6 +335,13 @@
 
     // --- drag&drop handlers（document delegated） --------------------------
 
+    // 本モジュールの dragstart が開始したドラッグかを記録する入力元フラグ。dragstart で
+    // 当該カードの item-id をセットし、drop で 1 回だけ消費（付与後 null 化）し、dragend
+    // でも必ず解放する。外部アプリ由来のテキストドラッグの text/plain が既存 item-id と
+    // 偶然一致しても、カード起点でないドロップを付与対象から除外する入力元検証に使う
+    // （dataTransfer の値は外部から任意に注入できるため信用しない / Req 1.5）。
+    let activeDragItemId = null;
+
     // dragstart: カード起点。dataTransfer に item-id を載せ、is-dragging を付与する。
     function onDragStart(e) {
       const target = e && e.target;
@@ -344,6 +351,8 @@
       const itemId = card.dataset ? card.dataset.itemId
         : (card.getAttribute ? card.getAttribute('data-item-id') : '');
       if (!itemId) return;
+      // カード起点ドラッグが開始したことを記録する（drop 時の入力元検証用 / Req 1.5）。
+      activeDragItemId = String(itemId);
       const dt = e.dataTransfer;
       if (dt && typeof dt.setData === 'function') {
         try { dt.setData(DT_KEY, itemId); } catch { /* noop */ }
@@ -385,28 +394,33 @@
       if (!dropTarget) return;
       if (typeof e.preventDefault === 'function') e.preventDefault();
 
-      const dt = e.dataTransfer;
-      let itemId = '';
-      if (dt && typeof dt.getData === 'function') {
-        try { itemId = dt.getData(DT_KEY) || ''; } catch { itemId = ''; }
-      }
+      // 入力元検証: 付与対象は「本モジュールの dragstart が開始したカード」の id に限る。
+      // dataTransfer の text/plain は外部アプリ由来のドラッグでも任意文字列を注入でき、
+      // それが既存 item-id と偶然一致すると findCardByID を素通りしてしまう。そこで
+      // dataTransfer を信用せず、内部で保持したカード起点ドラッグの id だけを採用する。
+      // フラグは drop で 1 回だけ消費し、続く非カード起点のドロップを弾く (Req 1.5)。
+      const itemId = activeDragItemId;
+      activeDragItemId = null;
+
       // display 名（data-tag-name）を送る。正規化値を送ると bulk-tag が display 名を
       // 入力文字列で上書きし、既存タグ表示名が劣化するため (Req 2.6 / #115 契約)。
       const tagName = dropTarget.dataset ? dropTarget.dataset.tagName
         : (dropTarget.getAttribute ? dropTarget.getAttribute('data-tag-name') : '');
 
       clearDragVisuals();
+      // dragstart 未経由（外部ドラッグ）や tag 名欠落では付与しない (Req 1.5)。
       if (!itemId || !tagName) return;
-      // dataTransfer の text/plain は外部アプリ由来のドラッグでも任意文字列が入りうる。
-      // region 内の実在カードに紐づく id のときだけ付与に進み、カード以外の外部
-      // テキストを誤って bulk-tag へ送らない (Req 1.5 の対象外ドロップ no-op の延長)。
+      // 念のため region 内の実在カードに紐づく id か再確認する（防御的二重化）。
       if (!findCardByID(itemId)) return;
       void assignTag(itemId, tagName);
     }
 
     // dragend: ドラッグ操作が（成功/中断問わず）終わったら全視覚状態を解除する
-    // (Req 3.3)。
+    // (Req 3.3)。あわせて入力元フラグを必ず解放する。タグ要素以外へのドロップは onDrop が
+    // dropTarget なしで早期 return しフラグを消費しないため、ここで確実に null 化して
+    // stale フラグによる後続の誤付与を防ぐ (Req 1.5)。
     function onDragEnd() {
+      activeDragItemId = null;
       clearDragVisuals();
     }
 

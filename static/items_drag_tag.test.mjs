@@ -831,6 +831,77 @@ test('外部テキストをタグ要素にドロップしても付与しない�
   assert.equal(env.fetchCalls.length, 0, '不明 id（外部テキスト）のドロップでは付与しない');
 });
 
+test('Req 1.5 入力元検証: 外部ドラッグの text/plain が既存 item id と一致してもカード起点でなければ付与しない', async () => {
+  // 外部アプリ由来のテキストドラッグで、たまたま text/plain が表示中カードの item id と
+  // 一致した場合でも、本モジュールの dragstart を経由していない（カード起点でない）
+  // ドロップは付与対象から除外する。dataTransfer は外部から任意に注入できるため、
+  // 内部で保持したカード起点ドラッグの id だけを採用する (medium 指摘 #143)。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    fetchHandlers: [],
+  });
+  const dt = makeDataTransfer();
+  // dragstart を経由せず、既存カードと同一の id を外部テキストとして直接載せる
+  dt.setData('text/plain', 'id-1');
+  await env.drop(env.dropEl(0), dt);
+  await flushMicrotasks();
+  assert.equal(env.fetchCalls.length, 0, 'カード起点でないドロップは既存 id 一致でも付与しない');
+});
+
+test('Req 1.5 入力元検証: dragend 後は同一 id の外部ドロップが来ても付与しない（フラグが消費される）', async () => {
+  // 正規のカード起点ドラッグ→ドロップで付与した後、dragend で入力元フラグが解放される。
+  // 続けて同一 id を載せた外部テキストを直接ドロップしても、stale フラグで付与が走らない
+  // ことを確認する（フラグの消費・解放ライフサイクル / medium 指摘 #143）。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    // 付与は 1 回だけを期待する。2 回目が走ると fetch queue 枯渇で throw し test が落ちる。
+    fetchHandlers: [jsonResponse(200, {
+      succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+      failed: [],
+    })],
+  });
+  // 1) 正規のカード起点ドラッグ→ドロップ→dragend
+  const dt = makeDataTransfer();
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+  await env.dragend(env.cardEl(0), dt);
+  await flushMicrotasks();
+  assert.equal(env.fetchCalls.length, 1, '正規のカード起点ドロップで 1 回付与する');
+
+  // 2) dragend 後、外部テキスト（同一 id）を直接ドロップ → 付与は増えない
+  const extDt = makeDataTransfer();
+  extDt.setData('text/plain', 'id-1');
+  await env.drop(env.dropEl(0), extDt);
+  await flushMicrotasks();
+  assert.equal(env.fetchCalls.length, 1, 'dragend 後の外部ドロップでは付与が増えない');
+});
+
+test('Req 1.5 入力元検証: タグ外ドロップ後の外部ドロップでも付与しない（dragend がフラグを解放する）', async () => {
+  // カード起点でドラッグを開始したがタグ要素以外で離した場合、onDrop は dropTarget なしで
+  // 早期 return しフラグを消費しない。その後 dragend がフラグを解放するため、続く非カード
+  // 起点（既存 id 一致）の外部ドロップでも付与が走らないことを確認する (#143)。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    fetchHandlers: [],
+  });
+  const dt = makeDataTransfer();
+  // カード起点でドラッグ開始 → タグ要素以外（region）にドロップ → dragend で中断
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.region, dt);
+  await env.dragend(env.cardEl(0), dt);
+  await flushMicrotasks();
+
+  // dragend 後、同一 id を載せた外部テキストをタグへ直接ドロップ → 付与しない
+  const extDt = makeDataTransfer();
+  extDt.setData('text/plain', 'id-1');
+  await env.drop(env.dropEl(0), extDt);
+  await flushMicrotasks();
+  assert.equal(env.fetchCalls.length, 0, 'タグ外ドロップ→dragend 後の外部ドロップでも付与しない');
+});
+
 test('Req 4.3 / 4.2: tagging モード中でないタグ tap は付与しない（モード解除後の誤発火防止）', async () => {
   const env = loadModule({
     cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
