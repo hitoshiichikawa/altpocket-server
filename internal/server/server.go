@@ -52,6 +52,17 @@ type Server struct {
 	// readiness probe can be exercised without a live PostgreSQL.
 	// When nil, /readyz falls back to s.store.DB (*pgxpool.Pool).
 	readyPingerFn func(context.Context) error
+	// bulkStore is the indirection used by handleBulkDeleteItems /
+	// handleBulkTagItems to reach the store layer for the new bulk
+	// operations introduced by Issue #118. In production it is always
+	// the same *store.Store as s.store (assigned in New()); the only
+	// reason it lives as a separate interface-typed field is so unit
+	// tests can substitute a fake bulkItemsStore implementation to
+	// observe partial-failure / structured-log behaviour without
+	// running against a real database (design.md "Handler-side store
+	// interface" 節). Scope is limited to the two bulk handlers;
+	// existing handlers continue to call s.store directly.
+	bulkStore bulkItemsStore
 }
 
 var errInvalidURL = errors.New("invalid_url")
@@ -77,7 +88,7 @@ func New(cfg config.Config, st *store.Store, limiter *ratelimit.Limiter, log *sl
 		Endpoint:     google.Endpoint,
 	}
 
-	return &Server{
+	s := &Server{
 		cfg:            cfg,
 		store:          st,
 		limiter:        limiter,
@@ -91,6 +102,14 @@ func New(cfg config.Config, st *store.Store, limiter *ratelimit.Limiter, log *sl
 		},
 		idTokenValidateFn: idtoken.Validate,
 	}
+	// bulkStore is wired to the same *store.Store; the field exists as
+	// a separate interface-typed seam so unit tests can substitute a
+	// fake bulkItemsStore. *store.Store implicitly satisfies the
+	// interface via its existing BulkDeleteItems / BulkAddItemTag
+	// method signatures, so no adapter is required (design.md
+	// "Handler-side store interface" 節).
+	s.bulkStore = st
+	return s
 }
 
 func (s *Server) randomString(n int) (string, error) {
@@ -139,6 +158,8 @@ func (s *Server) Routes() http.Handler {
 		r.Route("/items", func(r chi.Router) {
 			r.Get("/", s.requireAuth(s.handleListItems))
 			r.Post("/", s.requireAuth(s.handleCreateItem))
+			r.Post("/bulk-delete", s.requireAuth(s.handleBulkDeleteItems))
+			r.Post("/bulk-tag", s.requireAuth(s.handleBulkTagItems))
 			r.Get("/{id}", s.requireAuth(s.handleGetItem))
 			r.Patch("/{id}", s.requireAuth(s.handlePatchItem))
 			r.Patch("/{id}/status", s.requireAuth(s.handleSetItemStatus))

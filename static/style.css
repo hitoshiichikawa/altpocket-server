@@ -2863,6 +2863,211 @@ a, button, input, select, textarea, label {
 }
 
 /* =============================================
+   Bulk Operations (#118)
+   一括操作: チェックボックス + 選択カード視覚区別 + 選択ツールバー +
+   タグ入力 dialog + 失敗一覧 dialog。
+   新 selector の追加のみで完結し、既存 .item-card / .tile / .failed /
+   data-status / active-filter-chip / tag-filter-toggle の selector は
+   一切改変しない（NFR 3.1 / 3.2 / 3.3）。busy 状態の視覚補強は CSS 単独
+   ではキーボード起動を抑止できないため、必ず JS 側で button disabled と
+   併用する（design.md / tasks.md round 4 feedback）。
+   ============================================= */
+
+/* --- Item Card に位置決め基準を確保 ---
+   .tile 側 (line 874) で既に position: relative が指定されているため
+   実質 no-op だが、.item-card 単独で参照される将来構成に備えて明示。 */
+.item-card {
+  position: relative;
+}
+
+/* --- カード左上のチェックボックス ---
+   既存 .tile::before (top accent bar, 3px) の下に位置する。
+   :focus-visible は既存 .tag.tag-filter-toggle:focus-visible (line 1094)
+   と同じリテラル outline 表現に揃える（未定義 token --focus-ring は不使用）。 */
+.item-select {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-primary);
+}
+
+.item-select:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.item-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* --- 選択中カードの視覚区別 ---
+   背景は --color-primary-soft、強調は inset box-shadow で表現する。
+   #12 の .item-card.failed の border-left (danger 3px) と軸を直交させる
+   ため、border-left は使わない（既存 archived ::after の左 inset と同じ
+   思想）。Req 1.4 「色だけに依存しない」は checked 状態の checkbox との
+   併用で担保される。 */
+.item-card.is-selected {
+  background: var(--color-primary-soft);
+  box-shadow: inset 0 0 0 2px var(--color-primary);
+}
+
+/* --- Bulk Toolbar (画面下に sticky 固定) ---
+   role="region" + aria-label="一括操作" を持つ <div>。SSR では
+   hidden 属性付きで出力され、JS 側 (items_bulk_selection.js) が選択
+   1 件以上で hidden を removeAttribute する。 */
+.bulk-toolbar {
+  position: sticky;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--separator-opaque);
+  box-shadow: var(--shadow-md);
+}
+
+/* hidden 属性付きの間は確実に非表示。display: flex 上書きを抑止する。 */
+.bulk-toolbar[hidden] {
+  display: none;
+}
+
+.bulk-toolbar-count {
+  font-size: var(--type-body-size);
+  color: var(--text-secondary);
+}
+
+.bulk-toolbar-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* --- Disabled / Busy 状態 ---
+   ブラウザ標準で button:disabled は pointer-events も無効化されるため、
+   キーボード起動 (Tab → Enter / Space) も自動的に抑止される。
+   .is-busy 単独ではキーボード起動を止められないため、JS 側で必ず
+   disabled 属性と併用する規約（NFR 1.2）。 */
+.bulk-toolbar button:disabled,
+.bulk-tag-dialog button:disabled,
+.bulk-failure-dialog button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+/* spinner / overlay 等の補助 visual のためのフック。
+   button disabled と併用される前提。 */
+.bulk-toolbar.is-busy {
+  opacity: 0.85;
+  transition: opacity var(--motion-fast) var(--ease-default);
+}
+
+/* --- Bulk Tag Dialog (ネイティブ <dialog>) ---
+   既存 .confirm-dialog (line 2489) のトークン構成 (--bg-surface / --separator /
+   --radius-lg / --shadow-lg) に揃える。<dialog> 既定スタイル (border, padding)
+   をリセットして揃える。 */
+.bulk-tag-dialog {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-6);
+  max-width: min(420px, 90vw);
+  width: 100%;
+}
+
+.bulk-tag-dialog h2 {
+  margin: 0 0 var(--space-4);
+  font-size: var(--type-headline-size);
+  font-weight: 600;
+}
+
+.bulk-tag-dialog .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+}
+
+.bulk-tag-dialog .field-label {
+  font-size: var(--type-subhead-size);
+  color: var(--text-secondary);
+}
+
+.bulk-tag-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* dialog 背景 dim: 既存 .confirm-overlay / .sheet-overlay の rgba 値を流用
+   (line 2474 / 2533: rgba(0, 0, 0, 0.5))。 */
+.bulk-tag-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* --- Bulk Failure Dialog (失敗一覧) ---
+   role="alertdialog" を持つ <dialog>。
+   max-height: 60vh + overflow-y: auto で 100 件まで scrollable に
+   全件 reachable (Req 4.7 / 5.7 truncation 廃止の CSS 側保証)。 */
+.bulk-failure-dialog {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--separator);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-4);
+  max-width: min(560px, 90vw);
+  width: 100%;
+}
+
+.bulk-failure-dialog h2 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--type-headline-size);
+  font-weight: 600;
+}
+
+.bulk-failure-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.bulk-failure-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* --- Bulk Failure List (失敗 100 件まで scrollable) ---
+   max-height + overflow-y で scroll 領域を予約し、長い URL / タイトルは
+   overflow-wrap: anywhere で折返し可能にする。 */
+.bulk-failure-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 0 0 var(--space-5);
+  list-style: disc;
+}
+
+.bulk-failure-list > li {
+  margin: var(--space-1) 0;
+  font-size: var(--type-subhead-size);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* =============================================
    Safe Areas (Notch / Dynamic Island)
    ============================================= */
 @supports (padding-top: env(safe-area-inset-top)) {

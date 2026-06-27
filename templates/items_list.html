@@ -46,7 +46,13 @@
 {{end}}
 
 {{range .Items}}
-  <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" data-status="{{.Status}}" aria-labelledby="item-title-{{.ID}}">
+  <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" data-status="{{.Status}}" data-item-id="{{.ID}}" data-original-url="{{.URL}}" aria-labelledby="item-title-{{.ID}}">
+    <input type="checkbox"
+           class="item-select"
+           data-item-select
+           data-item-id="{{.ID}}"
+           aria-label="アイテムを選択: {{.Title}}"
+           disabled>
     <a class="tile-link" href="/ui/items/{{.ID}}{{if $.StatusQuery}}?status={{$.StatusQuery}}{{end}}">
       <h3 id="item-title-{{.ID}}">{{.Title}}</h3>
       <p class="excerpt-clamp">{{.Excerpt}}</p>

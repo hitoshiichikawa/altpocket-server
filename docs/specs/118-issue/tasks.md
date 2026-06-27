@@ -5,7 +5,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
 以内に収まる粒度を意識した（マイグレーションは新規追加不要のため省略）。各タスクは独立 commit
 として完結できる。
 
-- [ ] 1. store 層: BulkDeleteItems / BulkAddItemTag / BulkTagResult 追加
+- [x] 1. store 層: BulkDeleteItems / BulkAddItemTag / BulkTagResult 追加
   - `internal/store/items_bulk.go` を新規作成:
     - **重要 / pgx v5 と PostgreSQL UUID 列の型整合**: 本タスクで追加する SQL は `items.id` /
       `item_tags.item_id` / `item_contents.item_id`（いずれも `UUID` 列、`migrations/001_init.sql`
@@ -68,7 +68,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Requirements_partial: 4.4, 4.5, 5.3, 5.4, 8.1, 8.2, 8.3_
   - _Boundary: Store_
 
-- [ ] 2. store 層 integration test: 認可・部分失敗・重複防止の実 DB 検証
+- [x] 2. store 層 integration test: 認可・部分失敗・重複防止の実 DB 検証
   - `internal/store/items_bulk_test.go` を新規作成（`//go:build integration` tag、既存
     `items_active_filters_integration_test.go` の `newIntegrationStore` / fixture seed パターンを
     踏襲）:
@@ -121,7 +121,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Store_
   - _Depends: 1_
 
-- [ ] 3. server 層: ハンドラ + ルート + ユニットテスト
+- [x] 3. server 層: ハンドラ + ルート + ユニットテスト
   - `internal/server/items_bulk.go` を新規作成:
     - 定数: `maxBulkItemsPerRequest = 100`（NFR 2.1 server enforcement boundary）+
       `maxBulkRequestBodyBytes = 16 * 1024`（JSON decode 前のバイト境界 / DoS 面遮断 /
@@ -324,7 +324,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Server_
   - _Depends: 1_
 
-- [ ] 4. server 層 integration test: 部分失敗レスポンス + 構造化ログの実 DB 検証
+- [x] 4. server 層 integration test: 部分失敗レスポンス + 構造化ログの実 DB 検証
   - `internal/server/items_bulk_integration_test.go` を新規作成（`//go:build integration` tag、
     既存 `items_active_filters_integration_test.go` の `newIntegrationServer` / seed パターンを
     踏襲）:
@@ -377,7 +377,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Server_
   - _Depends: 1, 3_
 
-- [ ] 5. SSR テンプレート: items_list のチェックボックス + items.html の選択ツールバー + タグ入力 dialog
+- [x] 5. SSR テンプレート: items_list のチェックボックス + items.html の選択ツールバー + タグ入力 dialog
   - `templates/items_list.html`:
     - 各 `<article class="tile item-card ...">` に **`data-item-id="{{.ID}}"` と
       `data-original-url="{{.URL}}"` の 2 属性** を追加（既存 `aria-labelledby` は維持）。
@@ -464,7 +464,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Templates_
   - _Depends: 3_
 
-- [ ] 6. static JS: items_bulk_selection.js（選択状態 + Shift範囲 + キーボード + リセット契機）
+- [x] 6. static JS: items_bulk_selection.js（選択状態 + Shift範囲 + キーボード + リセット契機）
   - `static/items_bulk_selection.js` を新規作成（既存 `items_active_filters.js` / `items_status.js`
     の IIFE + `init({document, window})` パターン、`vm.createContext` でテスト可能な構造を踏襲）:
     - **Progressive Enhancement enable**（NFR 3.5 / fragment 差替も追随 / design.md
@@ -694,7 +694,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Static_
   - _Depends: 5_
 
-- [ ] 7. static JS: items_bulk_actions.js（ツールバー → 一括削除 / 一括タグ付け → 部分失敗処理）
+- [x] 7. static JS: items_bulk_actions.js（ツールバー → 一括削除 / 一括タグ付け → 部分失敗処理）
   - `static/items_bulk_actions.js` を新規作成（既存 `items_status_actions.js` の `init({document,
     window, fetch, toast})` パターン、vm.createContext テスト可能な構造を踏襲）:
     - 起動時に `items_bulk_selection.js` の `init()` が公開する API を取得する経路を確保する。
@@ -1059,7 +1059,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Static_
   - _Depends: 5, 6_
 
-- [ ] 8. CSS: チェックボックス + 選択カード視覚区別 + 選択ツールバー + タグ入力 dialog
+- [x] 8. CSS: チェックボックス + 選択カード視覚区別 + 選択ツールバー + タグ入力 dialog
   - **既存 token のみを使用する**（round 4 review feedback: `--focus-ring` / `--bg-selected`
     / `--border-primary` / `--border-default` / `--font-size-base` は **本リポジトリの
     `static/style.css` に未定義** であるため使用不可）。本リポジトリで実在する token は以下

@@ -119,6 +119,11 @@
     };
   })();
 
+  // 他モジュール（items_bulk_actions.js 等）が同一の confirm UI を共有できるよう
+  // window 経由で公開する。本オブジェクトは show(title, description, onConfirm,
+  // actionLabel?, actionClass?) を持つ。
+  window.altpocketConfirm = confirm;
+
   /* =============================================
      Account Menu
      ============================================= */
@@ -349,6 +354,11 @@
     }
     return trimmed.toLowerCase();
   };
+
+  // 他モジュール（items_bulk_actions.js 等）が同一の NFKC + lowercase + trim
+  // 正規化規則を共有できるよう window 経由で公開する。空判定用途のため、戻り値が
+  // 空文字なら入力は空白のみ / 全角空白のみ等として扱う。
+  window.altpocketNormalizeTagName = normalizeTagName;
 
   /* =============================================
      Refetch / Delete Buttons (delegated click)
