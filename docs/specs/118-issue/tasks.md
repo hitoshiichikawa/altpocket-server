@@ -324,7 +324,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Server_
   - _Depends: 1_
 
-- [ ] 4. server 層 integration test: 部分失敗レスポンス + 構造化ログの実 DB 検証
+- [x] 4. server 層 integration test: 部分失敗レスポンス + 構造化ログの実 DB 検証
   - `internal/server/items_bulk_integration_test.go` を新規作成（`//go:build integration` tag、
     既存 `items_active_filters_integration_test.go` の `newIntegrationServer` / seed パターンを
     踏襲）:
