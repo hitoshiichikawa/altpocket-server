@@ -46,7 +46,7 @@
 {{end}}
 
 {{range .Items}}
-  <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" data-status="{{.Status}}" data-item-id="{{.ID}}" data-original-url="{{.URL}}" aria-labelledby="item-title-{{.ID}}">
+  <article class="tile item-card {{if eq .FetchStatus "failed"}}failed{{end}}" data-status="{{.Status}}" data-item-id="{{.ID}}" data-original-url="{{.URL}}" aria-labelledby="item-title-{{.ID}}" draggable="true" data-item-card>
     <input type="checkbox"
            class="item-select"
            data-item-select
@@ -80,6 +80,16 @@
 
     <div class="actions item-actions">
       <a class="btn-secondary action-button" href="{{.URL}}" target="_blank" rel="noopener noreferrer">Original</a>
+      {{/*
+        タッチ環境の代替手段 (Issue #120 / Req 4.1)。ドラッグ&ドロップが困難な
+        タッチデバイス向けに、このボタンでカードを「タグ付与モード」にし、
+        サイドバー / ボトムシートのタグ要素をタップして付与する。ドロップと同一の
+        assign 関数 (static/items_drag_tag.js) を共有する。hidden 属性で初期非表示に
+        しておき、JS がタッチ環境を検出したときだけ表示する (プログレッシブ
+        エンハンスメント / NFR 2.1: JS 無効環境では既存編集経路が維持される)。
+      */}}
+      <button type="button" class="btn-secondary card-tag-add" data-card-tag-add data-item-id="{{.ID}}"
+        aria-label="タグを付与: {{.Title}}" hidden>タグ付与</button>
       <button type="button" class="btn-secondary mark-read-toggle" data-item-id="{{.ID}}"
         data-current-status="{{.Status}}"
         aria-label="{{if eq .Status "unread"}}既読にする{{else}}未読に戻す{{end}}">{{if eq .Status "unread"}}Mark read{{else}}Mark unread{{end}}</button>

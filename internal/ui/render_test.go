@@ -689,3 +689,133 @@ func TestActiveFiltersFragmentRendering(t *testing.T) {
 		t.Errorf("expected fragment to include chip for go, got:\n%s", body)
 	}
 }
+
+// testSidebarTag mirrors store.Tag's template-visible fields for the sidebar
+// tag-list (`.Tags` range). The sidebar option template references .Name,
+// .NormalizedName and .Count, so the test row type must carry all three.
+type testSidebarTag struct {
+	Name           string
+	NormalizedName string
+	Count          int
+}
+
+// renderItemsWithSidebarTags renders the full `items` page with both a set of
+// item cards and a sidebar tag list, returning the HTML body. Used by the
+// Issue #120 drag-and-drop tagging tests which assert on the SSR contract that
+// the client JS (static/items_drag_tag.js) relies on.
+func renderItemsWithSidebarTags(t *testing.T, items []testItemRow, sidebarTags []testSidebarTag) string {
+	t.Helper()
+	r, err := New("../../templates")
+	if err != nil {
+		t.Fatalf("failed to create renderer: %v", err)
+	}
+	data := map[string]interface{}{
+		"Title":           "記事一覧",
+		"Items":           items,
+		"Tags":            sidebarTags,
+		"SelectedTags":    map[string]bool{},
+		"Page":            1,
+		"PerPage":         30,
+		"Total":           len(items),
+		"TotalPages":      1,
+		"Query":           "",
+		"Sort":            "newest",
+		"PerPageOptions":  []int{10, 20, 30, 40, 50},
+		"PrevURL":         "",
+		"NextURL":         "",
+		"StatusTab":       "unread",
+		"StatusTabURLs":   testStatusTabURLs(),
+		"StatusQuery":     "",
+		"ClearFiltersURL": "/ui/items",
+	}
+	rr := httptest.NewRecorder()
+	if err := r.Render(rr, "items", data); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	return rr.Body.String()
+}
+
+// TestDragTagSSRContract は Issue #120 のドラッグ&ドロップ・タグ付与が依拠する
+// SSR 契約を担保する。client JS (static/items_drag_tag.js) は以下の DOM 契約に
+// 依拠してドラッグ元 / ドロップ先 / タッチ代替手段を解決する:
+//
+//   - 各カードが draggable="true" でドラッグ可能 (Req 1.1)
+//   - 各カードがアイテム ID を JS から読めるよう data-item-id を持つ (Req 1.3 / 2.1)
+//   - 各カードにタッチ代替手段のトリガ button[data-card-tag-add] がある (Req 4.1)
+//   - サイドバー / ボトムシートのタグ要素がドロップ先として
+//     data-tag-drop-target + data-tag-name (display) + data-tag-normalized を持つ
+//     (Req 1.2 / 3.4 / 3.5)
+//   - 専用スクリプト items_drag_tag.js が読み込まれる
+func TestDragTagSSRContract(t *testing.T) {
+	now := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+
+	body := renderItemsWithSidebarTags(t,
+		[]testItemRow{{
+			ID:          "item-drag",
+			URL:         "https://example.com/a",
+			Title:       "ドラッグ記事",
+			Excerpt:     "本文抜粋",
+			FetchStatus: "completed",
+			Status:      "unread",
+			CreatedAt:   now,
+			Tags:        []testItemTag{{Name: "Go", NormalizedName: "go"}},
+		}},
+		[]testSidebarTag{
+			{Name: "Go", NormalizedName: "go", Count: 3},
+			{Name: "Rust 言語", NormalizedName: "rust 言語", Count: 1},
+		},
+	)
+
+	t.Run("Req 1.1: カードが draggable=true でドラッグ可能", func(t *testing.T) {
+		if !strings.Contains(body, `draggable="true"`) {
+			t.Errorf("expected item card to be draggable, got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 1.3 / 2.1: カードがアイテム ID を data-item-id で公開", func(t *testing.T) {
+		if !strings.Contains(body, `data-item-id="item-drag"`) {
+			t.Errorf("expected card to expose data-item-id, got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 4.1: カードにタッチ代替手段のトリガ button[data-card-tag-add] がある", func(t *testing.T) {
+		if !strings.Contains(body, `data-card-tag-add`) {
+			t.Errorf("expected card to carry a touch tag-add trigger, got:\n%s", body)
+		}
+		// 代替手段はカードのアイテム ID を JS に渡せる必要がある。
+		if !strings.Contains(body, `data-card-tag-add data-item-id="item-drag"`) &&
+			!strings.Contains(body, `data-item-id="item-drag" data-card-tag-add`) {
+			t.Errorf("expected touch trigger to carry data-item-id, got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 1.2 / 3.4: サイドバーのタグ要素がドロップ先 + data-tag-name / data-tag-normalized を持つ", func(t *testing.T) {
+		// ドロップ先マーカー。サイドバー + ボトムシートで重複描画されるため 2 件以上。
+		if c := strings.Count(body, `data-tag-drop-target`); c < 2 {
+			t.Errorf("expected at least 2 drop-target markers (sidebar + sheet), got %d:\n%s", c, body)
+		}
+		// display name (Req 4.2: テキストラベルで識別可能 / 色のみに依存しない)
+		if !strings.Contains(body, `data-tag-name="Go"`) {
+			t.Errorf("expected drop target to carry display name, got:\n%s", body)
+		}
+		// normalized name は API に送る正規化値の source となる。
+		if !strings.Contains(body, `data-tag-normalized="go"`) {
+			t.Errorf("expected drop target to carry normalized name, got:\n%s", body)
+		}
+	})
+
+	t.Run("Req 3.5: 表示名にスペースを含むタグでも display / normalized 双方が描画される", func(t *testing.T) {
+		if !strings.Contains(body, `data-tag-name="Rust 言語"`) {
+			t.Errorf("expected drop target display name with space, got:\n%s", body)
+		}
+		if !strings.Contains(body, `data-tag-normalized="rust 言語"`) {
+			t.Errorf("expected drop target normalized name with space, got:\n%s", body)
+		}
+	})
+
+	t.Run("専用スクリプト items_drag_tag.js が読み込まれる", func(t *testing.T) {
+		if !strings.Contains(body, `/static/items_drag_tag.js`) {
+			t.Errorf("expected items_drag_tag.js to be included, got:\n%s", body)
+		}
+	})
+}
