@@ -2917,12 +2917,18 @@ a, button, input, select, textarea, label {
   box-shadow: inset 0 0 0 2px var(--color-primary);
 }
 
-/* --- Bulk Toolbar (画面下に sticky 固定) ---
+/* --- Bulk Toolbar (画面下に fixed 固定) ---
    role="region" + aria-label="一括操作" を持つ <div>。SSR では
    hidden 属性付きで出力され、JS 側 (items_bulk_selection.js) が選択
-   1 件以上で hidden を removeAttribute する。 */
+   1 件以上で hidden を removeAttribute する。
+
+   配置は `position: fixed; bottom: 0` で viewport 下端に常時固定する
+   （Req 3.1「選択中は画面上に表示」/ Req 3.5「スクロール中も到達可能」）。
+   sticky 配置だと toolbar が `.split` の後ろの通常フロー位置（一覧末尾）
+   までスクロールしないと viewport に現れないため、一覧上部で選択した直後に
+   toolbar が見えない事故が起きる。 */
 .bulk-toolbar {
-  position: sticky;
+  position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
@@ -2940,6 +2946,14 @@ a, button, input, select, textarea, label {
 /* hidden 属性付きの間は確実に非表示。display: flex 上書きを抑止する。 */
 .bulk-toolbar[hidden] {
   display: none;
+}
+
+/* 選択中は toolbar が viewport 下端を占有するため、最後のアイテムが
+   toolbar の陰に隠れないよう本体側に余白を確保する。JS が hidden を
+   外したカード（[data-bulk-active]）が DOM に出現したときだけ、
+   body 側に padding-bottom を追加する。 */
+body:has(.bulk-toolbar:not([hidden])) {
+  padding-bottom: calc(var(--space-4) * 3);
 }
 
 .bulk-toolbar-count {
