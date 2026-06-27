@@ -464,7 +464,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Templates_
   - _Depends: 3_
 
-- [ ] 6. static JS: items_bulk_selection.js（選択状態 + Shift範囲 + キーボード + リセット契機）
+- [x] 6. static JS: items_bulk_selection.js（選択状態 + Shift範囲 + キーボード + リセット契機）
   - `static/items_bulk_selection.js` を新規作成（既存 `items_active_filters.js` / `items_status.js`
     の IIFE + `init({document, window})` パターン、`vm.createContext` でテスト可能な構造を踏襲）:
     - **Progressive Enhancement enable**（NFR 3.5 / fragment 差替も追随 / design.md
