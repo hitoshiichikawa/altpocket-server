@@ -1,3 +1,9 @@
+---
+paths:
+  - ".claude/rules/issue-dependency.md"
+---
+<!-- 条件ロード（#327）: 上記 paths に触れるセッションにのみ自動付与される。frontmatter を削除すると全コンテキスト常時ロードに戻るため注意。 -->
+
 # Issue 間依存関係ガイド
 
 idd-claude では tasks.md 内のタスク間依存（`_Depends:_`）は

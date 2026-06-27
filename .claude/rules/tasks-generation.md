@@ -1,3 +1,10 @@
+---
+paths:
+  - "docs/specs/**/tasks.md"
+  - "docs/specs/**/design.md"
+---
+<!-- 条件ロード（#327）: 上記 paths に触れるセッションにのみ自動付与される。frontmatter を削除すると全コンテキスト常時ロードに戻るため注意。 -->
+
 <!-- SPDX-License-Identifier: MIT -->
 <!-- Adapted from cc-sdd (https://github.com/gotalab/cc-sdd), MIT License, Copyright (c) gotalab -->
 
@@ -357,6 +364,61 @@ enforcement は一切影響を受けません。
 npm test && npm run lint && npm run build
 ```
 ```
+
+### パス存在前提（存在しないパスへの diff を含めない / #364）
+
+verify ブロックに記述する **すべてのコマンド対象パスは、`tasks.md` commit 時点の作業ツリーに
+存在すること**を必須要件とします。存在しないパスを `diff` / `cat` / `shellcheck` 等に渡すと、
+watcher が REPO_DIR で独立再実行したときに「コード品質失敗」と区別の付かない非 0 exit を返し、
+clean な実装でも Stage A が false-fail して `claude-failed` まで escalate する事故が起きます
+（#364 = idd-codex 由来 #14 と同根の事象 / #362 で実害）。本制約は **構造化 verify ブロック**
+（`<!-- stage-a-verify -->` + 直後 fence）と、構造化ブロックを持たない場合の **ヒューリスティック
+抽出**（行頭 keyword 一致）の双方に等しく適用されます（同じ「watcher が `bash -c` に渡す
+コマンド」という入力面を共有しているため）。
+
+#### idd-claude 特有の注意: `local-watcher/` は `repo-template/` 配下にミラーされない
+
+idd-claude self-hosting 環境では、`local-watcher/bin/*.sh` / `local-watcher/bin/modules/*.sh` は
+`install.sh` 経由でユーザーホーム（`$HOME/bin/`）へ配布する構造を取っており、
+**`repo-template/local-watcher/` というパスは存在しません**（`install.sh` の配置先と
+`repo-template/` の配置先が別系統）。そのため、idd-claude の `tasks.md` に
+`diff -r local-watcher/bin repo-template/local-watcher/bin` 等の「`repo-template/local-watcher/`
+配下を比較対象にする」コマンドを verify に含めると、`diff` は exit=2 + stderr に
+`No such file or directory` を返し verify が false-fail します。当該パターンの
+コマンドは verify に **含めてはなりません**。
+
+#### idd-claude における root ↔ repo-template 同期 diff の canonical 対象
+
+idd-claude では root と `repo-template/` 配下が byte 一致で同期される対象は **`.claude/agents` と
+`.claude/rules` の 2 系統のみ**です（CLAUDE.md「機能追加ガイドライン §4」の規約と整合）。
+したがって idd-claude self-hosting で verify に置く同期 diff の canonical 形は以下に限定されます:
+
+```sh
+diff -r .claude/agents repo-template/.claude/agents
+diff -r .claude/rules repo-template/.claude/rules
+```
+
+`workflow` / `labels` script / `CLAUDE.md` / `README.md` 等は **byte 一致対象外**（consumer 固有 /
+別 PR で個別同期 / 構造的にミラーされない）であり、これらの `diff -r` を verify に含めても
+意味のある検証にはなりません。
+
+#### 存在の不確定なディレクトリへの diff には存在ガードを置く
+
+他リポジトリの `tasks.md` で「2 つのディレクトリのうち一方が cleanup PR 等で消える可能性がある」
+ような不確定パスを参照する必要がある場合、**`[ -d <path> ] && diff -r ...` 形のパス存在ガード**を
+置く書式を canonical とします（パス不在を WARN 降格の対象ではなく **無音 skip** として扱える
+ため、verify 全体の意図が明確になります）:
+
+```sh
+[ -d packages/old-module ] && [ -d packages/new-module ] && \
+  diff -r packages/old-module packages/new-module
+```
+
+`stage-a-verify` 側にも「`diff` の exit=2 + `No such file or directory`」は WARN 降格として
+扱う defense-in-depth（#364 Req 2）が入っていますが、これは **Architect 側のミス（存在しない
+パスを verify に含めた）を実害化させないための救済ネット**であり、Architect は本節の制約で
+そもそもパス不在を含めない責務を負います。WARN 降格に依存せず、verify 時点で確実に存在する
+パスのみを書くこと。
 
 ### verify 対象が無い spec はブロックを省略できる
 

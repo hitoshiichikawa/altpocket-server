@@ -1,3 +1,9 @@
+---
+paths:
+  - ".claude/rules/feature-flag.md"
+---
+<!-- 条件ロード（#327）: 上記 paths に触れるセッションにのみ自動付与される。frontmatter を削除すると全コンテキスト常時ロードに戻るため注意。 -->
+
 # Feature Flag Protocol（規約詳細）
 
 > **このファイルは opt-in 宣言したプロジェクトでのみエージェントが Read します。**
