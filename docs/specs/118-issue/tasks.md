@@ -121,7 +121,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Store_
   - _Depends: 1_
 
-- [ ] 3. server 層: ハンドラ + ルート + ユニットテスト
+- [x] 3. server 層: ハンドラ + ルート + ユニットテスト
   - `internal/server/items_bulk.go` を新規作成:
     - 定数: `maxBulkItemsPerRequest = 100`（NFR 2.1 server enforcement boundary）+
       `maxBulkRequestBodyBytes = 16 * 1024`（JSON decode 前のバイト境界 / DoS 面遮断 /
