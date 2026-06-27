@@ -68,7 +68,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Requirements_partial: 4.4, 4.5, 5.3, 5.4, 8.1, 8.2, 8.3_
   - _Boundary: Store_
 
-- [ ] 2. store 層 integration test: 認可・部分失敗・重複防止の実 DB 検証
+- [x] 2. store 層 integration test: 認可・部分失敗・重複防止の実 DB 検証
   - `internal/store/items_bulk_test.go` を新規作成（`//go:build integration` tag、既存
     `items_active_filters_integration_test.go` の `newIntegrationStore` / fixture seed パターンを
     踏襲）:
