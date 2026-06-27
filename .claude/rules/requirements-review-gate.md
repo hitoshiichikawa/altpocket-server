@@ -1,3 +1,9 @@
+---
+paths:
+  - "docs/specs/**/requirements.md"
+---
+<!-- 条件ロード（#327）: 上記 paths に触れるセッションにのみ自動付与される。frontmatter を削除すると全コンテキスト常時ロードに戻るため注意。 -->
+
 <!-- SPDX-License-Identifier: MIT -->
 <!-- Adapted from cc-sdd (https://github.com/gotalab/cc-sdd), MIT License, Copyright (c) gotalab -->
 
