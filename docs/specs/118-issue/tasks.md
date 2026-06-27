@@ -1059,7 +1059,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Static_
   - _Depends: 5, 6_
 
-- [ ] 8. CSS: チェックボックス + 選択カード視覚区別 + 選択ツールバー + タグ入力 dialog
+- [x] 8. CSS: チェックボックス + 選択カード視覚区別 + 選択ツールバー + タグ入力 dialog
   - **既存 token のみを使用する**（round 4 review feedback: `--focus-ring` / `--bg-selected`
     / `--border-primary` / `--border-default` / `--font-size-base` は **本リポジトリの
     `static/style.css` に未定義** であるため使用不可）。本リポジトリで実在する token は以下
