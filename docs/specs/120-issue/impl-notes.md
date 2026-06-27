@@ -32,8 +32,9 @@
   し、`computeActiveNormalizedNames()` を移植して URL から `is-selected`/`aria-pressed` を算出。
   bulk-tag には display 名（`data-tag-name`）を送信。fragment 再描画は `MutationObserver` で
   trigger 再表示、付与中は `.is-tagging`/`aria-busy` を同期付与。
-- `static/items_drag_tag.test.mjs` — 単体テスト 22 件（fake DOM + fetch stub + fake
-  MutationObserver）。
+- `static/items_drag_tag.test.mjs` — 単体テスト 26 件（fake DOM + fetch stub + fake
+  MutationObserver）。round 2 で 22→26（Filters ボタン経由のタッチ付与 / 無関係 tap での
+  モード解除 / 連続付与時の stale レスポンス上書き防止 / 外部テキスト drop の弾き）。
 - `static/style.css` — DnD/tagging の視覚状態 CSS。
 - `internal/ui/render_test.go` — SSR 契約を担保する `TestDragTagSSRContract`。
 
@@ -76,9 +77,11 @@
 ## 検証コマンドと結果
 
 - `go test ./...` — 全 PASS（`internal/ui` に `TestDragTagSSRContract` 追加）
-- `node --test static/*.test.mjs` — 185 pass / 0 fail（baseline 163 + drag-tag 22。PR #143
-  iteration round 1 で 14→22 に増やした: display 名送信 / #117 選択状態維持 / fragment 再描画
-  での touch trigger 再表示 / busy 同期フィードバック / 非 200 (401/403/500) 分岐の直接検証）
+- `node --test static/*.test.mjs` — 189 pass / 0 fail（baseline 163 + drag-tag 26。PR #143
+  iteration round 1 で 14→22: display 名送信 / #117 選択状態維持 / fragment 再描画での touch
+  trigger 再表示 / busy 同期フィードバック / 非 200 (401/403/500) 分岐の直接検証。round 2 で
+  22→26: Filters ボタン経由のタッチ付与 / 無関係 tap でのモード解除 / 連続付与時の stale
+  レスポンス上書き防止 / 外部テキスト drop の弾き。いずれも修正前に fail することを確認済み）
 - `node --test extension/sidepanel.test.mjs` — 30 pass / 0 fail（拡張機能非回帰）
 - `golangci-lint run` — 0 issues
 - `go build ./...` — OK
@@ -101,5 +104,35 @@
    spec（requirements.md / design.md / tasks.md）の追加・書き換えは行っていない。
    design.md/tasks.md の生成は Architect（設計 PR ゲート）の責務であり、実装 PR で
    混在させない方針（CLAUDE.md「1 PR = design or impl」）。
+
+## PR #143 iteration round 2 で対応したレビュー指摘
+
+1. **[high] タッチ代替がモバイル実 UI でタグ一覧に到達できない**（`items_drag_tag.js` の
+   onClick 解除）: モバイルではタグ一覧がボトムシート内にあり、ユーザーは trigger tap →
+   Filters ボタン（`[data-sheet-toggle]`）tap でシートを開く → タグ tap の順で操作する。
+   従来は中間の Filters ボタン tap で `exitTaggingMode()` され `pendingTouchItemId` が消えて
+   いた。`shouldPreserveTaggingMode()` を追加し、シート開閉トグル / `.sheet-overlay` /
+   `.sidebar` / `.tag-list` 内の tap ではモードを維持、無関係 tap でのみ解除するよう変更
+   （Req 4.1 / 4.2）。回帰防止に「Filters ボタン経由のタッチ付与」「無関係 tap での解除」の
+   2 テストを追加。
+2. **[medium] 連続付与時の stale レスポンス上書き**（`assignTag`）: 同一カードへ複数タグを
+   短時間にドロップすると複数 `assignTag` が in-flight になり、古いレスポンスが後着すると
+   `succeeded[0].tags` の部分集合で chip 列を巻き戻し、永続化済みの別タグを UI 上から消して
+   いた。item ごとの単調増加世代（`tagAssignGenerations`）を導入し、最新世代のレスポンスで
+   のみ chip 再構築 / busy 解除を行うよう変更（Req 1.4 / NFR 3.2）。bulk-tag は additive で
+   サーバ永続化は壊れないため、UI 巻き戻しのみの修正。回帰防止テストを追加。
+3. **[low] 外部テキスト drop / セレクタ汚染**（`onDrop` / `findCardByID`）: `findCardByID` を
+   動的属性セレクタ組み立てから `[data-item-card]` の線形探索に変更し、引用符等を含む値で
+   `querySelector` が SyntaxError を投げる経路を排除。さらに onDrop で region 内の実在カードに
+   紐づく id のときだけ付与に進めるよう gate を追加（カード以外の外部テキストを弾く）。
+   回帰防止テストを追加。
+4. **[medium] タッチ代替テストが実モバイル経路を通っていない**: 上記 1 の修正に合わせ、
+   trigger → Filters ボタン → タグ tap の実経路テストを追加（修正前 fail を確認）。
+5. **[medium] design.md / tasks.md 不在による追跡不能**: 本 Issue は needs_architect:false で
+   triage され design.md/tasks.md が未生成。本 PR は実装 PR のため spec の追加・書き換えは
+   workflow 規約（CLAUDE.md「1 PR = design or impl」「Developer は実装 PR で
+   requirements/design/tasks を書き換えない」）により行わない。requirements⇄実装の追跡は
+   本 impl-notes の「AC ↔ テスト対応表」が担う。design/tasks の追跡が必要なら別途
+   needs_architect:true での設計 PR ゲートを推奨（返信で提起）。
 
 STATUS: complete

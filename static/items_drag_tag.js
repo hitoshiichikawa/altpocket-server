@@ -175,10 +175,21 @@
       }
     }
 
+    // region 内の実在カードを data-item-id 一致で線形探索する。動的な属性セレクタを
+    // 組み立てないことで、外部ドラッグの text/plain（引用符等を含む任意文字列）が
+    // CSS セレクタ文字列に混入して querySelector が SyntaxError を投げ、未処理の
+    // rejected promise になるのを防ぐ。未知 id（外部テキスト drop 等）には null を返す。
     function findCardByID(id) {
       if (id == null || id === '') return null;
-      const sel = 'article[data-item-id="' + String(id) + '"]';
-      return region.querySelector ? region.querySelector(sel) : null;
+      const wanted = String(id);
+      const cards = region.querySelectorAll ? region.querySelectorAll('[data-item-card]') : [];
+      for (let i = 0; i < cards.length; i += 1) {
+        const c = cards[i];
+        const cid = c.dataset ? c.dataset.itemId
+          : (c.getAttribute ? c.getAttribute('data-item-id') : '');
+        if (String(cid) === wanted) return c;
+      }
+      return null;
     }
 
     // --- core: assignTag ---------------------------------------------------
@@ -199,6 +210,14 @@
       }
     }
 
+    // item ごとの「最新付与世代」。同一カードへ複数タグを短時間に連続ドロップ /
+    // タップすると複数の assignTag が同時に in-flight になる。bulk-tag は additive
+    // なので新しい付与のレスポンスほど多くのタグ集合を返すが、古いレスポンスが後着
+    // すると stale な部分集合で chip 列を巻き戻し、既に永続化済みの別タグを UI 上から
+    // 消してしまう。各 assignTag に単調増加の世代番号を割り当て、最新世代のレスポンス
+    // でのみ chip 再構築 / busy 解除を行うことで競合時の上書きを防ぐ (Req 1.4 / NFR 3.2)。
+    const tagAssignGenerations = new Map();
+
     // 単一アイテムに単一タグを付与する。ドロップ経路 / タッチ代替経路の双方が
     // 共有する（Req 4.2 の挙動同一性）。tagName は display 名（SSR の data-tag-name）
     // を送る。bulk-tag は受け取った文字列を display 名として保持しつつ server 側で
@@ -207,6 +226,11 @@
     // display 名保持契約）。
     async function assignTag(itemId, tagName) {
       if (!itemId || !tagName) return;
+
+      // この付与の世代を確定し、自分が最新世代か判定するクロージャを作る。
+      const generation = (tagAssignGenerations.get(itemId) || 0) + 1;
+      tagAssignGenerations.set(itemId, generation);
+      const isLatestAssign = () => tagAssignGenerations.get(itemId) === generation;
 
       // fetch 前に同期的に busy 状態を付与する (NFR 3.1)。chip 再描画時に
       // detail.item_id 経由で再解決するが、busy は drag 元カードに付ければ十分。
@@ -222,8 +246,9 @@
           body: JSON.stringify({ item_ids: [itemId], tag: tagName }),
         });
       } catch {
-        // network 失敗 → カード表示を変えず通知 (Req 5.1 / 5.2)。
-        setCardBusy(busyCard, false);
+        // network 失敗 → カード表示を変えず通知 (Req 5.1 / 5.2)。busy 解除は最新
+        // 世代でのみ行い、後続のより新しい付与が in-flight なら busy を残す。
+        if (isLatestAssign()) setCardBusy(busyCard, false);
         toast.error('タグの付与に失敗しました');
         return;
       }
@@ -239,18 +264,22 @@
         // server が当該アイテムを failed に入れた（所有していない / セッション失効 /
         // 存在しない等）場合は、カード表示を変えず通知する (Req 5.5 / 5.3 / 5.4)。
         if (failed.length > 0 || succeeded.length === 0) {
-          setCardBusy(busyCard, false);
+          if (isLatestAssign()) setCardBusy(busyCard, false);
           toast.error('タグの付与に失敗しました');
           return;
         }
 
         // succeeded[0] の付与後タグ集合で chip を再構築する (Req 1.4 / 2.2)。
         // 絞り込み中タグの選択状態は URL から算出して維持する（#117 非回帰）。
-        const detail = succeeded[0] || {};
-        const card = findCardByID(detail.item_id || itemId);
-        const tags = Array.isArray(detail.tags) ? detail.tags : [];
-        rebuildChipsForCard(card, tags, computeActiveNormalizedNames());
-        setCardBusy(card || busyCard, false);
+        // ただし stale なレスポンス（既により新しい付与が走った）では chip を
+        // 上書きしない。古い部分集合で最新付与のタグを消さないため (NFR 3.2)。
+        if (isLatestAssign()) {
+          const detail = succeeded[0] || {};
+          const card = findCardByID(detail.item_id || itemId);
+          const tags = Array.isArray(detail.tags) ? detail.tags : [];
+          rebuildChipsForCard(card, tags, computeActiveNormalizedNames());
+          setCardBusy(card || busyCard, false);
+        }
         toast.success('タグを付与しました');
         return;
       }
@@ -258,7 +287,7 @@
       // 4xx / 5xx（401/403 セッション失効・認可エラー / 500 等）→ カード表示を
       // 変えず通知 (Req 5.1 / 5.2 / 5.3)。invalid_tag（空タグ等）は SSR の
       // data-tag-name 経由では起き得ないが、念のため失敗として通知する。
-      setCardBusy(busyCard, false);
+      if (isLatestAssign()) setCardBusy(busyCard, false);
       toast.error('タグの付与に失敗しました');
     }
 
@@ -342,6 +371,10 @@
 
       clearDragVisuals();
       if (!itemId || !tagName) return;
+      // dataTransfer の text/plain は外部アプリ由来のドラッグでも任意文字列が入りうる。
+      // region 内の実在カードに紐づく id のときだけ付与に進み、カード以外の外部
+      // テキストを誤って bulk-tag へ送らない (Req 1.5 の対象外ドロップ no-op の延長)。
+      if (!findCardByID(itemId)) return;
       void assignTag(itemId, tagName);
     }
 
@@ -400,6 +433,22 @@
       }
     }
 
+    // tagging モード中にタグ以外を tap したとき、モードを維持すべき対象か判定する。
+    // モバイルではタグ一覧がボトムシート内にあり、ユーザーは trigger tap のあと
+    // Filters ボタン (`[data-sheet-toggle]`) を tap してシートを開いてからタグを tap
+    // する。この中間 tap でモードが解除されると、続くタグ tap が付与に至らず
+    // Req 4.1 / 4.2 を満たせない。シート開閉トグル・シート/サイドバーのフィルタ UI
+    // 内の tap ではモードを維持し、それ以外の無関係 tap でのみ解除する（誤付与防止）。
+    function shouldPreserveTaggingMode(el) {
+      if (!el || typeof el.closest !== 'function') return false;
+      return !!(
+        el.closest('[data-sheet-toggle]') ||
+        el.closest('.sheet-overlay') ||
+        el.closest('.sidebar') ||
+        el.closest('.tag-list')
+      );
+    }
+
     // click delegated handler。タッチ代替手段の 2 段階操作だけを扱い、通常 click
     // （絞り込みトグル等）は触らない (NFR 2.2〜2.4)。
     function onClick(e) {
@@ -436,9 +485,11 @@
           if (itemId && tagName) void assignTag(itemId, tagName);
           return;
         }
-        // モード中にタグ以外をタップ → モード解除（誤付与防止 / Req 4.3）。
-        // ただしトリガ自身は上で処理済みなのでここには来ない。
-        exitTaggingMode();
+        // モード中にタグ以外をタップ → 原則モード解除（誤付与防止）。ただし、
+        // モバイルでタグ一覧に到達するための中間 tap（Filters ボタンでシートを開く /
+        // シート・サイドバーのフィルタ UI 内の操作）ではモードを維持する (Req 4.1/4.2)。
+        // トリガ自身は上で処理済みなのでここには来ない。
+        if (!shouldPreserveTaggingMode(target)) exitTaggingMode();
       }
     }
 

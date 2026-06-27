@@ -627,6 +627,122 @@ test('Req 4.2 / 4.3: タッチ代替手段（trigger→タグ tap）でドロッ
   assert.ok(chip, 'タッチ代替でも chip が再描画される');
 });
 
+test('Req 4.1 / 4.2: タッチ代替手段で Filters ボタン（ボトムシート開閉）を経由してもタグ付与できる', async () => {
+  // モバイルではタグ一覧がボトムシート内にあり、ユーザーは trigger tap のあと
+  // Filters ボタン (data-sheet-toggle) を tap してシートを開いてからタグを tap する。
+  // この中間 tap で tagging モードが解除されると付与できない（高リスク指摘 #143）。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    pointerCoarse: true,
+    fetchHandlers: [jsonResponse(200, {
+      succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+      failed: [],
+    })],
+  });
+  // Filters ボタン（ボトムシート開閉トグル）を模した要素。実 UI では data-sheet-toggle
+  // を持つ非タグ要素で、これを tap してからタグ一覧へ到達する。
+  const sheetToggle = new FakeElement('button', { 'data-sheet-toggle': 'filter-sheet' });
+
+  // 1) trigger を tap して tagging モードへ
+  await env.click(env.tagAddEl(0));
+  // 2) Filters ボタンを tap してシートを開く（中間操作 / モードを解除してはいけない）
+  await env.click(sheetToggle);
+  // 3) シート内のタグを tap → 付与される
+  await env.click(env.dropEl(0));
+  await flushMicrotasks();
+
+  assert.equal(env.fetchCalls.length, 1, 'Filters ボタンを経由してもタグ付与が実行される');
+  assert.equal(env.fetchCalls[0].url, '/v1/items/bulk-tag', '既存エンドポイントを使う');
+  const body = JSON.parse(env.fetchCalls[0].options.body);
+  assert.deepEqual(body.item_ids, ['id-1'], '対象カードの item_id を送る');
+  assert.equal(body.tag, 'Go', 'タップしたタグの display 名を送る');
+});
+
+test('Req 4.3: tagging モード中に無関係な要素を tap するとモードを解除する（誤付与防止）', async () => {
+  // シート開閉トグルやフィルタ UI 以外の無関係 tap では従来どおりモードを解除し、
+  // その後のタグ tap が誤って付与に至らないこと。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    pointerCoarse: true,
+    fetchHandlers: [],
+  });
+  // フィルタ UI と無関係な要素（例: 本文リンク領域）
+  const unrelated = new FakeElement('a', { class: 'tile-link' });
+
+  await env.click(env.tagAddEl(0)); // tagging モードへ
+  await env.click(unrelated);       // 無関係 tap → モード解除
+  await env.click(env.dropEl(0));   // モード外のタグ tap → 付与しない
+  await flushMicrotasks();
+
+  assert.equal(env.fetchCalls.length, 0, '無関係 tap でモード解除後はタグ tap で付与しない');
+});
+
+test('Req 1.4 / NFR 3.2: 同一カードへ連続付与時、古いレスポンスが後着しても新しい付与の chip を上書きしない', async () => {
+  // go をドロップ（レスポンス保留）→ 続けて rust をドロップ（即時に {go, rust}）。
+  // その後 go の古いレスポンス（{go} のみ）が後着しても、chip 列を {go} に巻き戻さず
+  // rust を保持する（競合時の成功反映が壊れないこと / medium 指摘 #143）。
+  let resolveFirst;
+  const pendingFirst = new Promise((r) => { resolveFirst = r; });
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }, { name: 'Rust', normalized: 'rust' }],
+    fetchHandlers: [
+      () => pendingFirst, // 1 回目（go）— 後で解決
+      jsonResponse(200, { // 2 回目（rust）— 即時に付与後集合 {go, rust} を返す
+        succeeded: [{ item_id: 'id-1', tags: [
+          { name: 'Go', normalized_name: 'go' },
+          { name: 'Rust', normalized_name: 'rust' },
+        ] }],
+        failed: [],
+      }),
+    ],
+  });
+  const dt = makeDataTransfer();
+
+  // 1 回目: go（レスポンス保留）
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+  // 2 回目: rust（即時 {go, rust}）
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(1), dt);
+  await flushMicrotasks();
+
+  // この時点で最新付与のレスポンスにより chip は {go, rust}
+  let tagsDiv = env.cardEl(0).querySelector('.tags');
+  assert.ok(tagsDiv.querySelector('[data-tag-normalized="go"]'), '最新付与後に go chip がある');
+  assert.ok(tagsDiv.querySelector('[data-tag-normalized="rust"]'), '最新付与後に rust chip がある');
+
+  // 古い go レスポンス（{go} のみ）が後着
+  resolveFirst(jsonResponse(200, {
+    succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+    failed: [],
+  }));
+  await flushMicrotasks();
+
+  // stale なレスポンスでは chip を上書きしない → rust が残る
+  tagsDiv = env.cardEl(0).querySelector('.tags');
+  assert.ok(tagsDiv.querySelector('[data-tag-normalized="rust"]'), '古いレスポンス後着でも rust chip が残る');
+  assert.ok(tagsDiv.querySelector('[data-tag-normalized="go"]'), 'go chip も残る');
+});
+
+test('外部テキストをタグ要素にドロップしても付与しない（不明 item id を弾く）', async () => {
+  // dataTransfer の text/plain にカード由来でない任意文字列（外部ドラッグ）が入った
+  // 場合、region に実在しない id なので bulk-tag を呼ばない（low 指摘 #143）。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    fetchHandlers: [],
+  });
+  const dt = makeDataTransfer();
+  // dragstart を経由せず、外部由来のテキストを直接 dataTransfer に載せる
+  dt.setData('text/plain', 'not-a-card"]');
+  await env.drop(env.dropEl(0), dt);
+  await flushMicrotasks();
+  assert.equal(env.fetchCalls.length, 0, '不明 id（外部テキスト）のドロップでは付与しない');
+});
+
 test('Req 4.3 / 4.2: tagging モード中でないタグ tap は付与しない（モード解除後の誤発火防止）', async () => {
   const env = loadModule({
     cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
