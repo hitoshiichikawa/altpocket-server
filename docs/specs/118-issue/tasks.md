@@ -377,7 +377,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
   - _Boundary: Server_
   - _Depends: 1, 3_
 
-- [ ] 5. SSR テンプレート: items_list のチェックボックス + items.html の選択ツールバー + タグ入力 dialog
+- [x] 5. SSR テンプレート: items_list のチェックボックス + items.html の選択ツールバー + タグ入力 dialog
   - `templates/items_list.html`:
     - 各 `<article class="tile item-card ...">` に **`data-item-id="{{.ID}}"` と
       `data-original-url="{{.URL}}"` の 2 属性** を追加（既存 `aria-labelledby` は維持）。
