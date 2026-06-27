@@ -88,11 +88,54 @@
       return h;
     }
 
+    // --- active タグフィルタ Set の算出（#117 絞り込み状態の非回帰 / NFR 2.2） ----
+
+    // タグの空判定 / 比較で使う fallback normalize（items_bulk_actions.js と同一規約）。
+    // window.altpocketNormalizeTagName が無い場合の fallback。NFKC + lowercase + trim の
+    // sequence は app.js / server 側 tag.Normalize と一致する。
+    function fallbackNormalize(value) {
+      const trimmed = (value || '').trim();
+      if (!trimmed) return '';
+      if (typeof trimmed.normalize === 'function') {
+        return trimmed.normalize('NFKC').toLowerCase();
+      }
+      return trimmed.toLowerCase();
+    }
+
+    // canonical `?tag=` repetition + legacy `?tags=csv` の両形式を見て、active な
+    // タグの normalized name の Set を返す（items_bulk_actions.js と同一規約）。chip
+    // 再構築時に 1 回だけ算出し、絞り込み中タグへ再ドロップしても SSR と同じ
+    // is-selected / aria-pressed 状態を維持する（#117 非回帰 / NFR 2.2）。
+    function computeActiveNormalizedNames() {
+      const set = new Set();
+      const href = (win && win.location && win.location.href) ? win.location.href : '';
+      let params;
+      try {
+        params = new URL(href).searchParams;
+      } catch {
+        params = null;
+      }
+      if (!params) return set;
+      const tagAll = (typeof params.getAll === 'function') ? params.getAll('tag') : [];
+      const tagsCSV = (typeof params.get === 'function') ? (params.get('tags') || '') : '';
+      const csvParts = tagsCSV ? tagsCSV.split(',') : [];
+      const raw = tagAll.concat(csvParts);
+      const norm = (win && win.altpocketNormalizeTagName) || fallbackNormalize;
+      for (let i = 0; i < raw.length; i += 1) {
+        const n = norm(raw[i]);
+        if (n) set.add(n);
+      }
+      return set;
+    }
+
     // --- chip 再構築（items_bulk_actions.js の rebuildChipsForCard と同一規約） ----
 
     // succeeded item の `.tags` chip 列を tag 配列で全置換する。SSR contract
     // （items_list.html line 67-79）と完全一致させ、innerHTML を使わない (NFR 5.1)。
-    function rebuildChipsForCard(card, tags) {
+    // activeNormalizedNames に含まれるタグは SSR と同じく is-selected / aria-pressed=true
+    // で描画し、絞り込み中タグへの再ドロップで選択状態が落ちるのを防ぐ（#117 非回帰）。
+    function rebuildChipsForCard(card, tags, activeNormalizedNames) {
+      const activeSet = activeNormalizedNames || new Set();
       if (!card) return;
       let tagsContainer = card.querySelector ? card.querySelector('.tags') : null;
       if (!tagsContainer) {
@@ -110,13 +153,16 @@
         const t = tags[i] || {};
         if (!doc.createElement) continue;
         const btn = doc.createElement('button');
+        const isActive = activeSet.has(t.normalized_name);
         if (typeof btn.setAttribute === 'function') {
           btn.setAttribute('type', 'button');
-          btn.setAttribute('class', 'tag tag-filter-toggle');
+          btn.setAttribute('class', isActive
+            ? 'tag tag-filter-toggle is-selected'
+            : 'tag tag-filter-toggle');
           btn.setAttribute('data-tag-filter-toggle', '');
           btn.setAttribute('data-tag-normalized', String(t.normalized_name || ''));
           btn.setAttribute('aria-label', 'タグで絞り込み: ' + (t.name || ''));
-          btn.setAttribute('aria-pressed', 'false');
+          btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
         }
         if ('textContent' in btn) btn.textContent = (t.name || '');
         newBtns.push(btn);
@@ -137,12 +183,35 @@
 
     // --- core: assignTag ---------------------------------------------------
 
+    // 付与処理中のカードに busy 視覚状態を付与/解除する。fetch 開始前に同期的に
+    // 付けることで、遅い通信でも「処理を開始した」フィードバックを 300ms 以内に
+    // 提示する (NFR 3.1)。色のみに依存しない（aria-busy + opacity / cursor）。
+    function setCardBusy(card, busy) {
+      if (!card) return;
+      if (card.classList) {
+        if (busy) card.classList.add('is-tagging');
+        else card.classList.remove('is-tagging');
+      }
+      if (busy) {
+        if (typeof card.setAttribute === 'function') card.setAttribute('aria-busy', 'true');
+      } else if (typeof card.removeAttribute === 'function') {
+        card.removeAttribute('aria-busy');
+      }
+    }
+
     // 単一アイテムに単一タグを付与する。ドロップ経路 / タッチ代替経路の双方が
-    // 共有する（Req 4.2 の挙動同一性）。tagNormalized を bulk-tag に送る（server が
-    // 再度 NFKC + lowercase + trim で正規化するが、SSR の data-tag-normalized は
-    // 既に正規化済みなのでそのまま送ってよい / Req 2.6）。
-    async function assignTag(itemId, tagNormalized) {
-      if (!itemId || !tagNormalized) return;
+    // 共有する（Req 4.2 の挙動同一性）。tagName は display 名（SSR の data-tag-name）
+    // を送る。bulk-tag は受け取った文字列を display 名として保持しつつ server 側で
+    // NFKC + lowercase + trim による正規化を dedup/空判定に適用するため、正規化値
+    // ではなく display 名を送らないと既存タグの表示名が劣化する（Req 2.6 / #115 の
+    // display 名保持契約）。
+    async function assignTag(itemId, tagName) {
+      if (!itemId || !tagName) return;
+
+      // fetch 前に同期的に busy 状態を付与する (NFR 3.1)。chip 再描画時に
+      // detail.item_id 経由で再解決するが、busy は drag 元カードに付ければ十分。
+      const busyCard = findCardByID(itemId);
+      setCardBusy(busyCard, true);
 
       let res;
       try {
@@ -150,10 +219,11 @@
           method: 'POST',
           headers: getCSRFHeaders(),
           credentials: 'same-origin',
-          body: JSON.stringify({ item_ids: [itemId], tag: tagNormalized }),
+          body: JSON.stringify({ item_ids: [itemId], tag: tagName }),
         });
       } catch {
         // network 失敗 → カード表示を変えず通知 (Req 5.1 / 5.2)。
+        setCardBusy(busyCard, false);
         toast.error('タグの付与に失敗しました');
         return;
       }
@@ -169,22 +239,26 @@
         // server が当該アイテムを failed に入れた（所有していない / セッション失効 /
         // 存在しない等）場合は、カード表示を変えず通知する (Req 5.5 / 5.3 / 5.4)。
         if (failed.length > 0 || succeeded.length === 0) {
+          setCardBusy(busyCard, false);
           toast.error('タグの付与に失敗しました');
           return;
         }
 
         // succeeded[0] の付与後タグ集合で chip を再構築する (Req 1.4 / 2.2)。
+        // 絞り込み中タグの選択状態は URL から算出して維持する（#117 非回帰）。
         const detail = succeeded[0] || {};
         const card = findCardByID(detail.item_id || itemId);
         const tags = Array.isArray(detail.tags) ? detail.tags : [];
-        rebuildChipsForCard(card, tags);
+        rebuildChipsForCard(card, tags, computeActiveNormalizedNames());
+        setCardBusy(card || busyCard, false);
         toast.success('タグを付与しました');
         return;
       }
 
-      // 4xx / 5xx → カード表示を変えず通知 (Req 5.1 / 5.2)。
-      // invalid_tag（空タグ等）は SSR の data-tag-normalized 経由では起き得ないが、
-      // 念のため失敗として通知する。
+      // 4xx / 5xx（401/403 セッション失効・認可エラー / 500 等）→ カード表示を
+      // 変えず通知 (Req 5.1 / 5.2 / 5.3)。invalid_tag（空タグ等）は SSR の
+      // data-tag-name 経由では起き得ないが、念のため失敗として通知する。
+      setCardBusy(busyCard, false);
       toast.error('タグの付与に失敗しました');
     }
 
@@ -261,12 +335,14 @@
       if (dt && typeof dt.getData === 'function') {
         try { itemId = dt.getData(DT_KEY) || ''; } catch { itemId = ''; }
       }
-      const tagNormalized = dropTarget.dataset ? dropTarget.dataset.tagNormalized
-        : (dropTarget.getAttribute ? dropTarget.getAttribute('data-tag-normalized') : '');
+      // display 名（data-tag-name）を送る。正規化値を送ると bulk-tag が display 名を
+      // 入力文字列で上書きし、既存タグ表示名が劣化するため (Req 2.6 / #115 契約)。
+      const tagName = dropTarget.dataset ? dropTarget.dataset.tagName
+        : (dropTarget.getAttribute ? dropTarget.getAttribute('data-tag-name') : '');
 
       clearDragVisuals();
-      if (!itemId || !tagNormalized) return;
-      void assignTag(itemId, tagNormalized);
+      if (!itemId || !tagName) return;
+      void assignTag(itemId, tagName);
     }
 
     // dragend: ドラッグ操作が（成功/中断問わず）終わったら全視覚状態を解除する
@@ -352,11 +428,12 @@
         const dropTarget = target.closest('[data-tag-drop-target]');
         if (dropTarget) {
           if (typeof e.preventDefault === 'function') e.preventDefault();
-          const tagNormalized = dropTarget.dataset ? dropTarget.dataset.tagNormalized
-            : (dropTarget.getAttribute ? dropTarget.getAttribute('data-tag-normalized') : '');
+          // ドロップ経路と同一に display 名を送る (Req 4.2 の挙動同一性 / #115 契約)。
+          const tagName = dropTarget.dataset ? dropTarget.dataset.tagName
+            : (dropTarget.getAttribute ? dropTarget.getAttribute('data-tag-name') : '');
           const itemId = pendingTouchItemId;
           exitTaggingMode();
-          if (itemId && tagNormalized) void assignTag(itemId, tagNormalized);
+          if (itemId && tagName) void assignTag(itemId, tagName);
           return;
         }
         // モード中にタグ以外をタップ → モード解除（誤付与防止 / Req 4.3）。
@@ -377,8 +454,22 @@
     }
 
     // タッチ環境なら touch trigger を表示する。非タッチ環境では SSR の hidden を尊重。
+    // 加えて、検索 / タグ絞り込み / 状態タブ / ページ送りは region.innerHTML を差し替えて
+    // カードを再描画するため、新カードの [data-card-tag-add] は初期 hidden に戻る。
+    // MutationObserver で fragment 差し替えを観測し、再描画のたびに trigger を再表示する
+    // （items_bulk_selection.js と同じ region 監視規約 / Req 4.1 / NFR 2.1）。
+    let touchObserver = null;
     if (isTouchEnvironment()) {
       revealTouchTriggers();
+      const ObserverCtor =
+        (typeof MutationObserver === 'function') ? MutationObserver :
+        ((win && typeof win.MutationObserver === 'function') ? win.MutationObserver : null);
+      if (ObserverCtor && region) {
+        touchObserver = new ObserverCtor(() => { revealTouchTriggers(); });
+        try {
+          touchObserver.observe(region, { childList: true });
+        } catch { /* noop */ }
+      }
     }
 
     return {

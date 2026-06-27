@@ -316,11 +316,28 @@ async function flushMicrotasks(rounds = 32) {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
 }
 
+// fake MutationObserver: 実 DOM が無い node:test では childList 変化を自動観測
+// できないため、観測対象とコールバックを記録し、テストから手動で fire できる
+// 最小実装を用意する（items_drag_tag.js の fragment 再描画再表示テスト用）。
+class FakeMutationObserver {
+  constructor(cb) {
+    this.cb = cb;
+    this.observed = [];
+    FakeMutationObserver.instances.push(this);
+  }
+  observe(target, opts) { this.observed.push({ target, opts }); }
+  disconnect() { /* noop */ }
+  fire(records = [{}]) { this.cb(records); }
+}
+FakeMutationObserver.instances = [];
+
 function loadModule({
   cards = [],
   dropTags = [],
   fetchHandlers = [],
   pointerCoarse = false,
+  locationHref = 'http://localhost/ui/items',
+  withMutationObserver = false,
 } = {}) {
   const region = new FakeElement('section', { class: 'items', 'data-items-region': '' });
   const builtCards = [];
@@ -337,11 +354,12 @@ function loadModule({
     info(msg) { toastCalls.info.push(String(msg)); },
   };
 
+  if (withMutationObserver) FakeMutationObserver.instances = [];
   const window = {
     document,
     fetch,
     addEventListener() { /* not used */ },
-    location: { href: 'http://localhost/ui/items' },
+    location: { href: locationHref },
     altpocketToast: null,
     altpocketNormalizeTagName: null,
     matchMedia(query) {
@@ -351,6 +369,7 @@ function loadModule({
     alert() { /* swallow */ },
     __altpocketDragTagSkipAutoInit: true,
   };
+  if (withMutationObserver) window.MutationObserver = FakeMutationObserver;
 
   const context = vm.createContext({
     document, window,
@@ -426,7 +445,9 @@ test('Req 1.3 / 1.4 / 2.1: カードをタグ要素にドロップすると bulk
   assert.equal(env.fetchCalls[0].url, '/v1/items/bulk-tag', 'bulk-tag エンドポイントを使う');
   const body = JSON.parse(env.fetchCalls[0].options.body);
   assert.deepEqual(body.item_ids, ['id-1'], '単一 item_id を送る');
-  assert.equal(body.tag, 'go', 'ドロップ先タグの正規化値を送る');
+  // bulk-tag は受信文字列を display 名として保持するため、正規化値ではなく
+  // display 名 (data-tag-name) を送り既存タグ表示名の劣化を防ぐ (#115 契約)。
+  assert.equal(body.tag, 'Go', 'ドロップ先タグの display 名を送る');
 
   // chip が再描画される（Req 1.4）
   const tagsDiv = env.cardEl(0).querySelector('.tags');
@@ -559,7 +580,7 @@ test('Req 3.4 / 3.5: ボトムシート側（重複描画）のタグへドロ�
   await flushMicrotasks();
   assert.equal(env.fetchCalls.length, 1, 'ボトムシート側ドロップでも fetch 1 回');
   const body = JSON.parse(env.fetchCalls[0].options.body);
-  assert.equal(body.tag, 'go', '同一の正規化値を送る');
+  assert.equal(body.tag, 'Go', '同一の display 名を送る');
 });
 
 test('Req 4.1: タッチ環境（pointer:coarse）では card-tag-add トリガを表示する', async () => {
@@ -600,7 +621,7 @@ test('Req 4.2 / 4.3: タッチ代替手段（trigger→タグ tap）でドロッ
   assert.equal(env.fetchCalls[0].url, '/v1/items/bulk-tag', '既存エンドポイントを使う');
   const body = JSON.parse(env.fetchCalls[0].options.body);
   assert.deepEqual(body.item_ids, ['id-1'], '対象カードの item_id を送る');
-  assert.equal(body.tag, 'go', 'タップしたタグの正規化値を送る');
+  assert.equal(body.tag, 'Go', 'タップしたタグの display 名を送る');
   // chip 再描画も同一（Req 4.2）
   const chip = env.cardEl(0).querySelector('.tags').querySelector('[data-tag-normalized="go"]');
   assert.ok(chip, 'タッチ代替でも chip が再描画される');
@@ -633,4 +654,174 @@ test('NFR 2.2 / 2.3: 既存タグボタン / チェックボックスへの clic
   await env.click(chip);
   await flushMicrotasks();
   assert.equal(env.fetchCalls.length, 0, 'drag-tag は通常 click で fetch しない（非回帰）');
+});
+
+test('Req 2.6 / #115: 既存タグの display 名を保持するため正規化値ではなく display 名を送る', async () => {
+  // `Go Lang`（空白・大文字混じり）をドロップしたとき、bulk-tag に正規化値
+  // `go lang` を送ると server が display 名を入力文字列で上書きし表示名が劣化する。
+  // display 名 `Go Lang` を送ることで既存タグの表示名保持契約を満たす。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go Lang', normalized: 'go lang' }],
+    fetchHandlers: [jsonResponse(200, {
+      succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go Lang', normalized_name: 'go lang' }] }],
+      failed: [],
+    })],
+  });
+  const dt = makeDataTransfer();
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+  await flushMicrotasks();
+
+  const body = JSON.parse(env.fetchCalls[0].options.body);
+  assert.equal(body.tag, 'Go Lang', '正規化値 (go lang) ではなく display 名 (Go Lang) を送る');
+});
+
+test('NFR 2.2 / #117: 絞り込み中タグへの再ドロップで chip の選択状態 (is-selected/aria-pressed) を維持する', async () => {
+  // `?tag=go` で絞り込み中。既に go を持つカードへ go を再ドロップしたとき、
+  // 再構築 chip は SSR 同様に is-selected + aria-pressed=true を保つ必要がある。
+  const env = loadModule({
+    locationHref: 'http://localhost/ui/items?tag=go',
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    fetchHandlers: [jsonResponse(200, {
+      succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+      failed: [],
+    })],
+  });
+  const dt = makeDataTransfer();
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+  await flushMicrotasks();
+
+  const chip = env.cardEl(0).querySelector('.tags').querySelector('[data-tag-normalized="go"]');
+  assert.ok(chip, 're-drop 後も go chip が描画される');
+  assert.ok(chip.classList.contains('is-selected'), '絞り込み中タグの chip は is-selected を維持する');
+  assert.equal(chip.getAttribute('aria-pressed'), 'true', '絞り込み中タグの chip は aria-pressed=true を維持する');
+});
+
+test('NFR 2.2 / #117: 絞り込みしていないタグの再構築 chip は未選択 (aria-pressed=false) のまま', async () => {
+  // 絞り込みなし URL では、付与後 chip は SSR 同様に未選択状態で描画される。
+  const env = loadModule({
+    locationHref: 'http://localhost/ui/items',
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    fetchHandlers: [jsonResponse(200, {
+      succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+      failed: [],
+    })],
+  });
+  const dt = makeDataTransfer();
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+  await flushMicrotasks();
+
+  const chip = env.cardEl(0).querySelector('.tags').querySelector('[data-tag-normalized="go"]');
+  assert.equal(chip.classList.contains('is-selected'), false, '絞り込み外タグは is-selected を付けない');
+  assert.equal(chip.getAttribute('aria-pressed'), 'false', '絞り込み外タグは aria-pressed=false');
+});
+
+test('Req 4.1 / NFR 2.1: fragment 再描画後もタッチ代替トリガを再表示する (MutationObserver)', async () => {
+  // 検索 / 絞り込み / 状態タブ / ページ送りは region.innerHTML を差し替え、新カードの
+  // [data-card-tag-add] は初期 hidden に戻る。fragment 差し替えを観測して再表示する。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    pointerCoarse: true,
+    withMutationObserver: true,
+  });
+  // 初期表示は revealTouchTriggers で表示済み
+  assert.equal(env.tagAddEl(0).hidden, false, '初期化時に既存トリガが表示される');
+
+  // fragment 差し替えをシミュレート: region の children を新カードに置換する
+  env.region.replaceChildren();
+  const { tagAdd: newTrigger } = buildCard(env.region, { id: 'id-2', title: '記事2', url: 'http://a/2', tags: [] });
+  assert.equal(newTrigger.hidden, true, '差し替え直後の新カードのトリガは hidden');
+
+  // MutationObserver を fire（実 DOM が無いため手動）
+  assert.ok(FakeMutationObserver.instances.length >= 1, 'region を監視する observer が作られる');
+  FakeMutationObserver.instances[FakeMutationObserver.instances.length - 1].fire();
+
+  assert.equal(newTrigger.hidden, false, 'fragment 再描画後に新カードのトリガが再表示される');
+});
+
+test('Req 4.1: 非タッチ環境では MutationObserver を作らない（SSR の hidden を尊重）', async () => {
+  FakeMutationObserver.instances = [];
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    pointerCoarse: false,
+    withMutationObserver: true,
+  });
+  void env;
+  assert.equal(FakeMutationObserver.instances.length, 0, '非タッチ環境では observer を作らない');
+});
+
+test('NFR 3.1: ドロップ直後にカードへ busy 状態 (is-tagging/aria-busy) を同期付与し、完了で解除する', async () => {
+  // 遅い通信でも「処理を開始した」フィードバックを即時に出すため、fetch 解決を待たず
+  // 同期的に busy 状態を付与する。完了後（成功）に解除されること。
+  let resolveFetch;
+  const pending = new Promise((r) => { resolveFetch = r; });
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    fetchHandlers: [() => pending],
+  });
+  const dt = makeDataTransfer();
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+
+  // fetch 未解決の時点で busy が付いている（300ms 以内の同期フィードバック）
+  assert.ok(env.cardEl(0).classList.contains('is-tagging'), '処理開始時に is-tagging が同期付与される');
+  assert.equal(env.cardEl(0).getAttribute('aria-busy'), 'true', '処理開始時に aria-busy=true');
+
+  // 成功応答で解決 → busy 解除
+  resolveFetch(jsonResponse(200, {
+    succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+    failed: [],
+  }));
+  await flushMicrotasks();
+
+  assert.equal(env.cardEl(0).classList.contains('is-tagging'), false, '完了で is-tagging が解除される');
+  assert.equal(env.cardEl(0).getAttribute('aria-busy'), null, '完了で aria-busy が解除される');
+});
+
+test('Req 5.3: セッション失効 (401) の非 200 応答ではカード表示を変えず通知し busy を解除する', async () => {
+  // server 側でセッション失効 → 401。bulk-tag の非 200 分岐 (status !== 200) を
+  // 直接検証する。chip を成功状態にせず、失敗通知を出し、busy を残さない。
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    fetchHandlers: [jsonResponse(401, { error: 'unauthorized' })],
+  });
+  const dt = makeDataTransfer();
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+  await flushMicrotasks();
+
+  const tagsDiv = env.cardEl(0).querySelector('.tags');
+  if (tagsDiv) {
+    assert.equal(tagsDiv.querySelector('[data-tag-normalized="go"]'), null, '401 時に go chip を付けない');
+  }
+  assert.equal(env.toastCalls.error.length, 1, '401 時に失敗通知が 1 件出る');
+  assert.equal(env.cardEl(0).classList.contains('is-tagging'), false, '401 後に busy が解除される');
+});
+
+test('Req 5.x: 認可エラー (403) / サーバエラー (500) の非 200 分岐でも失敗通知する', async () => {
+  for (const status of [403, 500]) {
+    const env = loadModule({
+      cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+      dropTags: [{ name: 'Go', normalized: 'go' }],
+      fetchHandlers: [jsonResponse(status, { error: 'err' })],
+    });
+    const dt = makeDataTransfer();
+    await env.dragstart(env.cardEl(0), dt);
+    await env.drop(env.dropEl(0), dt);
+    await flushMicrotasks();
+    assert.equal(env.toastCalls.error.length, 1, `${status} 応答で失敗通知が 1 件出る`);
+    const tagsDiv = env.cardEl(0).querySelector('.tags');
+    if (tagsDiv) {
+      assert.equal(tagsDiv.querySelector('[data-tag-normalized="go"]'), null, `${status} 時に chip を付けない`);
+    }
+  }
 });

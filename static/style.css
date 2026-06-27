@@ -1406,6 +1406,14 @@ button:disabled,
   display: none;
 }
 
+/* タグ付与処理中のカード: drop / tap 直後に同期付与し、遅い通信でも「処理を開始した」
+   ことを 300ms 以内に提示する（NFR 3.1）。色のみに依存せず opacity + progress カーソル
+   で区別する（NFR 4.2）。aria-busy も JS 側で併せて立てる。 */
+.item-card.is-tagging {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 /* --- 状態バッジ (item-status-badge) ---
    meta 行に置く小さな状態バッジ。status-pill と同じ「ドット + テキスト」
    パターンで色覚多様性に配慮する（Req 4.4: 色のみ依存禁止）。 */
