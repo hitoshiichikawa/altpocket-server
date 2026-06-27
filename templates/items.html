@@ -86,11 +86,46 @@
   </section>
 </section>
 
+<div class="bulk-toolbar" data-bulk-toolbar role="region" aria-label="一括操作" hidden>
+  <span class="bulk-toolbar-count"><span data-bulk-count>0</span> / <span data-bulk-limit>100</span> 件選択中</span>
+  <div class="bulk-toolbar-actions">
+    <button type="button" class="btn-danger bulk-delete">一括削除</button>
+    <button type="button" class="btn-secondary bulk-tag">一括タグ付け</button>
+    <button type="button" class="btn-tertiary bulk-clear">選択解除</button>
+  </div>
+</div>
+<dialog class="bulk-tag-dialog" data-bulk-tag-dialog aria-labelledby="bulk-tag-dialog-title">
+  <h2 id="bulk-tag-dialog-title">選択中のアイテムにタグを付与</h2>
+  <form method="dialog" data-bulk-tag-form>
+    <label class="field">
+      <span class="field-label">タグ名</span>
+      <input class="input" type="text" data-bulk-tag-input autofocus required>
+    </label>
+    <div class="dialog-actions">
+      <button type="button" class="btn-secondary" data-bulk-tag-cancel>キャンセル</button>
+      <button type="submit" class="btn-primary" data-bulk-tag-confirm>付与</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="bulk-failure-dialog"
+        data-bulk-failure-dialog
+        role="alertdialog"
+        aria-labelledby="bulk-failure-title"
+        aria-describedby="bulk-failure-list">
+  <h2 id="bulk-failure-title" data-bulk-failure-title>失敗した項目</h2>
+  <ul id="bulk-failure-list" class="bulk-failure-list" data-bulk-failure-list role="list"></ul>
+  <div class="dialog-actions">
+    <button type="button" class="btn-primary" data-bulk-failure-close>OK</button>
+  </div>
+</dialog>
+
 <script src="/static/items_search.js?v={{assetVersion}}" defer></script>
 <script src="/static/items_tags.js?v={{assetVersion}}" defer></script>
 <script src="/static/items_active_filters.js?v={{assetVersion}}" defer></script>
 <script src="/static/items_status_actions.js?v={{assetVersion}}" defer></script>
 <script src="/static/items_status.js?v={{assetVersion}}" defer></script>
+<script src="/static/items_bulk_selection.js?v={{assetVersion}}" defer></script>
+<script src="/static/items_bulk_actions.js?v={{assetVersion}}" defer></script>
 
 <!-- Mobile Filter Bottom Sheet -->
 <div class="sheet-overlay" id="filter-sheet" aria-hidden="true">
