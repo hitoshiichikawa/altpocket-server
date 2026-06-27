@@ -67,7 +67,17 @@
         <ul>
           {{range .Tags}}
             <li>
-              <label class="tag-filter-option">
+              {{/*
+                data-tag-drop-target / data-tag-name / data-tag-normalized は
+                Issue #120 のドラッグ&ドロップ・タグ付与のドロップ先契約
+                (static/items_drag_tag.js が依拠)。display 名 (.Name) と正規化値
+                (.NormalizedName) の両方を公開する。JS は display 名 (data-tag-name) を
+                bulk-tag API に送り（正規化は server 側で行い #115 の display 名保持契約を
+                満たす）、正規化値 (data-tag-normalized) は絞り込み checkbox の value と
+                chip 選択状態の判定に使う。色のみに依存しないテキストラベルは既存 <span> が
+                そのまま担う (NFR 4.2)。
+              */}}
+              <label class="tag-filter-option" data-tag-drop-target data-tag-name="{{.Name}}" data-tag-normalized="{{.NormalizedName}}">
                 <input type="checkbox" name="tag" value="{{.NormalizedName}}" {{if index $.SelectedTags .NormalizedName}}checked{{end}}>
                 <span>{{.Name}} <span class="muted">({{.Count}})</span></span>
               </label>
@@ -126,6 +136,7 @@
 <script src="/static/items_status.js?v={{assetVersion}}" defer></script>
 <script src="/static/items_bulk_selection.js?v={{assetVersion}}" defer></script>
 <script src="/static/items_bulk_actions.js?v={{assetVersion}}" defer></script>
+<script src="/static/items_drag_tag.js?v={{assetVersion}}" defer></script>
 
 <!-- Mobile Filter Bottom Sheet -->
 <div class="sheet-overlay" id="filter-sheet" aria-hidden="true">
@@ -162,7 +173,9 @@
           <ul>
             {{range .Tags}}
               <li>
-                <label class="tag-filter-option">
+                {{/* モバイルのボトムシート側ドロップ先 (Issue #120 / Req 3.5):
+                   サイドバーと同一のドロップ先契約をボトムシートにも重複描画する。 */}}
+                <label class="tag-filter-option" data-tag-drop-target data-tag-name="{{.Name}}" data-tag-normalized="{{.NormalizedName}}">
                   <input type="checkbox" name="tag" value="{{.NormalizedName}}" {{if index $.SelectedTags .NormalizedName}}checked{{end}}>
                   <span>{{.Name}} ({{.Count}})</span>
                 </label>
