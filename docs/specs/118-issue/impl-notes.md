@@ -116,6 +116,66 @@
   - light / dark 両テーマでの目視確認は機械検証外（既存 `data-status` / `active-filter-chip` / `tag-filter-toggle` のテーマ追従パターンと同じ運用）。`--color-primary-soft` / `--bg-elevated` / `--separator-opaque` / `--shadow-md` 等の使用 token は既に dark テーマ媒体を切り替える既存 `@media (prefers-color-scheme: dark)` セクションで上書きされる構造（line 117 付近の `:root` token と対）になっているため、本セクションが両テーマで視覚区別が成立する蓋然性は高い。
   - モバイル `< 768px` で `.bulk-toolbar` がスクリーン下端に貼り付くかは `position: sticky; bottom: 0;` の標準挙動と既存 `@media (max-width: 768px)` セクション (line 2843-2863 周辺) に既存の `.toast-container { top: 52px; }` / `.items { grid-template-columns: 1fr; }` 等が並ぶ位置と整合（モバイル overlay の z-index 衝突は前述の 300 設定で回避）。bottom-sheet (`.bottom-sheet` line 2546) と layered 表示にならない（bottom-sheet は overlay 開時のみ表示、通常は hidden）。
 
+### Iteration round 1 (PR #141 / 2026-06-27)
+
+PR review (`<!-- idd-claude:pr-reviewer ... -->` コメント) で指摘された 2 件の AC 違反に
+対応した（spec 書き換え対象の 1 件は impl PR ガード規約により対応せず、別途返信で
+Architect 差し戻しを提案）。
+
+- **Issue 1 (high) / `items_bulk_selection.js:416` `removeFromSelection()` の DOM 同期**:
+  - 既存実装は内部 `Set` から id を消すだけで、`article.is-selected` / `input.item-select.checked`
+    を解除していなかった。`bulk-tag` 成功 / 部分失敗時に actions モジュールが
+    `removeFromSelection(succeeded)` を呼んでも一覧上は選択済みのままに見え、Req 3.4 /
+    Req 5.6 / Req 5.8 と設計上の不変「DOM 上の `.item-select[checked]` と内部 Set は
+    常に同期する」に違反していた。
+  - 修正方針: `removeFromSelection` のループ内で `findCard(id)` を呼び、ヒットした
+    article について `.is-selected` 解除と `input.item-select.checked = false` を実行する。
+    DOM 不在ケース（`bulk-delete` 成功後の fade-out 完了 / fragment swap 後）は no-op
+    として安全に通過する。
+  - 回帰固定: `static/items_bulk_selection.test.mjs` に 2 ケース追加。
+    (a) `TestRemoveFromSelectionSyncsDOM` — 3 件選択 → `removeFromSelection(['a','b'])` で
+    `a` / `b` の DOM が deselect、`c` は不変。
+    (b) `TestRemoveFromSelectionNoArticleIsNoop` — DOM 不在 id の安全性確認（テスト fixture
+    特有の都合で初期 appendChild の queued MutationRecord を `takeRecords()` で drain する
+    必要がある — endActionMutation が後から drain すると fragment-swap reset を発火して
+    しまうため）。
+
+- **Issue 3 (medium) / `items_bulk_actions.js:191` `collectFailureItem()` の id-only fallback**:
+  - レスポンスの failed 詳細を DOM から再収集する設計だが、fetch pending 中にユーザーが
+    タブ切替 / フィルタ / 検索クエリ / ソート / ページ送りで対象 article を fragment swap
+    で消した場合、`findCardByID(id)` が null を返して `{title:null, url:null}` 経路に倒れ、
+    失敗 dialog が UUID のみ表示になる。Req 4.7 / Req 5.7「失敗したアイテムをユーザーが
+    特定可能な形（タイトルまたは URL を含むメッセージ）で通知する」に違反していた。
+  - 修正方針: 既存「リクエスト ID スナップショット規約」（round 6）を **詳細スナップショット
+    規約**（round 7）に拡張する。click ハンドラ冒頭で `snapshotItemDetails(requestIds)` を
+    呼び、`Map<id, {id, title, url}>` を click 時点で固定する。`performBulkDelete` /
+    `performBulkTag` の 2 関数に optional 引数 `detailsSnapshot` を追加し、`collectFailureItem`
+    は snapshot を最優先参照、無ければ live DOM、それでも見つからなければ id-only fallback、
+    の 3 段で解決する。bulk-tag 用 closure 変数 `currentTagDetailsSnapshot` を新設して
+    dialog 経由の submit 経路でも snapshot を保持する。
+  - server 側の `BulkFailureDetail` には `Title` / `URL` を追加せず、`{ItemID, Reason}` の
+    2 フィールド規約を維持する（design.md「失敗 toast の表示文言」節 / Security
+    Considerations 節 PII リーク防止）。snapshot 規約はクライアント側のみの拡張。
+  - 回帰固定: `static/items_bulk_actions.test.mjs` に 3 ケース追加。
+    (a) `TestDeleteFailureUsesSnapshotWhenCardRemovedDuringFlight` — fetch pending 中に DOM
+    から cards 消失 → 500 レスポンス → 失敗 dialog に title 表示。
+    (b) `TestTagFailureUsesSnapshotWhenCardRemovedDuringFlight` — bulk-tag 部分失敗
+    パスでの同等検証。
+    (c) `TestSnapshotItemDetailsCollectsTitleAndUrl` — `_debug.snapshotItemDetails` API の
+    Map 構築検証（vm sandbox の Object prototype 差異により `deepStrictEqual` ではなく
+    プロパティ単体比較する）。
+
+- **Issue 2 (medium) / `tasks.md:794` / `:802` の仕様整合**:
+  - reviewer は task 7 の `collectFailureItem` 仕様と `_Requirements:_` の整合違反を指摘
+    していたが、本 impl PR は CLAUDE.md「Developer は実装 PR で `design.md` / `tasks.md` /
+    `requirements.md` を書き換えない」規約に従い、spec 書き換えを行わない。
+  - 代わりに上記 Issue 3 の修正で **実装側を AC に合致させる**（snapshot 経由で title/url が
+    確実に提供される）。tasks.md の表現是正は Architect 差し戻し（設計 PR）に委ねる。
+
+- **回帰ステータス**: `go test ./...` 全 14 パッケージ pass、`node --test extension/sidepanel.test.mjs
+  static/*.test.mjs` 193 件 pass（既存 188 + 新規 5）。golangci-lint は本環境にバイナリ未設置の
+  ため未実行（CI で実行）。
+
 ## 確認事項
 
 - design.md tasks.md 中の SQL 例（`INSERT INTO tags (id, name, normalized_name) VALUES (gen_random_uuid(), ...)`）と既存 `store.go` の `upsertItemTags` の `INSERT INTO tags (name, normalized_name) VALUES ($1, $2)` の 2 通りの慣用句が併存している。実装側は後者（既存パターン）を採用したが、いずれも DB 動作は同等（schema の DEFAULT に委ねるか明示するかの差）。今後の design レビューで揃えるかどうかは Architect 判断に委ねる。

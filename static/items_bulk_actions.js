@@ -186,9 +186,19 @@
     }
 
     // article から「失敗 dialog の `<li>` に出すための {id, title, url}」を抽出する。
-    // querySelector が null なら `{id, title: null, url: null}` を返す（後段で id-only
-    // fallback として 1 行は提示される / snapshot 規約 5）。
-    function collectFailureItem(id) {
+    // 第 2 引数 `snapshot` は click 時点で `snapshotItemDetails()` が DOM を読んだ
+    // Map<id, {id, title, url}>。fetch 完了時にはユーザーがタブ切替・フィルタ・
+    // 検索クエリ変更・ソート変更・ページ送りで article を DOM から消している
+    // 可能性があり、その場合でも snapshot 経由で title/url を提示できる
+    // （Req 4.7 / 5.7「失敗したアイテムをユーザーが特定可能な形（タイトルまたは URL を
+    // 含むメッセージ）で通知する」を満たすための snapshot 規約 5 拡張）。
+    // snapshot が未指定 / 該当 id を持たない場合は live DOM から再収集し、それでも
+    // 見つからなければ id-only fallback ({title:null, url:null}) を返す。
+    function collectFailureItem(id, snapshot) {
+      if (snapshot && typeof snapshot.get === 'function') {
+        const cached = snapshot.get(id);
+        if (cached) return cached;
+      }
       const card = findCardByID(id);
       if (!card) return { id: id, title: null, url: null };
       const titleEl = card.querySelector ? card.querySelector('h3[id^="item-title-"]') : null;
@@ -199,6 +209,19 @@
       if (card.dataset && card.dataset.originalUrl) url = card.dataset.originalUrl;
       else if (card.getAttribute) url = card.getAttribute('data-original-url') || '';
       return { id: id, title: title || null, url: url || null };
+    }
+
+    // click 時点で全 requestIds の {id, title, url} を一括収集して Map に固定する。
+    // fetch 完了時に article が DOM から消えていても、ここで取った title/url を
+    // 失敗 dialog の `<li>` に流せる（Req 4.7 / 5.7）。
+    function snapshotItemDetails(ids) {
+      const snap = new Map();
+      if (!ids || !ids.length) return snap;
+      for (let i = 0; i < ids.length; i += 1) {
+        const id = ids[i];
+        snap.set(id, collectFailureItem(id));
+      }
+      return snap;
     }
 
     // --- ヘルパー: 失敗 dialog の populate + showModal -----------------
@@ -373,7 +396,7 @@
 
     // --- API call: bulk-delete -------------------------------------------
 
-    async function performBulkDelete(requestIds) {
+    async function performBulkDelete(requestIds, detailsSnapshot) {
       const selection = getSelection();
       // busy 状態の確立は同期的に
       setBusy(true);
@@ -387,8 +410,9 @@
           body: JSON.stringify({ item_ids: requestIds }),
         });
       } catch {
-        // network 失敗 → 全件失敗扱い
-        const items = requestIds.map(collectFailureItem);
+        // network 失敗 → 全件失敗扱い。fetch 失敗時点で DOM 状態が変化している
+        // 可能性は低いが、規約統一のため snapshot を優先参照する。
+        const items = requestIds.map((id) => collectFailureItem(id, detailsSnapshot));
         showBulkFailureDialog({ verb: '削除', items: items });
         setBusy(false);
         return;
@@ -405,13 +429,14 @@
         const succeeded = (body && Array.isArray(body.succeeded)) ? body.succeeded : [];
         const failed = (body && Array.isArray(body.failed)) ? body.failed : [];
 
-        // 部分失敗時は **DOM 削除前に failed 詳細を収集** する（順序依存防止）
+        // 部分失敗時は **DOM 削除前に failed 詳細を収集** する（順序依存防止）。
+        // snapshot を最優先参照し、無ければ live DOM から fallback 取得する。
         let failureItems = null;
         if (failed.length > 0) {
           failureItems = [];
           for (let i = 0; i < failed.length; i += 1) {
             const fid = failed[i] && failed[i].item_id;
-            failureItems.push(collectFailureItem(fid));
+            failureItems.push(collectFailureItem(fid, detailsSnapshot));
           }
         }
 
@@ -475,14 +500,14 @@
       }
 
       // 401 / 403 / 429 / 500 / その他の 4xx 5xx → 全件失敗 dialog
-      const items = requestIds.map(collectFailureItem);
+      const items = requestIds.map((id) => collectFailureItem(id, detailsSnapshot));
       showBulkFailureDialog({ verb: '削除', items: items });
       setBusy(false);
     }
 
     // --- API call: bulk-tag ----------------------------------------------
 
-    async function performBulkTag(requestIds, tagValue) {
+    async function performBulkTag(requestIds, tagValue, detailsSnapshot) {
       const selection = getSelection();
       setBusy(true);
 
@@ -496,7 +521,7 @@
         });
       } catch {
         // network 失敗 → 全件失敗 dialog
-        const items = requestIds.map(collectFailureItem);
+        const items = requestIds.map((id) => collectFailureItem(id, detailsSnapshot));
         showBulkFailureDialog({ verb: 'タグ付け', items: items });
         setBusy(false);
         return;
@@ -544,11 +569,11 @@
           // 全成功
           toast.success(succeeded.length + ' 件にタグを付与しました');
         } else {
-          // 部分失敗 → 失敗 dialog
+          // 部分失敗 → 失敗 dialog（snapshot 経由で title/url を解決）
           const failureItems = [];
           for (let i = 0; i < failed.length; i += 1) {
             const fid = failed[i] && failed[i].item_id;
-            failureItems.push(collectFailureItem(fid));
+            failureItems.push(collectFailureItem(fid, detailsSnapshot));
           }
           showBulkFailureDialog({ verb: 'タグ付け', items: failureItems });
         }
@@ -582,7 +607,7 @@
       }
 
       // 401 / 403 / 429 / 5xx → 全件失敗 dialog
-      const items = requestIds.map(collectFailureItem);
+      const items = requestIds.map((id) => collectFailureItem(id, detailsSnapshot));
       showBulkFailureDialog({ verb: 'タグ付け', items: items });
       setBusy(false);
     }
@@ -623,13 +648,17 @@
         // **リクエスト ID スナップショット規約** (round 6): live ではなく defensive copy。
         const requestIds = Array.from(selection.getSelectedIDs());
         if (requestIds.length === 0) return;
+        // **詳細スナップショット規約** (round 7 / Req 4.7): click 時点で全 id の
+        // title/url を Map に固定する。fetch 完了時に DOM から消えていても
+        // 失敗 dialog で title/url を提示できる。
+        const detailsSnapshot = snapshotItemDetails(requestIds);
 
         // confirm dialog（object.show()）。approve callback で fetch を起動する。
         showConfirm(
           '一括削除',
           requestIds.length + ' 件を削除しますか？',
           () => {
-            void performBulkDelete(requestIds);
+            void performBulkDelete(requestIds, detailsSnapshot);
           },
           'Delete',
           'btn-danger'
@@ -651,8 +680,9 @@
           if ('value' in tagInput) tagInput.value = '';
         }
         // 現在の選択 snapshot を click 単位の closure で保持する。submit ハンドラから
-        // 参照される。
+        // 参照される。詳細スナップショットも同時に固定する（Req 5.7）。
         currentTagRequestIds = requestIds;
+        currentTagDetailsSnapshot = snapshotItemDetails(requestIds);
         if (tagDialog) {
           if (typeof tagDialog.showModal === 'function') {
             try { tagDialog.showModal(); } catch { /* noop */ }
@@ -671,6 +701,8 @@
     // bulk-tag dialog の click closure で参照するための snapshot（最後に bulk-tag を
     // 押下した時点の selection 内容）。submit / cancel ハンドラから参照する。
     let currentTagRequestIds = [];
+    // 同 click 時点で固定された title/url 詳細 snapshot（Req 5.7）。
+    let currentTagDetailsSnapshot = new Map();
 
     // bulk-tag dialog: form submit ハンドラ
     function onTagFormSubmit(e) {
@@ -691,7 +723,7 @@
       // 原文字列で送信する（NFKC + lowercase は server 側で適用される）。
       const ids = currentTagRequestIds.slice();
       if (ids.length === 0) return;
-      void performBulkTag(ids, raw);
+      void performBulkTag(ids, raw, currentTagDetailsSnapshot);
     }
 
     // bulk-tag dialog: cancel ボタン
@@ -744,6 +776,7 @@
         rebuildChipsForCard,
         computeActiveNormalizedNames,
         collectFailureItem,
+        snapshotItemDetails,
         performBulkDelete,
         performBulkTag,
         setBusy,

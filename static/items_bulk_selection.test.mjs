@@ -1008,6 +1008,78 @@ test('TestInitialStateIsEmpty: init 直後の getSelectedIDs() が空配列', ()
   assert.deepEqual(env.api.getSelectedIDs(), []);
 });
 
+test('TestRemoveFromSelectionSyncsDOM: removeFromSelection() で article.is-selected と checkbox.checked が解除される (Req 5.6 / 5.8)', () => {
+  // 一括タグ付け成功 / 部分失敗で actions モジュールが removeFromSelection(succeeded)
+  // を呼ぶ場面の DOM 同期。article は DOM に残ったままで、selection だけ解除されるパス。
+  const cards = ['a', 'b', 'c'].map((id) => makeCard({ id }));
+  const env = loadModule({ cards });
+  for (const c of cards) {
+    if (c.parent) c.parent.removeChild(c);
+    env.region.appendChild(c);
+  }
+
+  // 3 件を選択
+  for (const c of cards) {
+    c.checkbox.checked = true;
+    env.document.dispatch('change', { target: c.checkbox });
+  }
+  assert.equal(env.api.getSelectedIDs().length, 3);
+
+  // 'a' と 'b' を removeFromSelection（'c' は残置）
+  env.changedEvents.length = 0;
+  env.api.removeFromSelection(['a', 'b']);
+
+  // Set からは 'c' のみ残る
+  assert.deepEqual(env.api.getSelectedIDs(), ['c']);
+  // 'a' / 'b' の DOM は .is-selected が外れ、checkbox.checked = false
+  assert.ok(!cards[0].classList.contains('is-selected'), 'a is-selected removed');
+  assert.equal(cards[0].checkbox.checked, false, 'a checkbox unchecked');
+  assert.ok(!cards[1].classList.contains('is-selected'), 'b is-selected removed');
+  assert.equal(cards[1].checkbox.checked, false, 'b checkbox unchecked');
+  // 'c' は触られない
+  assert.ok(cards[2].classList.contains('is-selected'), 'c is-selected kept');
+  assert.equal(cards[2].checkbox.checked, true, 'c checkbox stays checked');
+  // count=1 の event が最後に出ている
+  const last = env.changedEvents[env.changedEvents.length - 1];
+  assert.equal(last.count, 1);
+});
+
+test('TestRemoveFromSelectionNoArticleIsNoop: 対象 article が DOM 不在の id は Set のみ更新 (bulk-delete 成功後の fade-out 完了 ケース)', () => {
+  // 一括削除成功で fade-out + remove が完了済みの article に対する
+  // removeFromSelection は、findCard が null を返すパスで DOM 操作は no-op
+  // となり、Set だけが更新される。
+  const cards = ['a', 'b'].map((id) => makeCard({ id }));
+  const env = loadModule({ cards });
+  for (const c of cards) {
+    if (c.parent) c.parent.removeChild(c);
+    env.region.appendChild(c);
+  }
+  // 初期 appendChild で fragment-swap record が enqueue 済み。これを引いて
+  // おかないと、後段の endActionMutation が takeRecords でこれらを drain して
+  // 全件 reset を発火してしまう（テストフィクスチャ固有の都合）。
+  for (const obs of (env.region._observers || [])) obs.takeRecords();
+
+  cards[0].checkbox.checked = true;
+  env.document.dispatch('change', { target: cards[0].checkbox });
+  cards[1].checkbox.checked = true;
+  env.document.dispatch('change', { target: cards[1].checkbox });
+  assert.equal(env.api.getSelectedIDs().length, 2);
+
+  // 'a' を DOM から取り除く（bulk-delete 成功 + fade-out 完了をシミュレート）
+  // bracket 中扱いにすることで MutationObserver の reset を抑止する
+  env.api.beginActionMutation();
+  env.region.removeChild(cards[0]);
+  env.api.endActionMutation();
+  env.changedEvents.length = 0;
+
+  // removeFromSelection(['a']) は DOM 不在でも throw せず、Set からは消える
+  assert.doesNotThrow(() => env.api.removeFromSelection(['a']));
+  assert.deepEqual(env.api.getSelectedIDs(), ['b']);
+  // 'b' は触られない
+  assert.ok(cards[1].classList.contains('is-selected'));
+  assert.equal(cards[1].checkbox.checked, true);
+});
+
 test('TestClearAllProgrammatic: clear() 呼出 → Set 空 + 全 checkbox unchecked + .is-selected 除去', () => {
   const cards = ['a', 'b', 'c'].map((id) => makeCard({ id }));
   const env = loadModule({ cards });

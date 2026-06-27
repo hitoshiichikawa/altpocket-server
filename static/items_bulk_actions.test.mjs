@@ -1366,6 +1366,91 @@ test('TestClearButtonCallsSelectionClear: bulk-clear click → selection.clear',
   assert.equal(sel._calls.clear, 1);
 });
 
+test('TestDeleteFailureUsesSnapshotWhenCardRemovedDuringFlight: fetch pending 中にカードが DOM から消えても snapshot で title/url 提示 (Req 4.7)', async () => {
+  // 一括削除リクエスト中に、ユーザーがタブ切替・タグフィルタ・検索クエリ変更
+  // 等で fragment swap を起こすと、failed 通知時点で対象 article が DOM 不在に
+  // なる。snapshot が無いと id-only fallback に倒れて Req 4.7 違反になるため、
+  // click 時点の title/url snapshot から復元できることを固定する。
+  const cA = buildCardModel('A', 'Title-A', 'http://x/A');
+  const cB = buildCardModel('B', 'Title-B', 'http://x/B');
+  const sel = makeSelectionStub({ initialIds: ['A', 'B'] });
+  const conf = makeConfirmStub();
+  let resolveFetch;
+  const pending = new Promise((r) => { resolveFetch = r; });
+  const env = loadModule({
+    cards: [cA, cB],
+    fetchHandlers: [() => pending],
+    selection: sel,
+    altpocketConfirm: conf,
+  });
+  await env.clickButton(env.btnDelete);
+  // pending 中に fragment swap 相当の DOM 消失をシミュレート
+  cA.parent && cA.parent.removeChild(cA);
+  cB.parent && cB.parent.removeChild(cB);
+  // 全件失敗（500）でレスポンスが返る
+  resolveFetch(jsonResponse(500, { error: 'db_error' }));
+  await flushMicrotasks();
+  env.timers.flushAll();
+  await flushMicrotasks();
+  // failure dialog に title が出ている（id-only fallback ではない）
+  assert.equal(env.failureDialog._showModalCount, 1);
+  assert.equal(env.failureList.children.length, 2);
+  const liTexts = env.failureList.children.map((li) => li.textContent);
+  assert.ok(liTexts.includes('Title-A'), 'snapshot から Title-A 復元');
+  assert.ok(liTexts.includes('Title-B'), 'snapshot から Title-B 復元');
+});
+
+test('TestTagFailureUsesSnapshotWhenCardRemovedDuringFlight: 一括タグ付け中に DOM 消失 → snapshot から title/url 復元 (Req 5.7)', async () => {
+  const cA = buildCardModel('A', 'Tag-A', 'http://x/A');
+  const cB = buildCardModel('B', 'Tag-B', 'http://x/B');
+  const sel = makeSelectionStub({ initialIds: ['A', 'B'] });
+  let resolveFetch;
+  const pending = new Promise((r) => { resolveFetch = r; });
+  const env = loadModule({
+    cards: [cA, cB],
+    fetchHandlers: [() => pending],
+    selection: sel,
+  });
+  await env.clickButton(env.btnTag);
+  env.tagInput.value = 'foo';
+  const submitP = env.submitTagForm();
+  // fetch pending 中に DOM 消失
+  cA.parent && cA.parent.removeChild(cA);
+  cB.parent && cB.parent.removeChild(cB);
+  // 部分失敗でレスポンスが返る（B が failed）
+  resolveFetch(jsonResponse(200, {
+    succeeded: [{ item_id: 'A', tags: [] }],
+    failed: [{ item_id: 'B', reason: 'not_found' }],
+  }));
+  await submitP;
+  await flushMicrotasks();
+  // failure dialog に B の title が表示される（id-only fallback ではない）
+  assert.equal(env.failureDialog._showModalCount, 1);
+  assert.equal(env.failureList.children.length, 1);
+  assert.equal(env.failureList.children[0].textContent, 'Tag-B');
+});
+
+test('TestSnapshotItemDetailsCollectsTitleAndUrl: snapshotItemDetails() が click 時点の DOM を Map に固定する', () => {
+  const cA = buildCardModel('A', 'Title-A', 'http://x/A');
+  const cB = buildCardModel('B', 'Title-B', 'http://x/B');
+  const env = loadModule({
+    cards: [cA, cB],
+    selection: makeSelectionStub({ initialIds: [] }),
+  });
+  const snap = env.api._debug.snapshotItemDetails(['A', 'B']);
+  assert.equal(snap.size, 2);
+  const a = snap.get('A');
+  assert.equal(a.id, 'A');
+  assert.equal(a.title, 'Title-A');
+  assert.equal(a.url, 'http://x/A');
+  const b = snap.get('B');
+  assert.equal(b.id, 'B');
+  assert.equal(b.title, 'Title-B');
+  assert.equal(b.url, 'http://x/B');
+  // 空配列は空 Map
+  assert.equal(env.api._debug.snapshotItemDetails([]).size, 0);
+});
+
 test('TestToolbarButtonsDisabledDuringInFlightRequest: fetch pending 中は 3 ボタン disabled、resolve 後に解除', async () => {
   const cA = buildCardModel('A', 'A', 'http://x/A');
   const sel = makeSelectionStub({ initialIds: ['A'] });

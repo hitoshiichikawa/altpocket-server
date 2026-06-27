@@ -421,6 +421,18 @@
           selectionSet.delete(id);
           mutated = true;
         }
+        // DOM 同期: 対象 article が DOM 上に残っていれば `.is-selected` /
+        // `input.item-select[checked]` を解除する。一括タグ付け成功時のように
+        // article が一覧に残るパスで checkbox の checked と内部 Set の乖離を
+        // 防ぐ（Req 3.4 / 5.6 / 5.8 / 設計上の不変「DOM 上の checked と内部
+        // Set は常に同期する」）。article が既に DOM から消えているケース
+        // （bulk-delete 成功で fade-out 完了後 / fragment swap 後）は no-op。
+        const card = findCard(id);
+        if (card) {
+          if (card.classList) card.classList.remove('is-selected');
+          const cb = card.querySelector ? card.querySelector('input.item-select') : null;
+          if (cb && cb.checked === true) cb.checked = false;
+        }
         // anchor stale 防止: 削除対象が lastClickedID と一致する場合は null に倒す
         if (lastClickedID === id) lastClickedID = null;
       }
