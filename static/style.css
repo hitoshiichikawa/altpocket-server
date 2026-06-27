@@ -1374,6 +1374,38 @@ button:disabled,
               transform var(--motion-moderate) var(--ease-default);
 }
 
+/* --- ドラッグ&ドロップでのタグ付与 (Issue #120) ---
+   static/items_drag_tag.js が付与する視覚状態。色のみに依存せず opacity /
+   outline / transform で区別する（NFR 4.2: 色覚多様性への配慮）。 */
+
+/* カードをドラッグ中: 半透明化 + ドラッグ中であることを示す（Req 3.1）。 */
+.item-card.is-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+/* ドラッグ中のカードがタグ要素の上にある（ドロップ可能）: アウトラインと背景で
+   ドロップ先候補を明示する（Req 3.2）。outline は色に加えた形状的手がかり。 */
+.tag-filter-option.is-drop-target {
+  outline: 2px dashed var(--color-primary);
+  outline-offset: 2px;
+  background: var(--color-primary-soft);
+  border-radius: var(--radius-sm);
+}
+
+/* タッチ代替手段で tagging モード中の対象カード: アウトラインで「これからタグを
+   付けるカード」を明示する（Req 4.1 / 4.3）。 */
+.item-card.is-tag-target {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* タッチ代替手段のトリガ。JS がタッチ環境を検出したときだけ hidden 属性を外して
+   表示する（非タッチ環境では SSR の hidden を尊重 / プログレッシブエンハンスメント）。 */
+.card-tag-add[hidden] {
+  display: none;
+}
+
 /* --- 状態バッジ (item-status-badge) ---
    meta 行に置く小さな状態バッジ。status-pill と同じ「ドット + テキスト」
    パターンで色覚多様性に配慮する（Req 4.4: 色のみ依存禁止）。 */
