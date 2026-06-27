@@ -5,7 +5,7 @@ backend / frontend / store / migration を **責務単位**で分割し、1 タ�
 以内に収まる粒度を意識した（マイグレーションは新規追加不要のため省略）。各タスクは独立 commit
 として完結できる。
 
-- [ ] 1. store 層: BulkDeleteItems / BulkAddItemTag / BulkTagResult 追加
+- [x] 1. store 層: BulkDeleteItems / BulkAddItemTag / BulkTagResult 追加
   - `internal/store/items_bulk.go` を新規作成:
     - **重要 / pgx v5 と PostgreSQL UUID 列の型整合**: 本タスクで追加する SQL は `items.id` /
       `item_tags.item_id` / `item_contents.item_id`（いずれも `UUID` 列、`migrations/001_init.sql`
