@@ -51,6 +51,19 @@
   - **integration tag の取扱**: tasks.md line 366-368 に従い「本タスクのテスト群は stage-a-verify の `go test ./...` には含まれない」（既存 CI に integration tag 対応が無いため）。`-tags=integration` + `TEST_DATABASE_URL` 指定時のみ実行される。tag なし `go test ./...` への影響ゼロを確認済み（CI 退行なし）。
 - 残存課題: なし。本 task の責務範囲（実 SQL 経路の認可境界 leak 検証 / chi router 経由の middleware 順序固定）はすべて 10 ケースで完結。templates / static JS / CSS（task 5〜8）は本 task のスコープ外（次 task で実装される）。
 
+### Task 5
+- 採用方針: design.md「Templates」節と tasks.md line 380-465 の SSR 仕様を逐語的に実装。`templates/items_list.html` の `<article>` 1 箇所に `data-item-id` + `data-original-url` の 2 属性を追加 + `<a class="tile-link">` の直前に `<input type="checkbox" class="item-select" disabled>` を 1 個挿入、`templates/items.html` の `</section>` (split 終了) と既存 script 群の間に bulk-toolbar / bulk-tag-dialog / bulk-failure-dialog の 3 markup と bulk スクリプト 2 行を挿入する純粋なテンプレ追加で完結。既存テンプレ構造（status-tabs / active-filters / タグ chip / 単一アクション / hidden status input）は一切触らない。
+- 重要な判断:
+  - **`disabled` 属性付きで checkbox を SSR**: tasks.md / design.md NFR 3.5 規約に従い `<input type="checkbox" ... disabled>` で出力。JS 無効ブラウザでは Tab フォーカスを取らず click も無効化される（HTML 仕様の disabled 挙動）。task 6 の `items_bulk_selection.js` の `init()` 起動時に `removeAttribute('disabled')` で操作可能になる Progressive Enhancement 規約。これにより本機能導入前と同等の閲覧 / 単一アクション動線が JS 無効環境で維持される。
+  - **`data-item-id` を `<article>` 自身に付与**: selection / actions モジュールから `closest('.item-card')` で id を解決する用。`<input type="checkbox">` 自身にも `data-item-id` を付与しているのは tasks.md 行 396 の仕様通り（aria-label と並んで checkbox 自身を直接参照するパスがあるため）。
+  - **`data-original-url="{{.URL}}"` を `<article>` に追加**: 失敗通知時のタイトル空 fallback URL として `article.dataset.originalUrl` で参照する用。既存 `<a class="tile-link" href="/ui/items/<id>">` は内部詳細ページ URL であり元記事 URL ではないため、URL fallback には使えない（design.md「失敗 toast の表示文言」節 / Req 4.7 / 5.7 を空タイトル item でも満たす）。
+  - **bulk-toolbar / dialog の挿入位置**: tasks.md は「`<section class="split">` の終了 (`</section>`) と既存 script 群の間に追加」と指定。`</section>` の直後（split 全体の閉じ）、`<script src=".../items_search.js">` の直前に 3 markup を順次配置。これにより sticky 配置で画面下に貼り付く際の DOM 順序が確定する（既存 status-tabs より下、`items.html` の bottom sheet overlay と並ぶ位置）。
+  - **`method="dialog"` の `<form>` 残置**: tasks.md コメントで明記されているとおり、ネイティブ `method="dialog"` の自動 close は task 7 の actions モジュール側の submit ハンドラで `event.preventDefault()` を呼んで抑止する。テンプレ側では `method="dialog"` を維持し、JS 側に責務を移譲する。
+  - **bulk-failure-dialog の `<ul>` markup**: SSR では空 `<ul>` を出力し、task 7 の actions モジュールが `<li>` を populate して `showModal()` する。`max-height: 60vh; overflow-y: auto` は task 8 の CSS で担保（テンプレ側は構造のみ）。100 件まで全件 reachable な領域を SSR で予約する（Req 4.7 / 5.7）。
+  - **script 読み込み順序**: tasks.md の通り `items_status.js` の直後に `items_bulk_selection.js` → `items_bulk_actions.js` の順で挿入。actions モジュールは selection モジュールの API（`window.altpocketBulkSelection`）を参照するため、selection が先に load される必要がある（`defer` 属性により DOM 解析後の順序実行が保証される）。
+  - **Go test / 拡張 / 既存 JS テスト の影響なし**: 既存 `go test ./...` は 14 パッケージすべて pass（`internal/ui` の template parse / render テストを含む）。既存 Node.js テスト（`sidepanel.test.mjs` / `items_active_filters.test.mjs` / `items_search.test.mjs` / `items_tags.test.mjs` / `items_fragment_race.test.mjs` / `items_status.test.mjs` / `items_status_tabs.test.mjs`）も 133 件 pass。golangci-lint は本環境にバイナリ未設置のため未実行（CI で実行される）。
+- 残存課題: なし。テンプレ差分の単体 Go test は本リポジトリの既存規約に倣い追加せず（既存 #115 / #117 / #119 と同じ運用）、task 6 / 7 / 8 の JS / CSS テストで間接的にカバーされる。`items_bulk_selection.js` / `items_bulk_actions.js` のファイル本体は task 6 / 7 で作成されるため、本 task の SSR 時点では 404 になる（既存サイト動線は影響を受けないが、新規 markup の動作は task 6 完了まで未実装の状態が続く）。
+
 ## 確認事項
 
 - design.md tasks.md 中の SQL 例（`INSERT INTO tags (id, name, normalized_name) VALUES (gen_random_uuid(), ...)`）と既存 `store.go` の `upsertItemTags` の `INSERT INTO tags (name, normalized_name) VALUES ($1, $2)` の 2 通りの慣用句が併存している。実装側は後者（既存パターン）を採用したが、いずれも DB 動作は同等（schema の DEFAULT に委ねるか明示するかの差）。今後の design レビューで揃えるかどうかは Architect 判断に委ねる。
