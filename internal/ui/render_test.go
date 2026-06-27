@@ -798,7 +798,8 @@ func TestDragTagSSRContract(t *testing.T) {
 		if !strings.Contains(body, `data-tag-name="Go"`) {
 			t.Errorf("expected drop target to carry display name, got:\n%s", body)
 		}
-		// normalized name は API に送る正規化値の source となる。
+		// normalized name は絞り込み checkbox の value / chip 選択状態の判定に使う
+		// （bulk-tag へ送るのは data-tag-name の display 名）。
 		if !strings.Contains(body, `data-tag-normalized="go"`) {
 			t.Errorf("expected drop target to carry normalized name, got:\n%s", body)
 		}

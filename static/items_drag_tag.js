@@ -210,13 +210,33 @@
       }
     }
 
-    // item ごとの「最新付与世代」。同一カードへ複数タグを短時間に連続ドロップ /
-    // タップすると複数の assignTag が同時に in-flight になる。bulk-tag は additive
-    // なので新しい付与のレスポンスほど多くのタグ集合を返すが、古いレスポンスが後着
-    // すると stale な部分集合で chip 列を巻き戻し、既に永続化済みの別タグを UI 上から
-    // 消してしまう。各 assignTag に単調増加の世代番号を割り当て、最新世代のレスポンス
-    // でのみ chip 再構築 / busy 解除を行うことで競合時の上書きを防ぐ (Req 1.4 / NFR 3.2)。
-    const tagAssignGenerations = new Map();
+    // item ごとの「確定タグ集合」(normalized_name -> tag)。同一カードへ複数タグを短時間に
+    // 連続ドロップ / タップすると複数の assignTag が同時に in-flight になる。bulk-tag は
+    // additive で本 UI はタグを削除しないため、各成功レスポンスの付与後タグ集合の union を
+    // 取れば、レスポンスがどの順序で後着しても永続化済みタグを取りこぼさず chip を再構築できる。
+    // 「最新世代のレスポンスだけを採用する」方式は、サーバの処理順次第で最新リクエストの
+    // レスポンス自体が部分集合になり得て（後発が先に commit され先発タグを含まない / 後発が
+    // 失敗し先発のみ成功する）、永続化済みタグを UI から消してしまうため、union 方式を採る
+    // (Req 1.4 / 2.2 / NFR 3.2)。
+    const confirmedTagsByItem = new Map();
+
+    // item ごとの in-flight 付与数。drop/tap ごとに +1 し、各 assign の決着で -1、0 になった
+    // ときだけ busy を解除する。「最新世代の決着」ではなく「全 in-flight の決着」を待つため、
+    // レスポンスが送信順と異なる順で返っても busy を取りこぼさない (NFR 3.1)。
+    const inFlightByItem = new Map();
+
+    // 当該アイテムの確定タグ集合へ付与後タグ集合を merge し、union 配列を返す。
+    // normalized_name を key に重複排除し、挿入順（＝確定順）を保つ。
+    function mergeConfirmedTags(itemId, tags) {
+      let set = confirmedTagsByItem.get(itemId);
+      if (!set) { set = new Map(); confirmedTagsByItem.set(itemId, set); }
+      for (let i = 0; i < tags.length; i += 1) {
+        const t = tags[i] || {};
+        const key = String(t.normalized_name || '');
+        if (key) set.set(key, t);
+      }
+      return Array.from(set.values());
+    }
 
     // 単一アイテムに単一タグを付与する。ドロップ経路 / タッチ代替経路の双方が
     // 共有する（Req 4.2 の挙動同一性）。tagName は display 名（SSR の data-tag-name）
@@ -227,15 +247,21 @@
     async function assignTag(itemId, tagName) {
       if (!itemId || !tagName) return;
 
-      // この付与の世代を確定し、自分が最新世代か判定するクロージャを作る。
-      const generation = (tagAssignGenerations.get(itemId) || 0) + 1;
-      tagAssignGenerations.set(itemId, generation);
-      const isLatestAssign = () => tagAssignGenerations.get(itemId) === generation;
-
-      // fetch 前に同期的に busy 状態を付与する (NFR 3.1)。chip 再描画時に
-      // detail.item_id 経由で再解決するが、busy は drag 元カードに付ければ十分。
+      // fetch 前に同期的に busy 状態を付与する (NFR 3.1)。in-flight 数を +1 し、
+      // settle() で -1 する。全 in-flight が決着して 0 になったときだけ busy を解除する。
+      inFlightByItem.set(itemId, (inFlightByItem.get(itemId) || 0) + 1);
       const busyCard = findCardByID(itemId);
       setCardBusy(busyCard, true);
+      const settle = () => {
+        const remaining = (inFlightByItem.get(itemId) || 1) - 1;
+        if (remaining > 0) {
+          inFlightByItem.set(itemId, remaining);
+          return;
+        }
+        inFlightByItem.delete(itemId);
+        // chip 再描画で children を差し替えてもカード要素自体は同一なので再解決して解除。
+        setCardBusy(findCardByID(itemId) || busyCard, false);
+      };
 
       let res;
       try {
@@ -246,9 +272,9 @@
           body: JSON.stringify({ item_ids: [itemId], tag: tagName }),
         });
       } catch {
-        // network 失敗 → カード表示を変えず通知 (Req 5.1 / 5.2)。busy 解除は最新
-        // 世代でのみ行い、後続のより新しい付与が in-flight なら busy を残す。
-        if (isLatestAssign()) setCardBusy(busyCard, false);
+        // network 失敗 → 確定集合に merge しないので chip は変化せず、表示を成功状態に
+        // しないまま通知する (Req 5.1 / 5.2)。busy は全 in-flight 決着時のみ解除する。
+        settle();
         toast.error('タグの付与に失敗しました');
         return;
       }
@@ -264,22 +290,21 @@
         // server が当該アイテムを failed に入れた（所有していない / セッション失効 /
         // 存在しない等）場合は、カード表示を変えず通知する (Req 5.5 / 5.3 / 5.4)。
         if (failed.length > 0 || succeeded.length === 0) {
-          if (isLatestAssign()) setCardBusy(busyCard, false);
+          settle();
           toast.error('タグの付与に失敗しました');
           return;
         }
 
-        // succeeded[0] の付与後タグ集合で chip を再構築する (Req 1.4 / 2.2)。
+        // succeeded[0] の付与後タグ集合を確定集合へ merge し、union で chip を再構築する
+        // (Req 1.4 / 2.2)。union を取ることで、レスポンスが送信順と異なる順で返っても
+        // （最新リクエストの応答が部分集合でも）永続化済みタグを取りこぼさない (NFR 3.2)。
         // 絞り込み中タグの選択状態は URL から算出して維持する（#117 非回帰）。
-        // ただし stale なレスポンス（既により新しい付与が走った）では chip を
-        // 上書きしない。古い部分集合で最新付与のタグを消さないため (NFR 3.2)。
-        if (isLatestAssign()) {
-          const detail = succeeded[0] || {};
-          const card = findCardByID(detail.item_id || itemId);
-          const tags = Array.isArray(detail.tags) ? detail.tags : [];
-          rebuildChipsForCard(card, tags, computeActiveNormalizedNames());
-          setCardBusy(card || busyCard, false);
-        }
+        const detail = succeeded[0] || {};
+        const card = findCardByID(detail.item_id || itemId);
+        const tags = Array.isArray(detail.tags) ? detail.tags : [];
+        const merged = mergeConfirmedTags(itemId, tags);
+        rebuildChipsForCard(card, merged, computeActiveNormalizedNames());
+        settle();
         toast.success('タグを付与しました');
         return;
       }
@@ -287,7 +312,7 @@
       // 4xx / 5xx（401/403 セッション失効・認可エラー / 500 等）→ カード表示を
       // 変えず通知 (Req 5.1 / 5.2 / 5.3)。invalid_tag（空タグ等）は SSR の
       // data-tag-name 経由では起き得ないが、念のため失敗として通知する。
-      if (isLatestAssign()) setCardBusy(busyCard, false);
+      settle();
       toast.error('タグの付与に失敗しました');
     }
 
@@ -351,7 +376,8 @@
     }
 
     // drop: ドロップ先タグ要素上でのみ付与する。タグ要素以外では何もしない
-    // (Req 1.5)。dataTransfer から item-id を取り、当該タグの正規化値で assignTag。
+    // (Req 1.5)。dataTransfer から item-id を取り、当該タグの display 名
+    // (data-tag-name) で assignTag する（正規化は bulk-tag が server 側で行う）。
     function onDrop(e) {
       const target = e && e.target;
       if (!target || typeof target.closest !== 'function') return;

@@ -71,9 +71,11 @@
                 data-tag-drop-target / data-tag-name / data-tag-normalized は
                 Issue #120 のドラッグ&ドロップ・タグ付与のドロップ先契約
                 (static/items_drag_tag.js が依拠)。display 名 (.Name) と正規化値
-                (.NormalizedName) の両方を公開し、JS は正規化値を bulk-tag API に
-                送る。色のみに依存しないテキストラベルは既存 <span> がそのまま担う
-                (NFR 4.2)。
+                (.NormalizedName) の両方を公開する。JS は display 名 (data-tag-name) を
+                bulk-tag API に送り（正規化は server 側で行い #115 の display 名保持契約を
+                満たす）、正規化値 (data-tag-normalized) は絞り込み checkbox の value と
+                chip 選択状態の判定に使う。色のみに依存しないテキストラベルは既存 <span> が
+                そのまま担う (NFR 4.2)。
               */}}
               <label class="tag-filter-option" data-tag-drop-target data-tag-name="{{.Name}}" data-tag-normalized="{{.NormalizedName}}">
                 <input type="checkbox" name="tag" value="{{.NormalizedName}}" {{if index $.SelectedTags .NormalizedName}}checked{{end}}>

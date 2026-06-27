@@ -32,9 +32,11 @@
   し、`computeActiveNormalizedNames()` を移植して URL から `is-selected`/`aria-pressed` を算出。
   bulk-tag には display 名（`data-tag-name`）を送信。fragment 再描画は `MutationObserver` で
   trigger 再表示、付与中は `.is-tagging`/`aria-busy` を同期付与。
-- `static/items_drag_tag.test.mjs` — 単体テスト 26 件（fake DOM + fetch stub + fake
+- `static/items_drag_tag.test.mjs` — 単体テスト 28 件（fake DOM + fetch stub + fake
   MutationObserver）。round 2 で 22→26（Filters ボタン経由のタッチ付与 / 無関係 tap での
   モード解除 / 連続付与時の stale レスポンス上書き防止 / 外部テキスト drop の弾き）。
+  round 3 で 26→28（レスポンスが送信順と異なる順で後着し最新リクエストの応答が部分集合の
+  ケース / 後発失敗・先発成功のケースで永続化済みタグを取りこぼさないこと）。
 - `static/style.css` — DnD/tagging の視覚状態 CSS。
 - `internal/ui/render_test.go` — SSR 契約を担保する `TestDragTagSSRContract`。
 
@@ -77,11 +79,13 @@
 ## 検証コマンドと結果
 
 - `go test ./...` — 全 PASS（`internal/ui` に `TestDragTagSSRContract` 追加）
-- `node --test static/*.test.mjs` — 189 pass / 0 fail（baseline 163 + drag-tag 26。PR #143
+- `node --test static/*.test.mjs` — 191 pass / 0 fail（baseline 163 + drag-tag 28。PR #143
   iteration round 1 で 14→22: display 名送信 / #117 選択状態維持 / fragment 再描画での touch
   trigger 再表示 / busy 同期フィードバック / 非 200 (401/403/500) 分岐の直接検証。round 2 で
   22→26: Filters ボタン経由のタッチ付与 / 無関係 tap でのモード解除 / 連続付与時の stale
-  レスポンス上書き防止 / 外部テキスト drop の弾き。いずれも修正前に fail することを確認済み）
+  レスポンス上書き防止 / 外部テキスト drop の弾き。round 3 で 26→28: 送信順と異なる順で
+  レスポンスが後着し最新リクエストの応答が部分集合のケース / 後発失敗・先発成功のケース。
+  いずれも修正前に fail することを確認済み）
 - `node --test extension/sidepanel.test.mjs` — 30 pass / 0 fail（拡張機能非回帰）
 - `golangci-lint run` — 0 issues
 - `go build ./...` — OK
@@ -134,5 +138,40 @@
    requirements/design/tasks を書き換えない」）により行わない。requirements⇄実装の追跡は
    本 impl-notes の「AC ↔ テスト対応表」が担う。design/tasks の追跡が必要なら別途
    needs_architect:true での設計 PR ゲートを推奨（返信で提起）。
+
+## PR #143 iteration round 3 で対応したレビュー指摘
+
+1. **[medium] 連続付与時の競合で永続化済みタグを表示し損ねる**（`items_drag_tag.js` の
+   `assignTag`）: round 2 で導入した「単調増加世代＋最新世代のみ chip 再構築」方式は、
+   *送信順* を最新性の基準にしていた。bulk-tag は独立した POST のためサーバの処理順は送信順と
+   一致せず、(a) 後発リクエストが先に commit され先発タグを含まない部分集合を返す、(b) 後発が
+   失敗し先発のみ成功する、のいずれでも「最新世代の応答」が部分集合になり、永続化済みタグを
+   UI から落としていた（Req 1.4）。世代方式を廃し、item ごとに **確定タグ集合 (normalized_name
+   key) の union** を保持して各成功レスポンスで merge → union で chip 再構築する方式へ変更。
+   union は additive な bulk-tag と整合し、レスポンスがどの順で返っても永続化済みタグを
+   取りこぼさない。busy 解除も「最新世代の決着」ではなく **in-flight カウンタが 0** になった
+   時点へ変更（送信順と異なる順で返っても busy を取りこぼさない / NFR 3.1）。回帰防止に
+   「部分集合応答の先着」「後発失敗・先発成功」の 2 テストを追加（修正前 fail を確認）。
+2. **[low] コメントが「JS は正規化値を送る」と実装と逆の説明**（`templates/items.html` /
+   `static/items_drag_tag.js` の `onDrop` コメント / `internal/ui/render_test.go`）: 実装は
+   display 名（`data-tag-name`）を bulk-tag へ送り、正規化は server 側で行う（#115 の display
+   名保持契約）。`data-tag-normalized` は絞り込み checkbox の value / chip 選択状態判定に使う。
+   現状コードと逆の説明だったコメントを実装に合わせて修正（挙動・テスト assert は不変）。
+
+### 取り込まなかったレビュー指摘（返信で理由を明示）
+
+- **[medium] design.md / tasks.md 不在による追跡不能**: 本 Issue は needs_architect:false で
+  triage され design.md/tasks.md は未生成（単一実装パス）。本 PR は実装 PR のため、workflow 規約
+  （CLAUDE.md「1 PR = design or impl」「Developer は実装 PR で requirements/design/tasks を
+  書き換えない」）により spec の追加・書き換えは行わない。requirements⇄実装の追跡は本 impl-notes
+  の「AC ↔ テスト対応表」が担う。design/tasks の追跡が必要なら needs_architect:true での
+  設計 PR ゲートを別途推奨（round 2 から方針不変）。
+- **[low] 外部ドラッグのテキストが表示中 item ID と一致した場合の誤付与**: `onDrop` は
+  dataTransfer の text/plain が region 内に *実在するカード* の `data-item-id` に一致する場合
+  のみ `assignTag` へ進む（`findCardByID` の線形探索 / round 2 で追加）。一致は「自分が所有し
+  表示中のアイテム」に限定され、付与先 item ID も DB 由来で外部テキストと衝突する確率は極めて
+  低く、衝突しても結果は当該所有アイテムへのタグ 1 件追加（server 側で所有権・冪等性を担保）に
+  留まり Req 1.5 の対象外ドロップ no-op を実質破らない。drag 起点追跡用の module state を増やす
+  costに見合わないと判断し、現行ガードを維持（low / round 2 で既に対応済みの範囲）。
 
 STATUS: complete

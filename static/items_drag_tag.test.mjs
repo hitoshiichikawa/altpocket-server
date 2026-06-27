@@ -727,6 +727,94 @@ test('Req 1.4 / NFR 3.2: 同一カードへ連続付与時、古いレスポン�
   assert.ok(tagsDiv.querySelector('[data-tag-normalized="go"]'), 'go chip も残る');
 });
 
+test('Req 1.4 / NFR 3.2: 後発リクエストの応答が先に返り部分集合でも、先発で付与済みのタグを取りこぼさない', async () => {
+  // 送信順は go(先) → rust(後) だが、サーバの処理順次第で後発 rust の応答が先に返り、
+  // しかも rust だけ commit した時点の部分集合 {rust}（go を含まない）を返すことがある。
+  // その後に先発 go の応答 {go, rust} が後着する。送信順の「最新世代」だけを採用する方式
+  // では後発 rust の {rust} で chip を確定させ、永続化済みの go を UI から落としてしまう。
+  // 確定タグ集合の union を取ることで、応答がどの順序で返っても go を取りこぼさない（#143）。
+  let resolveGo;
+  let resolveRust;
+  const pendingGo = new Promise((r) => { resolveGo = r; });
+  const pendingRust = new Promise((r) => { resolveRust = r; });
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }, { name: 'Rust', normalized: 'rust' }],
+    fetchHandlers: [
+      () => pendingGo, // 1 回目（go）— 後で解決（{go, rust} を返す）
+      () => pendingRust, // 2 回目（rust）— 先に解決するが部分集合 {rust} を返す
+    ],
+  });
+  const dt = makeDataTransfer();
+
+  // 送信順: go → rust（両方 in-flight）
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(1), dt);
+
+  // 後発 rust の応答が先に返る（go を含まない部分集合）
+  resolveRust(jsonResponse(200, {
+    succeeded: [{ item_id: 'id-1', tags: [{ name: 'Rust', normalized_name: 'rust' }] }],
+    failed: [],
+  }));
+  await flushMicrotasks();
+
+  // 先発 go の応答が後着する（付与後集合 {go, rust}）
+  resolveGo(jsonResponse(200, {
+    succeeded: [{ item_id: 'id-1', tags: [
+      { name: 'Go', normalized_name: 'go' },
+      { name: 'Rust', normalized_name: 'rust' },
+    ] }],
+    failed: [],
+  }));
+  await flushMicrotasks();
+
+  const tagsDiv = env.cardEl(0).querySelector('.tags');
+  assert.ok(tagsDiv.querySelector('[data-tag-normalized="rust"]'), 'rust chip がある');
+  assert.ok(tagsDiv.querySelector('[data-tag-normalized="go"]'), '部分集合応答が先着でも go chip を取りこぼさない');
+});
+
+test('Req 1.4 / NFR 3.2: 後発の付与が失敗し先発が成功した場合、先発で付与したタグを反映する', async () => {
+  // go(先) → rust(後) の送信順で、後発 rust が 500 で失敗し、先発 go が成功する。
+  // 送信順の「最新世代（rust）」だけを採用する方式では、rust の失敗で busy を解除しつつ
+  // 先発 go の成功を stale 扱いで反映せず、永続化済みの go が UI に出ない。確定集合の
+  // union 方式では go の成功をそのまま反映する（#143）。
+  let resolveGo;
+  let resolveRust;
+  const pendingGo = new Promise((r) => { resolveGo = r; });
+  const pendingRust = new Promise((r) => { resolveRust = r; });
+  const env = loadModule({
+    cards: [{ id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] }],
+    dropTags: [{ name: 'Go', normalized: 'go' }, { name: 'Rust', normalized: 'rust' }],
+    fetchHandlers: [
+      () => pendingGo, // 1 回目（go）— 成功
+      () => pendingRust, // 2 回目（rust）— 500 で失敗
+    ],
+  });
+  const dt = makeDataTransfer();
+
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(0), dt);
+  await env.dragstart(env.cardEl(0), dt);
+  await env.drop(env.dropEl(1), dt);
+
+  // 後発 rust が失敗
+  resolveRust(jsonResponse(500, { error: 'err' }));
+  await flushMicrotasks();
+  // 先発 go が成功
+  resolveGo(jsonResponse(200, {
+    succeeded: [{ item_id: 'id-1', tags: [{ name: 'Go', normalized_name: 'go' }] }],
+    failed: [],
+  }));
+  await flushMicrotasks();
+
+  const tagsDiv = env.cardEl(0).querySelector('.tags');
+  assert.ok(tagsDiv.querySelector('[data-tag-normalized="go"]'), '後発失敗でも先発 go の成功を反映する');
+  assert.equal(env.toastCalls.error.length, 1, '失敗した後発について 1 件の失敗通知が出る');
+  assert.equal(env.cardEl(0).classList.contains('is-tagging'), false, '全 in-flight 決着で busy が解除される');
+});
+
 test('外部テキストをタグ要素にドロップしても付与しない（不明 item id を弾く）', async () => {
   // dataTransfer の text/plain にカード由来でない任意文字列（外部ドラッグ）が入った
   // 場合、region に実在しない id なので bulk-tag を呼ばない（low 指摘 #143）。
