@@ -240,13 +240,17 @@ function buildDropTarget(parent, { name, normalized }) {
   return label;
 }
 
-function createFakeDocument({ region, dropTargets }) {
+function createFakeDocument({ region, dropTargets, sheet }) {
   const docListeners = new Map();
   const root = new FakeElement('div', {});
   root.appendChild(region);
   const targetsContainer = new FakeElement('div', { class: 'tag-list' });
   for (const dt of dropTargets) targetsContainer.appendChild(dt);
   root.appendChild(targetsContainer);
+  // ボトムシート (`.sheet-overlay`) を任意で配置。items_drag_tag.js は init 時に
+  // `.sheet-overlay` を querySelectorAll で探し、`.open` クラスの open→closed 遷移を
+  // 監視して tagging モードを解除する（#143 残存 dismiss 経路の回帰テスト用）。
+  if (sheet) root.appendChild(sheet);
   const metaCSRF = new FakeElement('meta', { name: 'csrf-token', content: 'test-csrf' });
   root.appendChild(metaCSRF);
 
@@ -338,6 +342,7 @@ function loadModule({
   pointerCoarse = false,
   locationHref = 'http://localhost/ui/items',
   withMutationObserver = false,
+  withSheet = false,
 } = {}) {
   const region = new FakeElement('section', { class: 'items', 'data-items-region': '' });
   const builtCards = [];
@@ -345,7 +350,11 @@ function loadModule({
   const builtTargets = [];
   for (const dt of dropTags) builtTargets.push(buildDropTarget(new FakeElement('div', {}), dt));
 
-  const document = createFakeDocument({ region, dropTargets: builtTargets });
+  // ボトムシートは初期 open 状態で配置する（tagging モード→シート open→閉じる の遷移を模擬）。
+  const sheet = withSheet ? new FakeElement('div', { class: 'sheet-overlay' }) : null;
+  if (sheet) sheet.classList.add('open');
+
+  const document = createFakeDocument({ region, dropTargets: builtTargets, sheet });
   const { fetch, calls } = createFetchQueue(fetchHandlers);
   const toastCalls = { error: [], success: [], info: [] };
   const toast = {
@@ -389,7 +398,7 @@ function loadModule({
   function dropEl(i) { return builtTargets[i]; }
 
   return {
-    region, document, window, api,
+    region, document, window, api, sheet,
     fetchCalls: calls,
     toastCalls,
     cardEl, tagAddEl, dropEl,
@@ -729,6 +738,43 @@ test('Req 4.1 / 4.2: tagging モード中にボトムシート本体 (.bottom-sh
   await flushMicrotasks();
 
   assert.equal(env.fetchCalls.length, 1, 'シート本体内の中間 tap を経てもタグ付与が実行される');
+});
+
+test('Req 4.3 (高リスク #143 残存経路): tagging モード中にシートを click 以外（Escape / swipe-down 等）で閉じてもモードを解除する', async () => {
+  // Escape キーやシートハンドルの swipe-down による dismiss は click を発火しないため、
+  // click 依存の解除だけでは pendingTouchItemId が残り、シート再表示後の通常のフィルタ
+  // 目的のタグ tap が前回カードへ誤付与され得る（#143 high 指摘の残存経路）。app.js は
+  // どの dismiss 経路でも `.sheet-overlay` から `.open` を除去するため、その open→closed
+  // 遷移を監視して確実にモードを解除すること。
+  const env = loadModule({
+    cards: [
+      { id: 'id-1', title: '記事1', url: 'http://a/1', tags: [] },
+      { id: 'id-2', title: '記事2', url: 'http://a/2', tags: [] },
+    ],
+    dropTags: [{ name: 'Go', normalized: 'go' }],
+    pointerCoarse: true,
+    withMutationObserver: true,
+    withSheet: true,
+  });
+
+  await env.click(env.tagAddEl(0)); // tagging モードへ（シートは open 状態）
+  assert.equal(env.api._debug.getPendingTouchItemId(), 'id-1', 'シート close 前はモード中');
+
+  // app.js の closeSheet（Escape / swipe-down / 背景 / プログラム的 close 共通経路）を模擬:
+  // `.open` クラスを除去し、`.sheet-overlay` を監視する observer を発火する。
+  env.sheet.classList.remove('open');
+  const sheetObs = FakeMutationObserver.instances.find(
+    (o) => o.observed.some((e) => e.target === env.sheet),
+  );
+  assert.ok(sheetObs, '.sheet-overlay の class 変化を監視する observer が作られる');
+  sheetObs.fire();
+
+  assert.equal(env.api._debug.getPendingTouchItemId(), null, 'シートが閉じたら全経路でモード解除される');
+
+  // 解除後にタグを tap しても、前回カード（id-1）へ誤付与しない。
+  await env.click(env.dropEl(0));
+  await flushMicrotasks();
+  assert.equal(env.fetchCalls.length, 0, 'シート close 後のタグ tap で誤付与しない');
 });
 
 test('Req 1.4 / NFR 3.2: 同一カードへ連続付与時、古いレスポンスが後着しても新しい付与の chip を上書きしない', async () => {
