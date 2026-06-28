@@ -605,6 +605,37 @@
       }
     }
 
+    // tagging モード中にボトムシートが「どの経路で閉じても」確実にモードを解除する。
+    // app.js はシートを閉じる際、経路（背景 tap / Escape キー / シートハンドルの
+    // swipe-down / プログラム的 close）に依らず必ず `.sheet-overlay` から `.open`
+    // クラスを除去する（closeSheet）。click 経路のみに依存すると、Escape / swipe-down
+    // で閉じた場合に pendingTouchItemId が stale 化し、シート再表示後の通常のフィルタ
+    // 目的のタグ tap が前回カードへ誤付与され得る（#143 high 指摘の残存 dismiss 経路）。
+    // `.open` クラスの open→closed 遷移を監視し、tagging モード中なら exitTaggingMode()
+    // を呼ぶことで全 dismiss 経路を 1 か所でカバーする。
+    let sheetObserver = null;
+    if (isTouchEnvironment()) {
+      const SheetObserverCtor =
+        (typeof MutationObserver === 'function') ? MutationObserver :
+        ((win && typeof win.MutationObserver === 'function') ? win.MutationObserver : null);
+      const sheets = doc.querySelectorAll ? doc.querySelectorAll('.sheet-overlay') : [];
+      if (SheetObserverCtor && sheets.length) {
+        for (let i = 0; i < sheets.length; i += 1) {
+          const sheet = sheets[i];
+          let sheetWasOpen = !!(sheet.classList && sheet.classList.contains('open'));
+          const obs = new SheetObserverCtor(() => {
+            const isOpen = !!(sheet.classList && sheet.classList.contains('open'));
+            if (sheetWasOpen && !isOpen && pendingTouchItemId) exitTaggingMode();
+            sheetWasOpen = isOpen;
+          });
+          try {
+            obs.observe(sheet, { attributes: true, attributeFilter: ['class'] });
+          } catch { /* noop */ }
+          sheetObserver = obs;
+        }
+      }
+    }
+
     return {
       _debug: {
         assignTag,
